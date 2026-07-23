@@ -57,12 +57,6 @@ const CONFIG = {
   // 提前多少分钟提醒快满 9 小时
   NEAR_MINUTES: 5,
 
-  /**
-   * 离开公司时，最近离场记录在此分钟数内视为“已打下班卡”
-   * 超过该窗口则判定为可能漏打下班卡（临时离场不算正式下班）
-   */
-  OUT_FRESH_MINUTES: 20,
-
   // 小组件建议刷新间隔，iOS 不保证一定按时刷新
   WIDGET_REFRESH_MINUTES: 5,
 
@@ -353,13 +347,7 @@ function normalizeAttendanceData(raw) {
           ? "已达标"
           : formatCountdown(targetTime.getTime() - now.getTime())
 
-  // 最近离场是否“新鲜”（离开公司场景下视为已打下班卡）
-  const outAgeMinutes = hasOutRecord
-      ? Math.floor((now.getTime() - latestOutTime.getTime()) / 1000 / 60)
-      : null
-  const hasFreshOut = hasOutRecord && outAgeMinutes <= CONFIG.OUT_FRESH_MINUTES
-
-  // 离场时工时是否已满
+  // 离场时工时是否已满（仅供 Debug 参考，不参与漏卡判定）
   const outTargetReached = hasOutRecord && latestOutWorkMs >= targetMs
 
   const summary = {
@@ -374,8 +362,6 @@ function normalizeAttendanceData(raw) {
 
     hasClockIn,
     hasOutRecord,
-    hasFreshOut,
-    outAgeMinutes,
     outTargetReached,
 
     inTime,
@@ -403,20 +389,18 @@ function normalizeAttendanceData(raw) {
 // ==================== 考勤判定（工时 + 下班卡） ====================
 
 /**
- * 根据工时与离场记录判定考勤是否正常、是否漏打下班卡
+ * 根据工时与是否有离场记录判定考勤
  *
  * 判定规则：
- * 1. 未打上班卡 → 异常
- * 2. 当前工时未满 TARGET_HOURS → 工时不足（考勤异常）
+ * 1. 未打上班卡 → 未打卡
+ * 2. 工时未满 TARGET_HOURS → 工时不足
  * 3. 工时已满且无离场记录 → 漏打下班卡
- * 4. 工时已满、有离场但离场不新鲜（可能是临时离场）→ 疑似漏打下班卡
- * 5. 工时已满且最近有新鲜离场、离场时工时已满 → 考勤正常
- * 6. 工时已满、有新鲜离场但离场时工时未满 → 提醒确认正式下班卡
+ * 4. 工时已满且有离场记录 → 考勤正常（不因离场时间久远判定漏卡）
  *
  * @param {object} data 标准化打卡摘要
  * @return {object} 考勤判定结果
  * @author Kai
- * @date 2026/07/23 10:26
+ * @date 2026/07/23 10:41
  */
 function judgeAttendance(data) {
   if (!data || !data.ok) {
@@ -426,7 +410,7 @@ function judgeAttendance(data) {
       missingClockOut: false,
       hoursOk: false,
       label: "判定失败",
-      title: "打卡检查失败",
+      title: "检查失败",
       body: "无法获取考勤数据"
     }
   }
@@ -437,34 +421,29 @@ function judgeAttendance(data) {
       isNormal: false,
       missingClockOut: false,
       hoursOk: false,
-      label: "未打上班卡",
+      label: "未打卡",
       title: "未打上班卡",
-      body: "请确认今天是否已经打上班卡。"
+      body: "今天还没有上班记录"
     }
   }
 
-  // 通知正文固定两行，避免系统截断后丢失关键信息
-  const lineHours =
-      `上班 ${formatTime(data.inTime)}｜可走 ${formatTime(data.targetTime)}｜已上 ${formatShortDuration(data.currentWorkMs)}`
+  const brief =
+      `上班 ${formatTime(data.inTime)}｜已上 ${formatShortDuration(data.currentWorkMs)}`
 
-  // 工时未满：考勤异常
+  // 工时未满
   if (!data.targetReached) {
-    const lineExtra = data.hasOutRecord
-        ? `工时未满 ${CONFIG.TARGET_HOURS}h｜最近离场 ${formatTime(data.latestOutTime)}（${formatShortDuration(data.latestOutWorkMs)}）`
-        : `工时未满 ${CONFIG.TARGET_HOURS} 小时，暂不可下班`
-
     return {
       code: "INSUFFICIENT_HOURS",
       isNormal: false,
       missingClockOut: false,
       hoursOk: false,
       label: "工时不足",
-      title: `考勤异常｜还差 ${data.remainingMinutes} 分钟`,
-      body: `${lineExtra}\n${lineHours}`
+      title: `还差 ${data.remainingMinutes} 分钟`,
+      body: `${brief}｜可走 ${formatTime(data.targetTime)}`
     }
   }
 
-  // 工时已满，无任何离场记录 → 漏打下班卡
+  // 工时已满，无离场记录 → 漏打下班卡
   if (!data.hasOutRecord) {
     return {
       code: "MISSING_CLOCK_OUT",
@@ -472,46 +451,20 @@ function judgeAttendance(data) {
       missingClockOut: true,
       hoursOk: true,
       label: "漏打下班卡",
-      title: "工时已满｜漏打下班卡",
-      body: `请尽快补打下班卡，否则今日考勤异常\n${lineHours}`
+      title: "漏打下班卡",
+      body: brief
     }
   }
 
-  // 工时已满，有离场且离场时工时已满，且离场较新 → 考勤正常
-  if (data.hasFreshOut && data.outTargetReached) {
-    return {
-      code: "NORMAL",
-      isNormal: true,
-      missingClockOut: false,
-      hoursOk: true,
-      label: "考勤正常",
-      title: "考勤正常｜可安心离开",
-      body: `已满 ${CONFIG.TARGET_HOURS}h 且已打下班卡｜下班 ${formatTime(data.latestOutTime)}（${formatShortDuration(data.latestOutWorkMs)}）\n${lineHours}`
-    }
-  }
-
-  // 工时已满，有新鲜离场但离场时工时未满 → 可能刚打卡离场，提醒再确认
-  if (data.hasFreshOut && !data.outTargetReached) {
-    return {
-      code: "OUT_EARLY_CONFIRM",
-      isNormal: false,
-      missingClockOut: true,
-      hoursOk: true,
-      label: "请确认下班卡",
-      title: "工时已满｜请确认下班卡",
-      body: `离场时未满 ${CONFIG.TARGET_HOURS}h｜最近离场 ${formatTime(data.latestOutTime)}（${formatShortDuration(data.latestOutWorkMs)}），请确认正式下班卡\n${lineHours}`
-    }
-  }
-
-  // 工时已满，仅有较早的临时离场记录 → 疑似漏打正式下班卡
+  // 工时已满且有离场记录 → 考勤正常
   return {
-    code: "SUSPECT_MISSING_OUT",
-    isNormal: false,
-    missingClockOut: true,
+    code: "NORMAL",
+    isNormal: true,
+    missingClockOut: false,
     hoursOk: true,
-    label: "疑似漏打下班卡",
-    title: "工时已满｜疑似漏打下班卡",
-    body: `最近离场 ${formatTime(data.latestOutTime)} 已超 ${CONFIG.OUT_FRESH_MINUTES} 分钟（离场时 ${formatShortDuration(data.latestOutWorkMs)}），请确认是否已打正式下班卡\n${lineHours}`
+    label: "考勤正常",
+    title: "考勤正常",
+    body: `${brief}｜离场 ${formatTime(data.latestOutTime)}`
   }
 }
 
@@ -558,15 +511,12 @@ async function handleScheduleNineHours() {
   }
 
   if (!data.hasClockIn) {
-    await notify(
-        "未打上班卡",
-        "暂无法预约 9 小时提醒，请先打上班卡。"
-    )
+    await notify("未打上班卡", "无法预约提醒")
     return
   }
 
   if (data.targetReached) {
-    // 已满工时：直接按考勤判定推送（含漏打下班卡提醒）
+    // 已满工时：仅在漏打下班卡时提醒
     const judgment = data.judgment || judgeAttendance(data)
     if (judgment.missingClockOut) {
       await notify(judgment.title, judgment.body)
@@ -587,17 +537,14 @@ async function handleScheduleNineHours() {
 
   if (remindTime <= now) {
     await notify(
-        `快满 ${CONFIG.TARGET_HOURS} 小时了`,
-        `还差约 ${data.remainingMinutes} 分钟可达标` +
-        `\n上班 ${formatTime(data.inTime)}｜可走 ${formatTime(data.targetTime)}` +
-        `\n已上 ${formatShortDuration(data.currentWorkMs)}，满后请记得打下班卡`
+        `还差 ${data.remainingMinutes} 分钟`,
+        `上班 ${formatTime(data.inTime)}｜可走 ${formatTime(data.targetTime)}`
     )
   } else {
     const n = new Notification()
-    n.title = `快满 ${CONFIG.TARGET_HOURS} 小时了`
+    n.title = `还差 ${CONFIG.NEAR_MINUTES} 分钟满 ${CONFIG.TARGET_HOURS} 小时`
     n.body = twoLineBody(
-        `上班 ${formatTime(data.inTime)}｜${formatTime(data.targetTime)} 可走` +
-        `\n提前 ${CONFIG.NEAR_MINUTES} 分钟提醒，满后请打下班卡`
+        `上班 ${formatTime(data.inTime)}｜可走 ${formatTime(data.targetTime)}`
     )
     n.sound = "default"
     n.setTriggerDate(remindTime)
@@ -654,10 +601,8 @@ async function handleNearNineHours() {
 
     if (!Keychain.contains(key)) {
       await notify(
-          `还差 ${data.remainingMinutes} 分钟达标`,
-          `工时即将满 ${CONFIG.TARGET_HOURS} 小时` +
-          `\n上班 ${formatTime(data.inTime)}｜可走 ${formatTime(data.targetTime)}` +
-          `\n已上 ${formatShortDuration(data.currentWorkMs)}，满后请打下班卡`
+          `还差 ${data.remainingMinutes} 分钟`,
+          `上班 ${formatTime(data.inTime)}｜可走 ${formatTime(data.targetTime)}`
       )
 
       Keychain.set(key, "1")
@@ -1207,24 +1152,24 @@ function getStatusMeta(data) {
     return {
       mainText: "考勤正常",
       shortText: "正常",
-      subText: `已满 ${CONFIG.TARGET_HOURS} 小时，下班卡已打`,
+      subText: `离场 ${formatTime(data.latestOutTime)}`,
       color: "#34D399"
     }
   }
 
   if (judgment.missingClockOut) {
     return {
-      mainText: judgment.label || "漏打下班卡",
+      mainText: "漏打下班卡",
       shortText: "漏打卡",
-      subText: `工时已满，请尽快打下班卡`,
+      subText: `已满 ${CONFIG.TARGET_HOURS} 小时`,
       color: "#FBBF24"
     }
   }
 
   return {
-    mainText: judgment.label || "已满 9 小时",
+    mainText: "已满 9 小时",
     shortText: "可下班",
-    subText: `上班 ${formatTime(data.inTime)}，已达标`,
+    subText: `上班 ${formatTime(data.inTime)}`,
     color: "#34D399"
   }
 }
@@ -1253,20 +1198,15 @@ async function handleDebug() {
         `班次：${data.shiftName || "--"}\n` +
         `日期：${data.date || "--"}\n\n` +
         `上班：${data.hasClockIn ? formatTime(data.inTime) : "未打卡"} ${data.inStatusDesc || ""}\n` +
-        `最近离场：${data.hasOutRecord ? formatTime(data.latestOutTime) : "暂无"} ${data.outStatusDesc || ""}\n` +
-        `离场新鲜：${data.hasFreshOut ? "是" : "否"}` +
-        (data.outAgeMinutes != null ? `（${data.outAgeMinutes} 分钟前）` : "") +
-        `\n\n` +
+        `最近离场：${data.hasOutRecord ? formatTime(data.latestOutTime) : "暂无"} ${data.outStatusDesc || ""}\n\n` +
         `当前工时：${data.hasClockIn ? formatDuration(data.currentWorkMs) : "--"}\n` +
         `离场时工时：${data.hasOutRecord ? formatDuration(data.latestOutWorkMs) : "--"}\n` +
         `可下班：${data.hasClockIn ? formatTime(data.targetTime) : "--"}\n` +
         `工时已满：${data.targetReached ? "是" : "否"}\n` +
-        `剩余分钟：${data.remainingMinutes}\n` +
-        `倒计时：${data.countdownText}\n\n` +
-        `考勤判定：${judgment.label}\n` +
-        `是否正常：${judgment.isNormal ? "是" : "否"}\n` +
-        `漏打下班卡：${judgment.missingClockOut ? "是" : "否"}\n` +
-        `判定码：${judgment.code}`
+        `剩余分钟：${data.remainingMinutes}\n\n` +
+        `判定：${judgment.label}\n` +
+        `正常：${judgment.isNormal ? "是" : "否"}\n` +
+        `漏打下班卡：${judgment.missingClockOut ? "是" : "否"}`
   }
 
   const alert = new Alert()
