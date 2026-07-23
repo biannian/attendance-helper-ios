@@ -829,10 +829,13 @@ async function renderMediumWidget(widget, data) {
   // 已过可下班时间且已打下班卡时不展示进度条
   if (shouldShowProgressBar(data)) {
     card.addSpacer(4)
-    addProgressBar(card, data, 240)
+    addProgressBar(card, data, getCardInnerWidth())
   }
 
   widget.addSpacer(6)
+
+  const cellW = getPairCellWidth()
+  const cellH = 34
 
   const grid = widget.addStack()
   grid.layoutVertically()
@@ -845,8 +848,8 @@ async function renderMediumWidget(widget, data) {
       "上班",
       data.hasClockIn ? formatTime(data.inTime) : "--",
       "#60A5FA",
-      136,
-      32
+      cellW,
+      cellH
   )
 
   row1.addSpacer(8)
@@ -856,8 +859,8 @@ async function renderMediumWidget(widget, data) {
       "可下班",
       data.hasClockIn ? formatTime(data.targetTime) : "--",
       "#34D399",
-      136,
-      32
+      cellW,
+      cellH
   )
 
   grid.addSpacer(4)
@@ -872,8 +875,8 @@ async function renderMediumWidget(widget, data) {
           ? formatTime(data.clockOutTime || data.latestOutTime)
           : "暂无",
       data.hasOutRecord ? "#F87171" : "#9CA3AF",
-      136,
-      32
+      cellW,
+      cellH
   )
 
   row2.addSpacer(8)
@@ -883,8 +886,8 @@ async function renderMediumWidget(widget, data) {
       "考勤",
       (data.judgment && data.judgment.label) || "--",
       meta.color,
-      136,
-      32
+      cellW,
+      cellH
   )
 }
 
@@ -931,11 +934,10 @@ async function renderLargeWidget(widget, data) {
   sub.lineLimit = 2
   sub.minimumScaleFactor = 0.75
 
-  statusCard.addSpacer(8)
-
   // 已过可下班时间且已打下班卡时不展示进度条
   if (shouldShowProgressBar(data)) {
-    addProgressBar(statusCard, data, 300)
+    statusCard.addSpacer(8)
+    addProgressBar(statusCard, data, getCardInnerWidth())
   }
 
   widget.addSpacer(12)
@@ -1068,6 +1070,48 @@ function addMiniLine(widget, label, value) {
 }
 
 /**
+ * 估算小组件内容区可用宽度（扣除脚本内边距）
+ *
+ * @return {number} 内容区宽度
+ * @author Kai
+ * @date 2026/07/23 10:46
+ */
+function getWidgetContentWidth() {
+  const screenW = Device.screenSize().width
+  const family = config.widgetFamily || "medium"
+
+  // 主屏左右外边距约 16；中号/大号接近屏幕可用宽度
+  const widgetW = family === "small"
+      ? Math.min(170, screenW / 2 - 20)
+      : Math.min(screenW - 32, 380)
+
+  // createWidget 内 setPadding 左右各 10
+  return Math.max(240, widgetW - 20)
+}
+
+/**
+ * 两列信息格均分宽度（中间间距 8）
+ *
+ * @return {number} 单格宽度
+ * @author Kai
+ * @date 2026/07/23 10:46
+ */
+function getPairCellWidth() {
+  return Math.floor((getWidgetContentWidth() - 8) / 2)
+}
+
+/**
+ * 状态卡片内进度条宽度（扣除卡片内边距）
+ *
+ * @return {number} 进度条宽度
+ * @author Kai
+ * @date 2026/07/23 10:46
+ */
+function getCardInnerWidth() {
+  return Math.max(200, getWidgetContentWidth() - 16)
+}
+
+/**
  * 中号组件信息格子
  *
  * @param {WidgetStack} parent 父级 Stack
@@ -1077,15 +1121,15 @@ function addMiniLine(widget, label, value) {
  * @param {number} width 宽度
  * @param {number} height 高度
  * @author Kai
- * @date 2026/07/23 10:26
+ * @date 2026/07/23 10:46
  */
 function addInfoCell(parent, label, value, color, width, height) {
   const cell = parent.addStack()
   cell.layoutVertically()
   cell.backgroundColor = new Color("#1F2937")
   cell.cornerRadius = 8
-  cell.setPadding(4, 7, 4, 7)
-  cell.size = new Size(width || 130, height || 34)
+  cell.setPadding(4, 8, 4, 8)
+  cell.size = new Size(width || getPairCellWidth(), height || 34)
 
   const l = cell.addText(label)
   l.font = Font.systemFont(9)
