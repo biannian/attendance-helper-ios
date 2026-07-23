@@ -274,10 +274,8 @@ function normalizeAttendanceData(raw) {
     "signInTime"
   ])
 
-  // 注意：
-  // clockOffTime / clockOutTime 不直接当作“最终下班”，
-  // 临时离场也可能产生该字段，故统一称为“最近离场”。
-  const latestOutRaw = deepPick(root, [
+  // 下班卡时间（接口返回的 clockOff / clockOut 等字段）
+  const clockOutRaw = deepPick(root, [
     "clockOffTime",
     "clockOutTime",
     "outTime",
@@ -307,48 +305,84 @@ function normalizeAttendanceData(raw) {
     "signOutStatusDesc"
   ]) || ""
 
+  // 接口若直接返回工时字段，优先采用（毫秒 / 秒 / 分钟 / 小时）
+  const apiWorkRaw = deepPick(root, [
+    "workDuration",
+    "workTime",
+    "actualWorkTime",
+    "actualWorkDuration",
+    "workMinutes",
+    "workHours",
+    "attendanceDuration",
+    "totalWorkTime"
+  ])
+
   const inTime = parseAnyDateTime(clockInRaw, dateStr)
-  const latestOutTime = parseAnyDateTime(latestOutRaw, dateStr)
+  const clockOutTime = parseAnyDateTime(clockOutRaw, dateStr)
 
   const hasClockIn = !!inTime
-  const hasOutRecord = !!latestOutTime
+  const hasOutRecord = !!clockOutTime
 
   const targetMs = CONFIG.TARGET_HOURS * 60 * 60 * 1000
 
-  let currentWorkMs = 0
-  let latestOutWorkMs = 0
+  /** 基于上下班卡的正式工时（毫秒）；无下班卡则为 null */
+  let punchWorkMs = null
+  /** 无下班卡时的实时估算工时，仅用于倒计时展示 */
+  let liveWorkMs = 0
   let targetTime = null
 
   if (hasClockIn) {
-    currentWorkMs = Math.max(0, now.getTime() - inTime.getTime())
     targetTime = new Date(inTime.getTime() + targetMs)
+    liveWorkMs = Math.max(0, now.getTime() - inTime.getTime())
 
     if (hasOutRecord) {
-      latestOutWorkMs = Math.max(
+      // 正式工时：下班卡 - 上班卡
+      punchWorkMs = Math.max(0, clockOutTime.getTime() - inTime.getTime())
+
+      // 若接口另有工时字段且能解析，优先用接口值
+      const apiMs = parseDurationToMs(apiWorkRaw)
+      if (apiMs != null && apiMs >= 0) {
+        punchWorkMs = apiMs
+      }
+    }
+  }
+
+  // 展示用工时：有下班卡用打卡工时，否则用实时估算
+  const currentWorkMs = punchWorkMs != null ? punchWorkMs : liveWorkMs
+  // 兼容旧字段名
+  const latestOutWorkMs = punchWorkMs != null ? punchWorkMs : 0
+  const latestOutTime = clockOutTime
+
+  // 实时是否已满（近满提醒 / 倒计时用）
+  const liveTargetReached = hasClockIn && liveWorkMs >= targetMs
+  // 考勤是否达标：必须以打卡工时为准
+  const punchTargetReached = punchWorkMs != null && punchWorkMs >= targetMs
+  const targetReached = punchTargetReached
+
+  let remainingMinutes = 0
+  if (hasClockIn && !punchTargetReached) {
+    if (punchWorkMs != null) {
+      // 已有下班卡但工时不足：按打卡工时差额
+      remainingMinutes = Math.max(
           0,
-          latestOutTime.getTime() - inTime.getTime()
+          Math.ceil((targetMs - punchWorkMs) / 1000 / 60)
+      )
+    } else {
+      // 尚无下班卡：按实时倒计时
+      remainingMinutes = Math.max(
+          0,
+          Math.ceil((targetTime.getTime() - now.getTime()) / 1000 / 60)
       )
     }
   }
 
-  const targetReached = hasClockIn && currentWorkMs >= targetMs
-
-  let remainingMinutes = 0
-  if (hasClockIn && !targetReached) {
-    remainingMinutes = Math.max(
-        0,
-        Math.ceil((targetTime.getTime() - now.getTime()) / 1000 / 60)
-    )
-  }
-
   const countdownText = !hasClockIn
       ? "--"
-      : targetReached
+      : punchTargetReached
           ? "已达标"
-          : formatCountdown(targetTime.getTime() - now.getTime())
-
-  // 离场时工时是否已满（仅供 Debug 参考，不参与漏卡判定）
-  const outTargetReached = hasOutRecord && latestOutWorkMs >= targetMs
+          : punchWorkMs != null
+              ? formatCountdown(targetMs - punchWorkMs)
+              : formatCountdown(targetTime.getTime() - now.getTime())
 
   const summary = {
     ok: true,
@@ -362,24 +396,28 @@ function normalizeAttendanceData(raw) {
 
     hasClockIn,
     hasOutRecord,
-    outTargetReached,
 
     inTime,
+    clockOutTime,
     latestOutTime,
 
     inStatusDesc,
     outStatusDesc,
 
+    punchWorkMs,
+    liveWorkMs,
     currentWorkMs,
     latestOutWorkMs,
 
     targetTime,
     targetReached,
+    punchTargetReached,
+    liveTargetReached,
     remainingMinutes,
     countdownText
   }
 
-  // 基于时长与下班卡情况给出考勤判定
+  // 基于打卡工时与下班卡给出考勤判定
   summary.judgment = judgeAttendance(summary)
 
   return summary
@@ -389,18 +427,18 @@ function normalizeAttendanceData(raw) {
 // ==================== 考勤判定（工时 + 下班卡） ====================
 
 /**
- * 根据工时与是否有离场记录判定考勤
+ * 根据打卡工时与是否有下班卡判定考勤
  *
- * 判定规则：
+ * 判定规则（工时以接口上下班卡为准）：
  * 1. 未打上班卡 → 未打卡
- * 2. 工时未满 TARGET_HOURS → 工时不足
- * 3. 工时已满且无离场记录 → 漏打下班卡
- * 4. 工时已满且有离场记录 → 考勤正常（不因离场时间久远判定漏卡）
+ * 2. 无下班卡 → 漏打下班卡
+ * 3. 有下班卡且打卡工时未满 TARGET_HOURS → 工时不足
+ * 4. 有下班卡且打卡工时已满 → 考勤正常
  *
  * @param {object} data 标准化打卡摘要
  * @return {object} 考勤判定结果
  * @author Kai
- * @date 2026/07/23 10:41
+ * @date 2026/07/23 10:42
  */
 function judgeAttendance(data) {
   if (!data || !data.ok) {
@@ -427,11 +465,25 @@ function judgeAttendance(data) {
     }
   }
 
-  const brief =
-      `上班 ${formatTime(data.inTime)}｜已上 ${formatShortDuration(data.currentWorkMs)}`
+  // 无下班卡：无法用打卡记录核算正式工时 → 漏打下班卡
+  if (!data.hasOutRecord) {
+    return {
+      code: "MISSING_CLOCK_OUT",
+      isNormal: false,
+      missingClockOut: true,
+      hoursOk: false,
+      label: "漏打下班卡",
+      title: "漏打下班卡",
+      body: `上班 ${formatTime(data.inTime)}｜实时 ${formatShortDuration(data.liveWorkMs || 0)}`
+    }
+  }
 
-  // 工时未满
-  if (!data.targetReached) {
+  const punchMs = data.punchWorkMs != null ? data.punchWorkMs : data.currentWorkMs
+  const brief =
+      `上班 ${formatTime(data.inTime)}｜下班 ${formatTime(data.clockOutTime || data.latestOutTime)}｜工时 ${formatShortDuration(punchMs)}`
+
+  // 有下班卡但工时不足
+  if (!data.punchTargetReached && !data.targetReached) {
     return {
       code: "INSUFFICIENT_HOURS",
       isNormal: false,
@@ -439,24 +491,11 @@ function judgeAttendance(data) {
       hoursOk: false,
       label: "工时不足",
       title: `还差 ${data.remainingMinutes} 分钟`,
-      body: `${brief}｜可走 ${formatTime(data.targetTime)}`
-    }
-  }
-
-  // 工时已满，无离场记录 → 漏打下班卡
-  if (!data.hasOutRecord) {
-    return {
-      code: "MISSING_CLOCK_OUT",
-      isNormal: false,
-      missingClockOut: true,
-      hoursOk: true,
-      label: "漏打下班卡",
-      title: "漏打下班卡",
       body: brief
     }
   }
 
-  // 工时已满且有离场记录 → 考勤正常
+  // 有下班卡且工时已满
   return {
     code: "NORMAL",
     isNormal: true,
@@ -464,7 +503,7 @@ function judgeAttendance(data) {
     hoursOk: true,
     label: "考勤正常",
     title: "考勤正常",
-    body: `${brief}｜离场 ${formatTime(data.latestOutTime)}`
+    body: brief
   }
 }
 
@@ -515,10 +554,10 @@ async function handleScheduleNineHours() {
     return
   }
 
-  if (data.targetReached) {
-    // 已满工时：仅在漏打下班卡时提醒
+  // 实时已满或打卡工时已满：按考勤判定提醒（漏卡 / 正常等）
+  if (data.liveTargetReached || data.punchTargetReached) {
     const judgment = data.judgment || judgeAttendance(data)
-    if (judgment.missingClockOut) {
+    if (judgment.missingClockOut || !judgment.isNormal) {
       await notify(judgment.title, judgment.body)
     }
     return
@@ -535,9 +574,19 @@ async function handleScheduleNineHours() {
     return
   }
 
+  // 仅在尚未打下班卡时预约“快满”提醒
+  if (data.hasOutRecord) {
+    return
+  }
+
+  const liveRemain = Math.max(
+      0,
+      Math.ceil((data.targetTime.getTime() - now.getTime()) / 1000 / 60)
+  )
+
   if (remindTime <= now) {
     await notify(
-        `还差 ${data.remainingMinutes} 分钟`,
+        `还差 ${liveRemain} 分钟`,
         `上班 ${formatTime(data.inTime)}｜可走 ${formatTime(data.targetTime)}`
     )
   } else {
@@ -578,11 +627,14 @@ async function handleNearNineHours() {
     return
   }
 
-  if (data.targetReached) {
+  // 实时已满或打卡工时已核算：推送考勤判定
+  if (data.liveTargetReached || data.punchTargetReached) {
     const judgment = data.judgment || judgeAttendance(data)
     const keyPrefix = judgment.missingClockOut
         ? "missingOut-"
-        : "targetReached-"
+        : judgment.isNormal
+            ? "normal-"
+            : "hoursShort-"
     const key = keyPrefix + formatDateKey(now)
 
     if (!Keychain.contains(key)) {
@@ -593,15 +645,25 @@ async function handleNearNineHours() {
     return
   }
 
+  // 尚无下班卡且快满 9 小时：实时倒计时提醒
+  if (data.hasOutRecord) {
+    return
+  }
+
+  const liveRemain = Math.max(
+      0,
+      Math.ceil((data.targetTime.getTime() - now.getTime()) / 1000 / 60)
+  )
+
   if (
-      data.remainingMinutes <= CONFIG.NEAR_MINUTES &&
-      data.remainingMinutes > 0
+      liveRemain <= CONFIG.NEAR_MINUTES &&
+      liveRemain > 0
   ) {
     const key = "near9-" + formatDateKey(now)
 
     if (!Keychain.contains(key)) {
       await notify(
-          `还差 ${data.remainingMinutes} 分钟`,
+          `还差 ${liveRemain} 分钟`,
           `上班 ${formatTime(data.inTime)}｜可走 ${formatTime(data.targetTime)}`
       )
 
@@ -764,9 +826,11 @@ async function renderMediumWidget(widget, data) {
   workText.lineLimit = 1
   workText.minimumScaleFactor = 0.7
 
-  card.addSpacer(4)
-
-  addProgressBar(card, data, 240)
+  // 已过可下班时间且已打下班卡时不展示进度条
+  if (shouldShowProgressBar(data)) {
+    card.addSpacer(4)
+    addProgressBar(card, data, 240)
+  }
 
   widget.addSpacer(6)
 
@@ -803,8 +867,10 @@ async function renderMediumWidget(widget, data) {
 
   addInfoCell(
       row2,
-      "最近离场",
-      data.hasOutRecord ? formatTime(data.latestOutTime) : "暂无",
+      "下班",
+      data.hasOutRecord
+          ? formatTime(data.clockOutTime || data.latestOutTime)
+          : "暂无",
       data.hasOutRecord ? "#F87171" : "#9CA3AF",
       136,
       32
@@ -867,7 +933,10 @@ async function renderLargeWidget(widget, data) {
 
   statusCard.addSpacer(8)
 
-  addProgressBar(statusCard, data, 300)
+  // 已过可下班时间且已打下班卡时不展示进度条
+  if (shouldShowProgressBar(data)) {
+    addProgressBar(statusCard, data, 300)
+  }
 
   widget.addSpacer(12)
 
@@ -881,16 +950,20 @@ async function renderLargeWidget(widget, data) {
 
   addDetailRow(
       widget,
-      "最近离场",
+      "下班",
       data.hasOutRecord
-          ? `${formatTime(data.latestOutTime)} ${data.outStatusDesc || ""}`.trim()
-          : "暂无"
+          ? `${formatTime(data.clockOutTime || data.latestOutTime)} ${data.outStatusDesc || ""}`.trim()
+          : "未打卡"
   )
 
   addDetailRow(
       widget,
-      "当前工时",
-      data.hasClockIn ? formatDuration(data.currentWorkMs) : "--"
+      "打卡工时",
+      data.punchWorkMs != null
+          ? formatDuration(data.punchWorkMs)
+          : data.hasClockIn
+              ? `实时 ${formatDuration(data.liveWorkMs)}`
+              : "--"
   )
 
   addDetailRow(
@@ -1059,13 +1132,41 @@ function addDetailRow(widget, label, value) {
 }
 
 /**
+ * 是否展示工时进度条
+ *
+ * 已打下班卡，且下班卡时间已达到/超过可下班时间时不再展示。
+ *
+ * @param {object} data 打卡摘要
+ * @return {boolean} 是否展示
+ * @author Kai
+ * @date 2026/07/23 10:44
+ */
+function shouldShowProgressBar(data) {
+  if (!data || !data.hasClockIn) {
+    return true
+  }
+
+  if (!data.hasOutRecord || !data.targetTime) {
+    return true
+  }
+
+  const outTime = data.clockOutTime || data.latestOutTime
+  if (!outTime) {
+    return true
+  }
+
+  // 下班卡时间已过可下班时间 → 隐藏进度条
+  return outTime.getTime() < data.targetTime.getTime()
+}
+
+/**
  * 绘制工时进度条
  *
  * @param {WidgetStack} parent 父级 Stack
  * @param {object} data 打卡摘要
  * @param {number} width 进度条宽度
  * @author Kai
- * @date 2026/07/23 10:26
+ * @date 2026/07/23 10:44
  */
 function addProgressBar(parent, data, width) {
   const barWidth = width || 240
@@ -1086,7 +1187,11 @@ function addProgressBar(parent, data, width) {
   }
 
   const targetMs = CONFIG.TARGET_HOURS * 60 * 60 * 1000
-  const current = Math.max(0, data.currentWorkMs || 0)
+  // 进度优先用打卡工时，无下班卡时用实时工时
+  const current = Math.max(
+      0,
+      data.punchWorkMs != null ? data.punchWorkMs : (data.liveWorkMs || data.currentWorkMs || 0)
+  )
   const ratio = Math.min(1, current / targetMs)
 
   const filledWidth = Math.max(3, Math.round(barWidth * ratio))
@@ -1094,7 +1199,7 @@ function addProgressBar(parent, data, width) {
 
   const fill = barBg.addStack()
   fill.backgroundColor = new Color(
-      data.targetReached ? "#34D399" : "#60A5FA"
+      (data.punchTargetReached || data.liveTargetReached) ? "#34D399" : "#60A5FA"
   )
   fill.cornerRadius = 3
   fill.size = new Size(filledWidth, barHeight)
@@ -1110,10 +1215,13 @@ function addProgressBar(parent, data, width) {
 /**
  * 根据考勤判定生成小组件状态文案与颜色
  *
+ * 无下班卡且实时未满时，按倒计时展示（不算漏卡）；
+ * 工时达标判定以打卡工时为准。
+ *
  * @param {object} data 打卡摘要
  * @return {object} 主文案 / 短文案 / 副文案 / 颜色
  * @author Kai
- * @date 2026/07/23 10:26
+ * @date 2026/07/23 10:42
  */
 function getStatusMeta(data) {
   if (!data || !data.ok) {
@@ -1125,9 +1233,7 @@ function getStatusMeta(data) {
     }
   }
 
-  const judgment = data.judgment || judgeAttendance(data)
-
-  if (judgment.code === "NO_CLOCK_IN") {
+  if (!data.hasClockIn) {
     return {
       mainText: "今日未打卡",
       shortText: "未打卡",
@@ -1136,40 +1242,44 @@ function getStatusMeta(data) {
     }
   }
 
-  if (judgment.code === "INSUFFICIENT_HOURS") {
-    const remain = data.remainingMinutes || 0
+  // 尚无下班卡：上班中显示倒计时；实时已满则提示漏打下班卡
+  if (!data.hasOutRecord) {
+    if (data.liveTargetReached) {
+      return {
+        mainText: "漏打下班卡",
+        shortText: "漏打卡",
+        subText: `实时 ${formatShortDuration(data.liveWorkMs)}`,
+        color: "#FBBF24"
+      }
+    }
+
+    const liveRemain = Math.max(
+        0,
+        Math.ceil((data.targetTime.getTime() - now.getTime()) / 1000 / 60)
+    )
+
     return {
-      mainText: `还差 ${remain} 分钟`,
-      shortText: `${remain} 分钟`,
-      subText: data.hasOutRecord
-          ? `最近离场 ${formatTime(data.latestOutTime)}`
-          : `预计 ${formatTime(data.targetTime)} 可下班`,
-      color: data.hasOutRecord ? "#F87171" : "#60A5FA"
+      mainText: `还差 ${liveRemain} 分钟`,
+      shortText: `${liveRemain} 分钟`,
+      subText: `预计 ${formatTime(data.targetTime)} 可下班`,
+      color: "#60A5FA"
     }
   }
 
-  if (judgment.code === "NORMAL") {
+  // 已有下班卡：用工时（下班-上班）判定
+  if (!data.punchTargetReached) {
     return {
-      mainText: "考勤正常",
-      shortText: "正常",
-      subText: `离场 ${formatTime(data.latestOutTime)}`,
-      color: "#34D399"
-    }
-  }
-
-  if (judgment.missingClockOut) {
-    return {
-      mainText: "漏打下班卡",
-      shortText: "漏打卡",
-      subText: `已满 ${CONFIG.TARGET_HOURS} 小时`,
-      color: "#FBBF24"
+      mainText: `还差 ${data.remainingMinutes} 分钟`,
+      shortText: `${data.remainingMinutes} 分钟`,
+      subText: `下班 ${formatTime(data.clockOutTime || data.latestOutTime)}｜工时不足`,
+      color: "#F87171"
     }
   }
 
   return {
-    mainText: "已满 9 小时",
-    shortText: "可下班",
-    subText: `上班 ${formatTime(data.inTime)}`,
+    mainText: "考勤正常",
+    shortText: "正常",
+    subText: `下班 ${formatTime(data.clockOutTime || data.latestOutTime)}`,
     color: "#34D399"
   }
 }
@@ -1198,12 +1308,14 @@ async function handleDebug() {
         `班次：${data.shiftName || "--"}\n` +
         `日期：${data.date || "--"}\n\n` +
         `上班：${data.hasClockIn ? formatTime(data.inTime) : "未打卡"} ${data.inStatusDesc || ""}\n` +
-        `最近离场：${data.hasOutRecord ? formatTime(data.latestOutTime) : "暂无"} ${data.outStatusDesc || ""}\n\n` +
-        `当前工时：${data.hasClockIn ? formatDuration(data.currentWorkMs) : "--"}\n` +
-        `离场时工时：${data.hasOutRecord ? formatDuration(data.latestOutWorkMs) : "--"}\n` +
+        `下班：${data.hasOutRecord ? formatTime(data.clockOutTime || data.latestOutTime) : "未打卡"} ${data.outStatusDesc || ""}\n\n` +
+        `打卡工时：${data.punchWorkMs != null ? formatDuration(data.punchWorkMs) : "--"}\n` +
+        `实时工时：${data.hasClockIn ? formatDuration(data.liveWorkMs) : "--"}\n` +
         `可下班：${data.hasClockIn ? formatTime(data.targetTime) : "--"}\n` +
-        `工时已满：${data.targetReached ? "是" : "否"}\n` +
-        `剩余分钟：${data.remainingMinutes}\n\n` +
+        `打卡已满：${data.punchTargetReached ? "是" : "否"}\n` +
+        `实时已满：${data.liveTargetReached ? "是" : "否"}\n` +
+        `剩余分钟：${data.remainingMinutes}\n` +
+        `进度条：${shouldShowProgressBar(data) ? "显示" : "隐藏"}\n\n` +
         `判定：${judgment.label}\n` +
         `正常：${judgment.isNormal ? "是" : "否"}\n` +
         `漏打下班卡：${judgment.missingClockOut ? "是" : "否"}`
@@ -1343,6 +1455,81 @@ function deepPick(obj, keys) {
 
 
 // ==================== 工具函数：时间 ====================
+
+/**
+ * 将接口返回的工时字段解析为毫秒
+ *
+ * 支持：纯数字（按秒/分钟/小时启发式）、"9h30m"、"9:30"、"9小时30分钟" 等。
+ *
+ * @param {*} value 原始工时值
+ * @return {number|null} 毫秒；无法解析时返回 null
+ * @author Kai
+ * @date 2026/07/23 10:44
+ */
+function parseDurationToMs(value) {
+  if (value === undefined || value === null || value === "") {
+    return null
+  }
+
+  if (typeof value === "number" && !isNaN(value)) {
+    // 启发式：过大当作毫秒，较大当作秒，中等当作分钟，较小当作小时
+    if (value >= 1000000) {
+      return value
+    }
+    if (value >= 10000) {
+      return value * 1000
+    }
+    if (value >= 100) {
+      return value * 60 * 1000
+    }
+    return value * 60 * 60 * 1000
+  }
+
+  const s = String(value).trim()
+  if (!s) {
+    return null
+  }
+
+  // 9小时30分钟 / 9时30分
+  let m = s.match(/(\d+)\s*小时\s*(\d+)\s*分/)
+  if (m) {
+    return (Number(m[1]) * 60 + Number(m[2])) * 60 * 1000
+  }
+
+  m = s.match(/(\d+)\s*小时/)
+  if (m) {
+    return Number(m[1]) * 60 * 60 * 1000
+  }
+
+  // 9h30m / 9h / 30m
+  m = s.match(/^(\d+)\s*h\s*(\d+)\s*m$/i)
+  if (m) {
+    return (Number(m[1]) * 60 + Number(m[2])) * 60 * 1000
+  }
+
+  m = s.match(/^(\d+)\s*h$/i)
+  if (m) {
+    return Number(m[1]) * 60 * 60 * 1000
+  }
+
+  m = s.match(/^(\d+)\s*m$/i)
+  if (m) {
+    return Number(m[1]) * 60 * 1000
+  }
+
+  // 9:30
+  m = s.match(/^(\d+):(\d{2})$/)
+  if (m) {
+    return (Number(m[1]) * 60 + Number(m[2])) * 60 * 1000
+  }
+
+  // 纯数字字符串
+  if (/^\d+(\.\d+)?$/.test(s)) {
+    return parseDurationToMs(Number(s))
+  }
+
+  return null
+}
 
 /**
  * 将任意时间表达解析为 Date
