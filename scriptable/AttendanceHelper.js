@@ -12,13 +12,14 @@
 //
 // 支持模式：
 // widget     桌面小组件 / 手动预览
+// refresh    快捷指令点击刷新（拉数、回写小组件，不弹预览）
 // leave      离开公司时检查工时是否满 9 小时、是否漏打下班卡
 // schedule9  工作日根据上班时间预约“快满 9 小时”提醒
 // near9      工作日下午定时检查是否快满 / 已满 9 小时
 // debug      查看接口解析结果与考勤判定
 //
 // 快捷指令 / 小组件参数：
-// widget / leave / schedule9 / near9 / debug
+// widget / refresh / leave / schedule9 / near9 / debug
 //
 // Scriptable 脚本建议命名：
 // AttendanceHelper
@@ -48,7 +49,9 @@ const CONFIG = {
   // 公司名称，用于通知文案
   COMPANY_NAME: "iGroup",
 
-  // 点击小组件后运行的快捷指令名称
+  // 点击小组件后运行的快捷指令名称。
+  // 快捷指令务必只放 Scriptable「刷新所有小组件」，并关闭「显示运行时」，
+  // 不要用「运行脚本」弹预览，否则会离开桌面且桌面组件不一定刷新。
   SHORTCUT_NAME: "更新打卡小组件",
 
   // 满多少小时算达标
@@ -76,7 +79,7 @@ const CONFIG = {
 /** 当前脚本执行时刻 */
 const now = new Date()
 
-/** 运行模式：widget / leave / schedule9 / near9 / debug */
+/** 运行模式：widget / refresh / leave / schedule9 / near9 / debug */
 const mode = String(
     args.widgetParameter ||
     args.shortcutParameter ||
@@ -92,10 +95,11 @@ if (config.runsInWidget) {
   Script.setWidget(widget)
   Script.complete()
 } else {
-  if (mode === "widget") {
-    const data = await getAttendanceSummary()
-    const widget = await createWidget(data)
-    await widget.presentMedium()
+  // 快捷指令 / Siri 拉起时不要弹预览：弹层会离开桌面，桌面小组件往往并没有被刷新
+  const fromShortcut = isLaunchedFromShortcut()
+
+  if (mode === "widget" || mode === "refresh") {
+    await runWidgetUpdate({ presentPreview: !fromShortcut && mode !== "refresh" })
   } else if (mode === "leave") {
     await handleLeaveCompany()
   } else if (mode === "schedule9") {
@@ -109,6 +113,50 @@ if (config.runsInWidget) {
   }
 
   Script.complete()
+}
+
+
+/**
+ * 是否由快捷指令 / Siri 拉起
+ *
+ * 点击桌面小组件会打开 shortcuts://，随后可能「运行脚本」或「刷新所有小组件」。
+ * 前者走本分支，后者走 runsInWidget。
+ *
+ * @return {boolean} 是则不应弹出小组件预览
+ * @author Kai
+ * @date 2026/08/31 18:05
+ */
+function isLaunchedFromShortcut() {
+  if (config.runsWithSiri) {
+    return true
+  }
+
+  const shortcutParam = args.shortcutParameter
+  if (shortcutParam !== undefined && shortcutParam !== null && String(shortcutParam).length > 0) {
+    return true
+  }
+
+  return false
+}
+
+/**
+ * 拉取打卡数据并生成小组件
+ *
+ * @param {object} options 展示选项
+ * @param {boolean} options.presentPreview 是否弹出中号预览（仅 App 内手动运行）
+ * @author Kai
+ * @date 2026/08/31 18:05
+ */
+async function runWidgetUpdate(options) {
+  const presentPreview = !!(options && options.presentPreview)
+  const data = await getAttendanceSummary()
+  const widget = await createWidget(data)
+  // App / 快捷指令里 setWidget 不一定能改桌面快照，但有些 Scriptable 版本会吃这个回写
+  Script.setWidget(widget)
+
+  if (presentPreview) {
+    await widget.presentMedium()
+  }
 }
 
 
@@ -152,16 +200,19 @@ async function showMainMenu() {
 // ==================== 请求打卡接口 ====================
 
 /**
- * 请求当日个人考勤统计接口
+ * 请求当日个人考勤统计接口（禁用 HTTP 缓存，保证点击刷新能拿到最新打卡）
  *
  * @return {Promise<object>} 接口原始 JSON
  * @author Kai
- * @date 2026/07/23 10:26
+ * @date 2026/08/31 18:05
  */
 async function fetchAttendance() {
   const date = formatDateKey(new Date())
+  // 附加时间戳，避免 URLSession 把 GET 打卡结果缓存成「点了刷新但下班卡还是暂无」
   const url =
-      `${CONFIG.API_BASE}?date=${encodeURIComponent(date)}&ID=${encodeURIComponent(CONFIG.ID)}`
+      `${CONFIG.API_BASE}?date=${encodeURIComponent(date)}` +
+      `&ID=${encodeURIComponent(CONFIG.ID)}` +
+      `&_cb=${Date.now()}`
 
   const req = new Request(url)
   req.method = "GET"
@@ -176,7 +227,9 @@ async function fetchAttendance() {
     "Accept": "*/*",
     "deviceid": CONFIG.DEVICE_ID,
     "versionCode": "1986",
-    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Html5Plus/1.0 (Immersed/47) uni-app"
+    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Html5Plus/1.0 (Immersed/47) uni-app",
+    "Cache-Control": "no-cache, no-store, must-revalidate",
+    "Pragma": "no-cache"
   }
 
   const json = await req.loadJSON()
@@ -725,7 +778,7 @@ async function createWidget(data) {
   }
 
   widget.url = getWidgetUrl()
-  widget.refreshAfterDate = getNextWidgetRefreshDate()
+  widget.refreshAfterDate = getNextWidgetRefreshDate(data)
 
   return widget
 }
@@ -1907,23 +1960,39 @@ function isNormalWeekday(date) {
 /**
  * 小组件点击跳转的快捷指令 URL
  *
+ * 使用 x-callback-url，并带本次渲染时间戳，减轻「点一下没反应、再点才刷新」。
+ *
  * @return {string} shortcuts URL
  * @author Kai
- * @date 2026/07/23 10:26
+ * @date 2026/08/31 18:05
  */
 function getWidgetUrl() {
-  return "shortcuts://run-shortcut?name=" + encodeURIComponent(CONFIG.SHORTCUT_NAME)
+  const name = encodeURIComponent(CONFIG.SHORTCUT_NAME)
+  // x-callback-url 比 shortcuts://run-shortcut 更不容易被系统吞掉首次点击；
+  // _n 让每次渲染后的 URL 不同，避免 iOS 把相同 URL 当成「已打开」而不再执行快捷指令
+  return `shortcuts://x-callback-url/run-shortcut?name=${name}&_n=${Date.now()}`
 }
 
 /**
  * 计算下次建议刷新时间
  *
+ * 倒计时阶段建议 1 分钟后再刷，减轻 iOS 把下次刷新排到太后面、点击后快照仍旧的情况。
+ * 已下班且已打卡则沿用配置间隔。
+ *
+ * @param {object} [data] 打卡摘要
  * @return {Date} 刷新时间
  * @author Kai
- * @date 2026/07/23 10:26
+ * @date 2026/08/31 18:05
  */
-function getNextWidgetRefreshDate() {
-  return new Date(Date.now() + CONFIG.WIDGET_REFRESH_MINUTES * 60 * 1000)
+function getNextWidgetRefreshDate(data) {
+  let minutes = CONFIG.WIDGET_REFRESH_MINUTES
+
+  // 还在上班倒计时：缩短建议间隔，方便点击后系统接受新快照
+  if (data && data.ok && data.hasClockIn && !data.offWorkWithPunch) {
+    minutes = Math.min(minutes, 1)
+  }
+
+  return new Date(Date.now() + minutes * 60 * 1000)
 }
 
 /**
