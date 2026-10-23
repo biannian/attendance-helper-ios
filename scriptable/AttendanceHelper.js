@@ -2,7 +2,7 @@
 // These must be at the very top of the file. Do not edit.
 // icon-color: deep-blue; icon-glyph: user-tie;
 /*
- * Copyright (c) iGroup China.
+ * Copyright (c) iGroup.
  * All rights reserved.
  */
 // ==================================================
@@ -473,13 +473,8 @@ function normalizeAttendanceData(raw) {
   let remainingFromPunch = false
 
   if (hasClockIn && targetTime) {
-    if (offWorkWithPunch) {
-      remainingFromPunch = true
-      remainingMinutes = Math.max(
-          0,
-          Math.ceil((targetMs - punchWorkMs) / 1000 / 60)
-      )
-    } else if (now.getTime() < targetTime.getTime()) {
+    // @author Kai @date 2026/10/23 14:56：按当前时间倒计时，达到可下班时间后停止显示剩余分钟。
+    if (now.getTime() < targetTime.getTime()) {
       // 尚未打下班卡：每次小组件本地刷新时根据当前时间重新计算。
       remainingMinutes = Math.max(
           0,
@@ -606,7 +601,7 @@ function judgeAttendance(data) {
       missingClockOut: false,
       hoursOk: false,
       label: "工时不足",
-      title: `还差 ${data.remainingMinutes} 分钟`,
+      title: data.remainingMinutes > 0 ? `还差 ${data.remainingMinutes} 分钟` : "工时不足",
       body: brief
     }
   }
@@ -627,36 +622,22 @@ function judgeAttendance(data) {
 // ==================== 功能 1：离开公司检查 ====================
 
 /**
- * 离开公司时检查：按工时判断考勤是否正常，并识别是否漏打下班卡
+ * 离开公司时核验考勤，每次触发都通知本次检查结果。
  *
  * @author Kai
- * @date 2026/07/23 10:26
+ * @date 2026/10/23 14:59
  */
 async function handleLeaveCompany() {
-  const data = await getAttendanceSummary()
-  const key = "leave-check-" + formatDateKey(now)
+    // 每次触发均重新获取考勤，失败时也发送通知，便于发现接口异常。
+    const data = await getAttendanceSummary()
+    if (!data.ok) {
+        await notify("打卡检查失败", compactError(data.error))
+        return
+    }
 
-  if (!data.ok) {
-    const errorText = compactError(data.error)
-    await notifyIfStateChanged(
-        key,
-        "ERROR|" + errorText,
-        "打卡检查失败",
-        errorText
-    )
-    return
-  }
-
-  const judgment = data.judgment || judgeAttendance(data)
-  const fingerprint = JSON.stringify({
-    code: judgment.code,
-    hasClockIn: !!data.hasClockIn,
-    hasOutRecord: !!data.hasOutRecord,
-    clockOutTime: data.clockOutTime ? data.clockOutTime.getTime() : null,
-    punchWorkMs: data.punchWorkMs == null ? null : Math.round(data.punchWorkMs)
-  })
-
-  await notifyIfStateChanged(key, fingerprint, judgment.title, judgment.body)
+    // 用户主动触发或自动化触发均需要反馈，不按当日状态去重。
+    const judgment = data.judgment || judgeAttendance(data)
+    await notify(judgment.title, judgment.body)
 }
 
 // ==================== 功能 2：预约快满 9 小时提醒 ====================
@@ -818,6 +799,11 @@ async function createWidget(data) {
   const isAccessory = family.indexOf("accessory") === 0
 
   const widget = new ListWidget()
+    // @author Kai @date 2026/10/23 15:00：休息日隐藏全部组件内容；工作日包含调休补班。
+    if (!(await isChinaWorkday(now))) {
+        widget.refreshAfterDate = getNextWidgetRefreshDate()
+        return widget
+    }
   if (!isAccessory) {
     widget.backgroundColor = new Color("#111827")
   }
@@ -854,7 +840,7 @@ function getLockScreenDetail(data) {
     if (data.punchTargetReached) {
       return "下班 " + formatTime(data.clockOutTime || data.latestOutTime) + " · 工时达标"
     }
-    return "已下班 · 还差 " + data.remainingMinutes + " 分钟"
+    return data.remainingMinutes > 0 ? "还差 " + data.remainingMinutes + " 分钟" : "工时不足"
   }
 
   if (data.liveTargetReached) return "已满 9 小时 · 请检查下班卡"
@@ -867,7 +853,7 @@ function getLockScreenShortText(data) {
   if (!data.hasClockIn) return "未打卡"
 
   if (data.offWorkWithPunch) {
-    return data.punchTargetReached ? "正常" : String(data.remainingMinutes) + "分"
+    return data.punchTargetReached ? "正常" : (data.remainingMinutes > 0 ? String(data.remainingMinutes) + "分" : "工时不足")
   }
 
   if (data.liveTargetReached) return "漏卡"
@@ -881,7 +867,7 @@ function getLockScreenInlineText(data) {
   if (data.offWorkWithPunch) {
     return data.punchTargetReached
         ? "打卡正常 · 下班 " + formatTime(data.clockOutTime || data.latestOutTime)
-        : "已下班，还差 " + data.remainingMinutes + " 分钟"
+        : (data.remainingMinutes > 0 ? "还差 " + data.remainingMinutes + " 分钟" : "工时不足")
   }
 
   if (data.liveTargetReached) return "已满 9 小时，请检查下班卡"
@@ -890,44 +876,67 @@ function getLockScreenInlineText(data) {
       : "已满 9 小时"
 }
 
+/**
+ * 渲染锁屏矩形考勤，压缩为状态、打卡时间和数据更新时间。
+ * @param {ListWidget} widget 锁屏组件
+ * @param {object} data 考勤摘要
+ * @author Kai
+ * @date 2026/10/23 15:00
+ */
 function renderAccessoryRectangular(widget, data) {
-  if (!data || !data.ok) {
-    const title = widget.addText(data && data.cacheMiss ? "打卡数据需更新" : "打卡数据不可用")
-    title.font = Font.boldSystemFont(12)
-    const detail = widget.addText(data && data.error ? data.error : "运行更新打卡快捷指令")
+    widget.setPadding(0, 0, 0, 0)
+    // 锁屏宽度有限，状态只展示一次，第二行保留关键时间。
+    const title = widget.addText(getLockScreenInlineText(data))
+    title.font = Font.boldSystemFont(13)
+    title.lineLimit = 1
+    title.minimumScaleFactor = 0.65
+    widget.addSpacer(2)
+    const times = data && data.ok && data.hasClockIn
+        ? `上班 ${formatTime(data.inTime)} · 满时 ${formatTime(data.targetTime)}`
+        : "运行更新打卡快捷指令"
+    const detail = widget.addText(times)
     detail.font = Font.systemFont(10)
-    detail.lineLimit = 2
-    return
-  }
-
-  const meta = getStatusMeta(data)
-  const title = widget.addText(meta.mainText)
-  title.font = Font.boldSystemFont(13)
-  title.lineLimit = 1
-  title.minimumScaleFactor = 0.7
-
-  const detail = widget.addText(getLockScreenDetail(data))
-  detail.font = Font.systemFont(10)
-  detail.lineLimit = 1
-  detail.minimumScaleFactor = 0.7
-
-  const updated = widget.addText("数据更新 " + getSnapshotUpdatedText(data))
-  updated.font = Font.systemFont(9)
-  updated.lineLimit = 1
+    detail.lineLimit = 1
+    detail.minimumScaleFactor = 0.65
+    if (data && data.ok) {
+        const updated = widget.addText("更新 " + getSnapshotUpdatedText(data))
+        updated.font = Font.systemFont(9)
+        updated.lineLimit = 1
+    }
 }
 
+/**
+ * 渲染锁屏圆形考勤，以居中的紧凑文字适配圆形边界。
+ * @param {ListWidget} widget 锁屏组件
+ * @param {object} data 考勤摘要
+ * @author Kai
+ * @date 2026/10/23 15:00
+ */
 function renderAccessoryCircular(widget, data) {
-  const text = widget.addText(getLockScreenShortText(data))
-  text.font = Font.boldSystemFont(12)
-  text.centerAlignText()
-  text.minimumScaleFactor = 0.6
+    widget.setPadding(0, 0, 0, 0)
+    widget.addSpacer()
+    // 圆形空间只保留状态或剩余分钟，避免多行详情被裁切。
+    const text = widget.addText(getLockScreenShortText(data))
+    text.font = Font.boldSystemFont(15)
+    text.centerAlignText()
+    text.lineLimit = 1
+    text.minimumScaleFactor = 0.5
+    widget.addSpacer()
 }
 
+/**
+ * 渲染锁屏日期上方的单行考勤摘要。
+ * @param {ListWidget} widget 锁屏组件
+ * @param {object} data 考勤摘要
+ * @author Kai
+ * @date 2026/10/23 15:00
+ */
 function renderAccessoryInline(widget, data) {
-  const text = widget.addText(getLockScreenInlineText(data))
-  text.font = Font.systemFont(12)
-  text.lineLimit = 1
-  text.minimumScaleFactor = 0.65
+    // 行内组件仅容纳一句状态，字体由锁屏系统参与呈现。
+    const text = widget.addText(getLockScreenInlineText(data))
+    text.font = Font.systemFont(12)
+    text.lineLimit = 1
+    text.minimumScaleFactor = 0.65
 }
 
 // ==================== 小号组件 ====================
@@ -1523,9 +1532,9 @@ function getStatusMeta(data) {
 
     const remain = data.remainingMinutes || 0
     return {
-      mainText: `还差 ${remain} 分钟`,
-      shortText: `${remain} 分钟`,
-      subText: `下班 ${formatTime(data.clockOutTime || data.latestOutTime)}｜按打卡工时`,
+      mainText: remain > 0 ? `还差 ${remain} 分钟` : "工时不足",
+      shortText: remain > 0 ? `${remain} 分钟` : "工时不足",
+      subText: `下班 ${formatTime(data.clockOutTime || data.latestOutTime)}｜按当前时间`,
       color: "#F87171"
     }
   }
@@ -1554,8 +1563,8 @@ function getStatusMeta(data) {
   }
 
   return {
-    mainText: `还差 ${remain} 分钟`,
-    shortText: `${remain} 分钟`,
+    mainText: remain > 0 ? `还差 ${remain} 分钟` : "工时不足",
+    shortText: remain > 0 ? `${remain} 分钟` : "工时不足",
     subText: `预计 ${formatTime(data.targetTime)} 可下班`,
     color: "#60A5FA"
   }
@@ -2159,30 +2168,6 @@ function twoLineBody(s, maxCharsPerLine = 60) {
   let rest = single.slice(idx).trim()
   if (rest.length > maxCharsPerLine) rest = rest.slice(0, maxCharsPerLine - 1) + "…"
   return first + "\n" + rest
-}
-
-/**
- * 仅在通知状态发生变化时发送，避免同一次离开触发重复提醒。
- * fingerprint 不包含动态倒计时，因此倒计时变化不会造成通知刷屏。
- */
-async function notifyIfStateChanged(key, fingerprint, title, body) {
-  const value = String(fingerprint || "")
-  try {
-    if (Keychain.contains(key) && Keychain.get(key) === value) {
-      return false
-    }
-  } catch (e) {
-    // Keychain 读取失败时仍尽力发送通知，不阻断打卡检查。
-  }
-
-  await notify(title, body)
-
-  try {
-    Keychain.set(key, value)
-  } catch (e) {
-    // 通知已发出；缓存去重状态失败不应改变核验结果。
-  }
-  return true
 }
 
 /**
