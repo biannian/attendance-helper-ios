@@ -90,8 +90,9 @@ const mode = String(
 // ==================== 主入口 ====================
 
 if (config.runsInWidget) {
-  // 小组件只读取最近一次触发时保存的快照；不在渲染时轮询考勤接口
-  const data = loadCachedAttendanceSummary()
+  // 非工作日不展示考勤；工作日只读缓存，不请求考勤接口。
+  const isWorkday = await isChinaWorkday(now)
+  const data = isWorkday ? loadCachedAttendanceSummary() : createNonWorkdaySummary()
   const widget = await createWidget(data)
   Script.setWidget(widget)
   Script.complete()
@@ -212,6 +213,11 @@ async function fetchAttendance() {
  * @date 2026/07/23 10:26
  */
 async function getAttendanceSummary() {
+  // 非工作日不读取考勤接口，直接返回休息日状态。
+  if (!(await isChinaWorkday(now))) {
+    return createNonWorkdaySummary()
+  }
+
   try {
     const raw = await fetchAttendance()
     const data = normalizeAttendanceData(raw)
@@ -227,6 +233,40 @@ async function getAttendanceSummary() {
       ok: false,
       error: String(e && e.message ? e.message : e)
     }
+  }
+}
+
+/**
+ * 非工作日统一状态：不展示考勤明细，也不请求考勤接口。
+ */
+function createNonWorkdaySummary() {
+  return {
+    ok: true,
+    isNonWorkday: true,
+    date: formatDateKey(now),
+    personName: "",
+    orgName: "",
+    shiftName: "",
+    hasClockIn: false,
+    hasOutRecord: false,
+    offWorkWithPunch: false,
+    inTime: null,
+    clockOutTime: null,
+    latestOutTime: null,
+    inStatusDesc: "",
+    outStatusDesc: "",
+    punchWorkMs: null,
+    liveWorkMs: 0,
+    currentWorkMs: 0,
+    latestOutWorkMs: 0,
+    targetTime: null,
+    targetReached: false,
+    punchTargetReached: false,
+    liveTargetReached: false,
+    remainingMinutes: 0,
+    remainingFromPunch: false,
+    countdownText: "休息日",
+    snapshotUpdatedAt: null
   }
 }
 
@@ -634,6 +674,8 @@ function judgeAttendance(data) {
  */
 async function handleLeaveCompany() {
   const data = await getAttendanceSummary()
+  if (data.isNonWorkday) return
+
   const key = "leave-check-" + formatDateKey(now)
 
   if (!data.ok) {
@@ -847,6 +889,7 @@ async function createWidget(data) {
 }
 
 function getLockScreenDetail(data) {
+  if (data && data.isNonWorkday) return "今天休息 · 无需打卡"
   if (!data || !data.ok) return "请运行更新打卡快捷指令"
   if (!data.hasClockIn) return "暂无上班记录"
 
@@ -863,6 +906,7 @@ function getLockScreenDetail(data) {
 }
 
 function getLockScreenShortText(data) {
+  if (data && data.isNonWorkday) return "休息"
   if (!data || !data.ok) return "更新"
   if (!data.hasClockIn) return "未打卡"
 
@@ -875,6 +919,7 @@ function getLockScreenShortText(data) {
 }
 
 function getLockScreenInlineText(data) {
+  if (data && data.isNonWorkday) return "今天休息 · 无需打卡"
   if (!data || !data.ok) return "打卡数据需更新"
   if (!data.hasClockIn) return "今日未打卡"
 
@@ -891,6 +936,14 @@ function getLockScreenInlineText(data) {
 }
 
 function renderAccessoryRectangular(widget, data) {
+  if (data && data.isNonWorkday) {
+    const title = widget.addText("今天休息")
+    title.font = Font.boldSystemFont(13)
+    const detail = widget.addText("无需查看考勤")
+    detail.font = Font.systemFont(10)
+    return
+  }
+
   if (!data || !data.ok) {
     const title = widget.addText(data && data.cacheMiss ? "打卡数据需更新" : "打卡数据不可用")
     title.font = Font.boldSystemFont(12)
@@ -941,6 +994,11 @@ function renderAccessoryInline(widget, data) {
  * @date 2026/07/23 10:26
  */
 async function renderSmallWidget(widget, data) {
+  if (data && data.isNonWorkday) {
+    renderRestDayWidget(widget, "small")
+    return
+  }
+
   addCompactHeader(widget, "打卡")
 
   widget.addSpacer(7)
@@ -1012,6 +1070,11 @@ async function renderSmallWidget(widget, data) {
  * @date 2026/07/23 10:26
  */
 async function renderMediumWidget(widget, data) {
+  if (data && data.isNonWorkday) {
+    renderRestDayWidget(widget, "medium")
+    return
+  }
+
   addCompactHeader(widget, "今日打卡")
 
   widget.addSpacer(6)
@@ -1126,6 +1189,11 @@ async function renderMediumWidget(widget, data) {
  * @date 2026/07/23 10:26
  */
 async function renderLargeWidget(widget, data) {
+  if (data && data.isNonWorkday) {
+    renderRestDayWidget(widget, "large")
+    return
+  }
+
   addCompactHeader(widget, "今日打卡")
 
   widget.addSpacer(10)
@@ -1210,6 +1278,29 @@ async function renderLargeWidget(widget, data) {
   footer.textColor = new Color("#6B7280")
 }
 
+
+/**
+ * 非工作日简洁显示，不渲染上下班卡、工时或倒计时。
+ */
+function renderRestDayWidget(widget, family) {
+  const isSmall = family === "small"
+  const isLarge = family === "large"
+
+  widget.addSpacer()
+  const title = widget.addText("今天休息")
+  title.font = Font.boldSystemFont(isLarge ? 24 : isSmall ? 18 : 22)
+  title.textColor = new Color("#9CA3AF")
+  title.centerAlignText()
+  title.lineLimit = 1
+
+  widget.addSpacer(4)
+  const subtitle = widget.addText("无需查看考勤")
+  subtitle.font = Font.systemFont(isSmall ? 10 : 12)
+  subtitle.textColor = new Color("#6B7280")
+  subtitle.centerAlignText()
+  subtitle.lineLimit = 1
+  widget.addSpacer()
+}
 
 // ==================== 小组件公共 UI ====================
 
@@ -1492,6 +1583,15 @@ function addProgressBar(parent, data, width) {
  * @date 2026/07/24 09:02
  */
 function getStatusMeta(data) {
+  if (data && data.isNonWorkday) {
+    return {
+      mainText: "今天休息",
+      shortText: "休息",
+      subText: "无需查看考勤",
+      color: "#9CA3AF"
+    }
+  }
+
   if (!data || !data.ok) {
     return {
       mainText: "加载失败",
@@ -1575,7 +1675,9 @@ async function handleDebug() {
 
   let msg = ""
 
-  if (!data.ok) {
+  if (data.isNonWorkday) {
+    msg = "今天是非工作日，无需查看考勤。"
+  } else if (!data.ok) {
     msg = data.error
   } else {
     const judgment = data.judgment || judgeAttendance(data)
