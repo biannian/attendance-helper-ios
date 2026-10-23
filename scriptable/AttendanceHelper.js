@@ -503,40 +503,25 @@ function normalizeAttendanceData(raw) {
   const punchTargetReached = punchWorkMs != null && punchWorkMs >= targetMs
   const targetReached = punchTargetReached
 
-  /**
-   * 只要有有效下班卡，就立即冻结倒计时，按最终打卡工时计算剩余时间。
-   * 不再等到当前时间或下班卡时间达到上班时间 + 9 小时。
-   */
+  // 正式工时核验仍使用真实下班卡；倒计时则只看当前时间。
+  // 达到上班时间 + 9 小时后，剩余分钟归零，不再显示“还差 0 分钟”。
   const offWorkWithPunch = !!(hasOutRecord && punchWorkMs != null)
 
   let remainingMinutes = 0
-  let remainingFromPunch = false
+  const remainingFromPunch = false
 
-  if (hasClockIn && targetTime) {
-    if (offWorkWithPunch) {
-      remainingFromPunch = true
-      remainingMinutes = Math.max(
-          0,
-          Math.ceil((targetMs - punchWorkMs) / 1000 / 60)
-      )
-    } else if (now.getTime() < targetTime.getTime()) {
-      // 尚未打下班卡：每次小组件本地刷新时根据当前时间重新计算。
-      remainingMinutes = Math.max(
-          0,
-          Math.ceil((targetTime.getTime() - now.getTime()) / 1000 / 60)
-      )
-    }
+  if (hasClockIn && targetTime && now.getTime() < targetTime.getTime()) {
+    remainingMinutes = Math.max(
+        0,
+        Math.ceil((targetTime.getTime() - now.getTime()) / 1000 / 60)
+    )
   }
-
-
 
   const countdownText = !hasClockIn
       ? "--"
-      : remainingMinutes <= 0
-          ? "已达标"
-          : remainingFromPunch
-              ? formatCountdown(targetMs - punchWorkMs)
-              : formatCountdown(targetTime.getTime() - now.getTime())
+      : now.getTime() >= targetTime.getTime()
+          ? "已到可下班时间"
+          : formatCountdown(targetTime.getTime() - now.getTime())
 
   const summary = {
     ok: true,
@@ -646,7 +631,9 @@ function judgeAttendance(data) {
       missingClockOut: false,
       hoursOk: false,
       label: "工时不足",
-      title: `还差 ${data.remainingMinutes} 分钟`,
+      title: data.remainingMinutes > 0
+          ? `还差 ${data.remainingMinutes} 分钟`
+          : "工时不足",
       body: brief
     }
   }
@@ -897,7 +884,16 @@ function getLockScreenDetail(data) {
     if (data.punchTargetReached) {
       return "下班 " + formatTime(data.clockOutTime || data.latestOutTime) + " · 工时达标"
     }
-    return "已下班 · 还差 " + data.remainingMinutes + " 分钟"
+    if (data.remainingMinutes > 0) {
+      return "已下班 · 距 9 小时点还差 " + data.remainingMinutes + " 分钟"
+    }
+    return "工时不足 · 实际工时未满 9 小时"
+  }
+
+  if (data.hasOutRecord) {
+    return data.remainingMinutes > 0
+        ? "已下班 · 工时待核验 · 还差 " + data.remainingMinutes + " 分钟"
+        : "已下班 · 请核验实际工时"
   }
 
   if (data.liveTargetReached) return "已满 9 小时 · 请检查下班卡"
@@ -911,7 +907,12 @@ function getLockScreenShortText(data) {
   if (!data.hasClockIn) return "未打卡"
 
   if (data.offWorkWithPunch) {
-    return data.punchTargetReached ? "正常" : String(data.remainingMinutes) + "分"
+    if (data.punchTargetReached) return "正常"
+    return data.remainingMinutes > 0 ? String(data.remainingMinutes) + "分" : "不足"
+  }
+
+  if (data.hasOutRecord) {
+    return data.remainingMinutes > 0 ? String(data.remainingMinutes) + "分" : "核验"
   }
 
   if (data.liveTargetReached) return "漏卡"
@@ -924,9 +925,18 @@ function getLockScreenInlineText(data) {
   if (!data.hasClockIn) return "今日未打卡"
 
   if (data.offWorkWithPunch) {
-    return data.punchTargetReached
-        ? "打卡正常 · 下班 " + formatTime(data.clockOutTime || data.latestOutTime)
-        : "已下班，还差 " + data.remainingMinutes + " 分钟"
+    if (data.punchTargetReached) {
+      return "打卡正常 · 下班 " + formatTime(data.clockOutTime || data.latestOutTime)
+    }
+    return data.remainingMinutes > 0
+        ? "已下班 · 距 9 小时点还差 " + data.remainingMinutes + " 分钟"
+        : "工时不足 · 实际工时未满 9 小时"
+  }
+
+  if (data.hasOutRecord) {
+    return data.remainingMinutes > 0
+        ? "已下班 · 工时待核验 · 还差 " + data.remainingMinutes + " 分钟"
+        : "已下班 · 请核验实际工时"
   }
 
   if (data.liveTargetReached) return "已满 9 小时，请检查下班卡"
@@ -1573,9 +1583,8 @@ function addProgressBar(parent, data, width) {
 /**
  * 根据考勤判定生成小组件状态文案与颜色
  *
- * 「还差多少分钟」：
- * - 默认按当前时间倒计时
- * - 已下班且已打下班卡时，改按打卡工时差额
+ * 「还差多少分钟」始终按当前时间与目标时间计算；
+ * 达到目标时间后不再显示剩余分钟。正式考勤合法性仍按实际打卡工时判断。
  *
  * @param {object} data 打卡摘要
  * @return {object} 主文案 / 短文案 / 副文案 / 颜色
@@ -1610,7 +1619,7 @@ function getStatusMeta(data) {
     }
   }
 
-  // 已下班且已打下班卡：按打卡工时展示结果
+  // 有下班卡时：实际工时只用于合法性判断；剩余时间仍按当前时间计算。
   if (data.offWorkWithPunch) {
     if (data.punchTargetReached) {
       return {
@@ -1622,11 +1631,32 @@ function getStatusMeta(data) {
     }
 
     const remain = data.remainingMinutes || 0
+    if (remain > 0) {
+      return {
+        mainText: `还差 ${remain} 分钟`,
+        shortText: `${remain} 分钟`,
+        subText: `下班 ${formatTime(data.clockOutTime || data.latestOutTime)}｜倒计时按当前时间`,
+        color: "#F87171"
+      }
+    }
+
     return {
-      mainText: `还差 ${remain} 分钟`,
-      shortText: `${remain} 分钟`,
-      subText: `下班 ${formatTime(data.clockOutTime || data.latestOutTime)}｜按打卡工时`,
+      mainText: "工时不足",
+      shortText: "不足",
+      subText: `下班 ${formatTime(data.clockOutTime || data.latestOutTime)}｜实际工时未满 9 小时`,
       color: "#F87171"
+    }
+  }
+
+  if (data.hasOutRecord) {
+    const remain = data.remainingMinutes || 0
+    return {
+      mainText: "工时待核验",
+      shortText: "待核验",
+      subText: remain > 0
+          ? `距 9 小时点还差 ${remain} 分钟`
+          : "请核验实际工时",
+      color: "#FBBF24"
     }
   }
 
