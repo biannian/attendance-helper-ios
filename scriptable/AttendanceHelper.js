@@ -57,8 +57,11 @@ const CONFIG = {
   // 提前多少分钟提醒快满 9 小时
   NEAR_MINUTES: 5,
 
-  // 小组件建议刷新间隔，iOS 不保证一定按时刷新
+  // 小组件本地倒计时的建议刷新间隔；小组件执行时只读缓存，不请求考勤接口
   WIDGET_REFRESH_MINUTES: 5,
+
+  // 最近一次成功获取的标准化考勤快照
+  ATTENDANCE_CACHE_KEY: "attendance-summary-snapshot-v1",
 
   // 接口固定参数
   ID: "myStatic",
@@ -87,7 +90,8 @@ const mode = String(
 // ==================== 主入口 ====================
 
 if (config.runsInWidget) {
-  const data = await getAttendanceSummary()
+  // 小组件只读取最近一次触发时保存的快照；不在渲染时轮询考勤接口
+  const data = loadCachedAttendanceSummary()
   const widget = await createWidget(data)
   Script.setWidget(widget)
   Script.complete()
@@ -210,7 +214,14 @@ async function fetchAttendance() {
 async function getAttendanceSummary() {
   try {
     const raw = await fetchAttendance()
-    return normalizeAttendanceData(raw)
+    const data = normalizeAttendanceData(raw)
+
+    if (data.ok) {
+      data.snapshotUpdatedAt = new Date().toISOString()
+      saveAttendanceSnapshot(data)
+    }
+
+    return data
   } catch (e) {
     return {
       ok: false,
@@ -219,6 +230,98 @@ async function getAttendanceSummary() {
   }
 }
 
+/**
+ * 只保存小组件展示与倒计时所需字段，不保存完整原始考勤响应。
+ */
+function saveAttendanceSnapshot(data) {
+  if (!data || !data.ok) return
+
+  const snapshot = {
+    savedAt: data.snapshotUpdatedAt || new Date().toISOString(),
+    date: data.date || formatDateKey(now),
+    personName: data.personName || "",
+    orgName: data.orgName || "",
+    shiftName: data.shiftName || "",
+    inTime: data.inTime ? data.inTime.toISOString() : null,
+    clockOutTime: data.clockOutTime ? data.clockOutTime.toISOString() : null,
+    inStatusDesc: data.inStatusDesc || "",
+    outStatusDesc: data.outStatusDesc || "",
+    punchWorkMs: data.punchWorkMs != null ? Number(data.punchWorkMs) : null
+  }
+
+  try {
+    Keychain.set(CONFIG.ATTENDANCE_CACHE_KEY, JSON.stringify(snapshot))
+  } catch (e) {
+    // 缓存失败不应影响本次真实考勤核验结果
+  }
+}
+
+/**
+ * 小组件只读取本地快照，并按当前时间重新计算倒计时。
+ * 只有快捷指令或手动运行模式调用 getAttendanceSummary() 时才会请求接口。
+ */
+function loadCachedAttendanceSummary() {
+  try {
+    if (!Keychain.contains(CONFIG.ATTENDANCE_CACHE_KEY)) {
+      return {
+        ok: false,
+        cacheMiss: true,
+        error: "暂无缓存，请运行“更新打卡小组件”获取最新数据"
+      }
+    }
+
+    const snapshot = JSON.parse(Keychain.get(CONFIG.ATTENDANCE_CACHE_KEY))
+    if (!snapshot || !snapshot.date) {
+      return {
+        ok: false,
+        cacheMiss: true,
+        error: "本地缓存无效，请运行“更新打卡小组件”"
+      }
+    }
+
+    const snapshotDate = String(snapshot.date).replace(/\\//g, "-").slice(0, 10)
+    if (snapshotDate !== formatDateKey(now)) {
+      return {
+        ok: false,
+        cacheMiss: true,
+        error: "缓存日期为 " + snapshot.date + "，请触发一次更新"
+      }
+    }
+
+    // 通过现有解析器重建摘要，保证倒计时按本次运行时刻重新计算。
+    const raw = {
+      date: snapshot.date,
+      clockInTime: snapshot.inTime || null,
+      clockOffTime: snapshot.clockOutTime || null,
+      inStatusDesc: snapshot.inStatusDesc || "",
+      outStatusDesc: snapshot.outStatusDesc || ""
+    }
+
+    if (snapshot.punchWorkMs != null) {
+      // 显式标记为毫秒，避免短工时被启发式解析成小时。
+      raw.workDuration = String(Number(snapshot.punchWorkMs)) + "ms"
+    }
+
+    const data = normalizeAttendanceData(raw)
+    if (data.ok) {
+      data.snapshotUpdatedAt = snapshot.savedAt || null
+      data.isCached = true
+    }
+    return data
+  } catch (e) {
+    return {
+      ok: false,
+      cacheMiss: true,
+      error: "读取本地缓存失败：" + String(e && e.message ? e.message : e)
+    }
+  }
+}
+
+function getSnapshotUpdatedText(data) {
+  if (!data || !data.snapshotUpdatedAt) return "--"
+  const date = new Date(data.snapshotUpdatedAt)
+  return isNaN(date.getTime()) ? "--" : formatTime(date)
+}
 
 // ==================== 解析接口数据 ====================
 
@@ -327,19 +430,22 @@ function normalizeAttendanceData(raw) {
 
   /** 基于上下班卡的正式工时（毫秒）；无下班卡则为 null */
   let punchWorkMs = null
-  /** 无下班卡时的实时估算工时，仅用于倒计时展示 */
+  /** 未打下班卡时按当前时间估算；已打下班卡时冻结在打卡时间 */
   let liveWorkMs = 0
   let targetTime = null
 
   if (hasClockIn) {
     targetTime = new Date(inTime.getTime() + targetMs)
-    liveWorkMs = Math.max(0, now.getTime() - inTime.getTime())
+
+    // 未下班时动态累计；有下班卡后固定使用实际下班时间，不再继续累加。
+    const workEndTime = hasOutRecord ? clockOutTime : now
+    liveWorkMs = Math.max(0, workEndTime.getTime() - inTime.getTime())
 
     if (hasOutRecord) {
-      // 正式工时：下班卡 - 上班卡
+      // 正式工时：默认使用下班卡 - 上班卡
       punchWorkMs = Math.max(0, clockOutTime.getTime() - inTime.getTime())
 
-      // 若接口另有工时字段且能解析，优先用接口值
+      // 若接口提供有效工时字段，优先采用接口值。
       const apiMs = parseDurationToMs(apiWorkRaw)
       if (apiMs != null && apiMs >= 0) {
         punchWorkMs = apiMs
@@ -347,56 +453,42 @@ function normalizeAttendanceData(raw) {
     }
   }
 
-  // 展示用工时：有下班卡用打卡工时，否则用实时估算
+  // 展示用工时：有下班卡使用正式工时，否则使用实时估算。
   const currentWorkMs = punchWorkMs != null ? punchWorkMs : liveWorkMs
-  // 兼容旧字段名
   const latestOutWorkMs = punchWorkMs != null ? punchWorkMs : 0
   const latestOutTime = clockOutTime
 
-  // 实时是否已满（近满提醒 / 倒计时用）
-  const liveTargetReached = hasClockIn && liveWorkMs >= targetMs
-  // 考勤是否达标：必须以打卡工时为准
+  // 实时达标只适用于尚未打下班卡的情况。
+  const liveTargetReached = hasClockIn && !hasOutRecord && liveWorkMs >= targetMs
   const punchTargetReached = punchWorkMs != null && punchWorkMs >= targetMs
   const targetReached = punchTargetReached
 
   /**
-   * 是否已下班且已打下班卡：
-   * 此时「还差多少分钟」改按打卡工时算，不再跟当前时间走。
-   * 条件：有下班卡，且（当前已过可下班时间，或下班卡时间已到/超过可下班时间）
+   * 只要有有效下班卡，就立即冻结倒计时，按最终打卡工时计算剩余时间。
+   * 不再等到当前时间或下班卡时间达到上班时间 + 9 小时。
    */
-  const offWorkWithPunch = !!(
-      hasOutRecord &&
-      targetTime &&
-      punchWorkMs != null &&
-      (
-          now.getTime() >= targetTime.getTime() ||
-          clockOutTime.getTime() >= targetTime.getTime()
-      )
-  )
+  const offWorkWithPunch = !!(hasOutRecord && punchWorkMs != null)
 
-  // 还差多少分钟
   let remainingMinutes = 0
-  /** 剩余分钟是否来自下班卡工时（否则来自当前时间） */
   let remainingFromPunch = false
 
   if (hasClockIn && targetTime) {
     if (offWorkWithPunch) {
-      // 已下班且已打下班卡：按打卡工时差额
       remainingFromPunch = true
-      if (punchWorkMs < targetMs) {
-        remainingMinutes = Math.max(
-            0,
-            Math.ceil((targetMs - punchWorkMs) / 1000 / 60)
-        )
-      }
+      remainingMinutes = Math.max(
+          0,
+          Math.ceil((targetMs - punchWorkMs) / 1000 / 60)
+      )
     } else if (now.getTime() < targetTime.getTime()) {
-      // 尚未下班（或未打下班卡）：按当前时间倒计时
+      // 尚未打下班卡：每次小组件本地刷新时根据当前时间重新计算。
       remainingMinutes = Math.max(
           0,
           Math.ceil((targetTime.getTime() - now.getTime()) / 1000 / 60)
       )
     }
   }
+
+
 
   const countdownText = !hasClockIn
       ? "--"
@@ -542,16 +634,30 @@ function judgeAttendance(data) {
  */
 async function handleLeaveCompany() {
   const data = await getAttendanceSummary()
+  const key = "leave-check-" + formatDateKey(now)
 
   if (!data.ok) {
-    await notify("打卡检查失败", compactError(data.error))
+    const errorText = compactError(data.error)
+    await notifyIfStateChanged(
+        key,
+        "ERROR|" + errorText,
+        "打卡检查失败",
+        errorText
+    )
     return
   }
 
   const judgment = data.judgment || judgeAttendance(data)
-  await notify(judgment.title, judgment.body)
-}
+  const fingerprint = JSON.stringify({
+    code: judgment.code,
+    hasClockIn: !!data.hasClockIn,
+    hasOutRecord: !!data.hasOutRecord,
+    clockOutTime: data.clockOutTime ? data.clockOutTime.getTime() : null,
+    punchWorkMs: data.punchWorkMs == null ? null : Math.round(data.punchWorkMs)
+  })
 
+  await notifyIfStateChanged(key, fingerprint, judgment.title, judgment.body)
+}
 
 // ==================== 功能 2：预约快满 9 小时提醒 ====================
 
@@ -709,11 +815,20 @@ async function handleNearNineHours() {
  */
 async function createWidget(data) {
   const family = config.widgetFamily || "medium"
+  const isAccessory = family.indexOf("accessory") === 0
 
   const widget = new ListWidget()
-  widget.backgroundColor = new Color("#111827")
+  if (!isAccessory) {
+    widget.backgroundColor = new Color("#111827")
+  }
 
-  if (family === "small") {
+  if (family === "accessoryRectangular") {
+    renderAccessoryRectangular(widget, data)
+  } else if (family === "accessoryCircular") {
+    renderAccessoryCircular(widget, data)
+  } else if (family === "accessoryInline") {
+    renderAccessoryInline(widget, data)
+  } else if (family === "small") {
     widget.setPadding(10, 10, 10, 10)
     await renderSmallWidget(widget, data)
   } else if (family === "large") {
@@ -725,11 +840,95 @@ async function createWidget(data) {
   }
 
   widget.url = getWidgetUrl()
+  // 此刷新时间只影响本地倒计时重算；小组件运行时不会请求考勤接口。
   widget.refreshAfterDate = getNextWidgetRefreshDate()
 
   return widget
 }
 
+function getLockScreenDetail(data) {
+  if (!data || !data.ok) return "请运行更新打卡快捷指令"
+  if (!data.hasClockIn) return "暂无上班记录"
+
+  if (data.offWorkWithPunch) {
+    if (data.punchTargetReached) {
+      return "下班 " + formatTime(data.clockOutTime || data.latestOutTime) + " · 工时达标"
+    }
+    return "已下班 · 还差 " + data.remainingMinutes + " 分钟"
+  }
+
+  if (data.liveTargetReached) return "已满 9 小时 · 请检查下班卡"
+  if (data.remainingMinutes > 0) return "还差 " + data.remainingMinutes + " 分钟可下班"
+  return "已满 9 小时 · 尚无下班卡"
+}
+
+function getLockScreenShortText(data) {
+  if (!data || !data.ok) return "更新"
+  if (!data.hasClockIn) return "未打卡"
+
+  if (data.offWorkWithPunch) {
+    return data.punchTargetReached ? "正常" : String(data.remainingMinutes) + "分"
+  }
+
+  if (data.liveTargetReached) return "漏卡"
+  return data.remainingMinutes > 0 ? String(data.remainingMinutes) + "分" : "可下班"
+}
+
+function getLockScreenInlineText(data) {
+  if (!data || !data.ok) return "打卡数据需更新"
+  if (!data.hasClockIn) return "今日未打卡"
+
+  if (data.offWorkWithPunch) {
+    return data.punchTargetReached
+        ? "打卡正常 · 下班 " + formatTime(data.clockOutTime || data.latestOutTime)
+        : "已下班，还差 " + data.remainingMinutes + " 分钟"
+  }
+
+  if (data.liveTargetReached) return "已满 9 小时，请检查下班卡"
+  return data.remainingMinutes > 0
+      ? "还差 " + data.remainingMinutes + " 分钟可下班"
+      : "已满 9 小时"
+}
+
+function renderAccessoryRectangular(widget, data) {
+  if (!data || !data.ok) {
+    const title = widget.addText(data && data.cacheMiss ? "打卡数据需更新" : "打卡数据不可用")
+    title.font = Font.boldSystemFont(12)
+    const detail = widget.addText(data && data.error ? data.error : "运行更新打卡快捷指令")
+    detail.font = Font.systemFont(10)
+    detail.lineLimit = 2
+    return
+  }
+
+  const meta = getStatusMeta(data)
+  const title = widget.addText(meta.mainText)
+  title.font = Font.boldSystemFont(13)
+  title.lineLimit = 1
+  title.minimumScaleFactor = 0.7
+
+  const detail = widget.addText(getLockScreenDetail(data))
+  detail.font = Font.systemFont(10)
+  detail.lineLimit = 1
+  detail.minimumScaleFactor = 0.7
+
+  const updated = widget.addText("数据更新 " + getSnapshotUpdatedText(data))
+  updated.font = Font.systemFont(9)
+  updated.lineLimit = 1
+}
+
+function renderAccessoryCircular(widget, data) {
+  const text = widget.addText(getLockScreenShortText(data))
+  text.font = Font.boldSystemFont(12)
+  text.centerAlignText()
+  text.minimumScaleFactor = 0.6
+}
+
+function renderAccessoryInline(widget, data) {
+  const text = widget.addText(getLockScreenInlineText(data))
+  text.font = Font.systemFont(12)
+  text.lineLimit = 1
+  text.minimumScaleFactor = 0.65
+}
 
 // ==================== 小号组件 ====================
 
@@ -747,7 +946,7 @@ async function renderSmallWidget(widget, data) {
   widget.addSpacer(7)
 
   if (!data.ok) {
-    const t = widget.addText("加载失败")
+    const t = widget.addText(data.cacheMiss ? "需要更新" : "加载失败")
     t.font = Font.boldSystemFont(15)
     t.textColor = new Color("#FCA5A5")
     t.lineLimit = 1
@@ -795,7 +994,7 @@ async function renderSmallWidget(widget, data) {
 
   widget.addSpacer()
 
-  const footer = widget.addText(formatTime(now))
+  const footer = widget.addText("更新 " + getSnapshotUpdatedText(data))
   footer.font = Font.systemFont(9)
   footer.textColor = new Color("#6B7280")
   footer.lineLimit = 1
@@ -1006,7 +1205,7 @@ async function renderLargeWidget(widget, data) {
 
   widget.addSpacer()
 
-  const footer = widget.addText("更新：" + formatTime(now))
+  const footer = widget.addText("数据更新：" + getSnapshotUpdatedText(data))
   footer.font = Font.systemFont(10)
   footer.textColor = new Color("#6B7280")
 }
@@ -1049,7 +1248,7 @@ function addCompactHeader(widget, titleText) {
  * @date 2026/07/23 10:26
  */
 function renderErrorBlock(widget, data) {
-  const error = widget.addText("接口请求失败")
+  const error = widget.addText(data.cacheMiss ? "缓存需要更新" : "接口请求失败")
   error.font = Font.boldSystemFont(15)
   error.textColor = new Color("#FCA5A5")
   error.lineLimit = 1
@@ -1570,6 +1769,12 @@ function parseDurationToMs(value) {
     return null
   }
 
+  // 明确标记的毫秒值（本地缓存使用）
+  const msMatch = s.match(/^(\\d+(?:\\.\\d+)?)\\s*ms$/i)
+  if (msMatch) {
+    return Number(msMatch[1])
+  }
+
   // 9小时30分钟 / 9时30分
   let m = s.match(/(\d+)\s*小时\s*(\d+)\s*分/)
   if (m) {
@@ -1916,7 +2121,7 @@ function getWidgetUrl() {
 }
 
 /**
- * 计算下次建议刷新时间
+ * 计算下次本地倒计时建议刷新时间（不会请求考勤接口）
  *
  * @return {Date} 刷新时间
  * @author Kai
@@ -1954,6 +2159,30 @@ function twoLineBody(s, maxCharsPerLine = 60) {
   let rest = single.slice(idx).trim()
   if (rest.length > maxCharsPerLine) rest = rest.slice(0, maxCharsPerLine - 1) + "…"
   return first + "\n" + rest
+}
+
+/**
+ * 仅在通知状态发生变化时发送，避免同一次离开触发重复提醒。
+ * fingerprint 不包含动态倒计时，因此倒计时变化不会造成通知刷屏。
+ */
+async function notifyIfStateChanged(key, fingerprint, title, body) {
+  const value = String(fingerprint || "")
+  try {
+    if (Keychain.contains(key) && Keychain.get(key) === value) {
+      return false
+    }
+  } catch (e) {
+    // Keychain 读取失败时仍尽力发送通知，不阻断打卡检查。
+  }
+
+  await notify(title, body)
+
+  try {
+    Keychain.set(key, value)
+  } catch (e) {
+    // 通知已发出；缓存去重状态失败不应改变核验结果。
+  }
+  return true
 }
 
 /**
