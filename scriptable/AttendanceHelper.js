@@ -279,7 +279,8 @@ function loadCachedAttendanceSummary() {
       }
     }
 
-    const snapshotDate = String(snapshot.date).replace(/\\//g, "-").slice(0, 10)
+    // @author Kai @date 2026/10/23 15:10：兼容接口斜杠日期，避免缓存读取因错误正则而失败。
+    const snapshotDate = String(snapshot.date).split("/").join("-").slice(0, 10)
     if (snapshotDate !== formatDateKey(now)) {
       return {
         ok: false,
