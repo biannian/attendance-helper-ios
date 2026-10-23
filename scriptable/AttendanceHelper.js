@@ -1302,10 +1302,6 @@ function renderRestDayWidget(widget, family) {
   widget.addSpacer()
 }
 
-/**
- * 非工作日简洁显示，不渲染上下班卡、工时或倒计时。
- */
- 
 // ==================== 小组件公共 UI ====================
 
 /**
