@@ -878,6 +878,26 @@ function getLockScreenInlineText(data) {
 }
 
 /**
+ * 创建锁屏倒计时或考勤状态，剩余时间交由系统日期元素动态更新。
+ * @param {ListWidget} widget 锁屏组件
+ * @param {object} data 考勤摘要及可下班时间
+ * @param {string} fallbackText 无倒计时时的考勤状态
+ * @return {WidgetDate|WidgetText} 可统一设置字体的展示元素
+ * @author Kai
+ * @date 2026/10/23 15:19
+ */
+function addLockScreenCountdown(widget, data, fallbackText) {
+    // 只在可下班时间尚未到达时启用计时；刷新后恢复普通考勤状态。
+    if (data && data.ok && data.hasClockIn && data.targetTime &&
+        data.targetTime.getTime() > now.getTime()) {
+        const timer = widget.addDate(data.targetTime)
+        timer.applyTimerStyle()
+        return timer
+    }
+    return widget.addText(fallbackText)
+}
+
+/**
  * 渲染锁屏矩形考勤，压缩为状态、打卡时间和数据更新时间。
  * @param {ListWidget} widget 锁屏组件
  * @param {object} data 考勤摘要
@@ -886,8 +906,8 @@ function getLockScreenInlineText(data) {
  */
 function renderAccessoryRectangular(widget, data) {
     widget.setPadding(0, 0, 0, 0)
-    // 锁屏宽度有限，状态只展示一次，第二行保留关键时间。
-    const title = widget.addText(getLockScreenInlineText(data))
+    // 系统日期元素动态显示剩余时长，第二行保留关键打卡时间。
+    const title = addLockScreenCountdown(widget, data, getLockScreenInlineText(data))
     title.font = Font.boldSystemFont(13)
     title.lineLimit = 1
     title.minimumScaleFactor = 0.65
@@ -916,8 +936,8 @@ function renderAccessoryRectangular(widget, data) {
 function renderAccessoryCircular(widget, data) {
     widget.setPadding(0, 0, 0, 0)
     widget.addSpacer()
-    // 圆形空间只保留状态或剩余分钟，避免多行详情被裁切。
-    const text = widget.addText(getLockScreenShortText(data))
+    // 圆形空间仅显示系统倒计时或状态，避免详情被裁切。
+    const text = addLockScreenCountdown(widget, data, getLockScreenShortText(data))
     text.font = Font.boldSystemFont(15)
     text.centerAlignText()
     text.lineLimit = 1
@@ -933,8 +953,8 @@ function renderAccessoryCircular(widget, data) {
  * @date 2026/10/23 15:00
  */
 function renderAccessoryInline(widget, data) {
-    // 行内组件仅容纳一句状态，字体由锁屏系统参与呈现。
-    const text = widget.addText(getLockScreenInlineText(data))
+    // 行内只保留一个日期或文字元素，避免被系统过滤。
+    const text = addLockScreenCountdown(widget, data, getLockScreenInlineText(data))
     text.font = Font.systemFont(12)
     text.lineLimit = 1
     text.minimumScaleFactor = 0.65
