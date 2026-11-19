@@ -12,7 +12,8 @@
 // ==================================================
 //
 // 支持模式：
-// widget     桌面小组件 / 手动预览
+// widget     桌面小组件 / 手动预览。组件刷新会拉新数据，失败时用今天的快照
+// refresh    快捷指令点击刷新：拉最新数据、回写快照，不弹预览
 // leave      离开公司时检查工时是否满 9 小时
 // schedule9  工作日根据上班时间预约“快满 9 小时”提醒
 // near9      工作日下午定时检查是否快满 / 已满 9 小时
@@ -20,7 +21,7 @@
 // update     从 GitHub 下载最新脚本并覆盖当前文件
 //
 // 快捷指令 / 小组件参数：
-// widget / leave / schedule9 / near9 / debug / update
+// widget / refresh / leave / schedule9 / near9 / debug / update
 //
 // Scriptable 脚本建议命名：
 // AttendanceHelper
@@ -58,7 +59,8 @@ const CONFIG = {
   // 公司名称，用于通知文案
   COMPANY_NAME: "iGroup",
 
-  // 点击小组件后运行的快捷指令名称
+  // 点击小组件后运行的快捷指令名称。
+  // 快捷指令只放 Scriptable「刷新所有小组件」，并关闭「显示运行时」
   SHORTCUT_NAME: "更新打卡小组件",
 
   // 满多少小时算达标
@@ -67,8 +69,20 @@ const CONFIG = {
   // 提前多少分钟提醒快满 9 小时
   NEAR_MINUTES: 5,
 
-  // 小组件建议刷新间隔，iOS 不保证一定按时刷新
+  // 小组件建议刷新间隔。倒计时中会缩短到 1 分钟。iOS 不保证一定按时刷新
   WIDGET_REFRESH_MINUTES: 5,
+
+  // 最近一次成功获取的标准化考勤快照。锁屏和桌面组件只读这份快照
+  ATTENDANCE_CACHE_KEY: "attendance-summary-snapshot-v1",
+
+  // 中国节假日接口。休息日隐藏小组件内容，调休补班仍显示
+  HOLIDAY_API_BASE: "https://timor.tech/api/holiday/info",
+
+  // 节假日结果缓存小时数
+  HOLIDAY_CACHE_HOURS: 12,
+
+  // 节假日接口失败时退回周一至周五
+  HOLIDAY_FALLBACK_TO_WEEKDAY: true,
 
   // 接口固定参数
   ID: "myStatic",
@@ -142,15 +156,23 @@ const mode = String(
 // ==================== 主入口 ====================
 
 if (config.runsInWidget) {
-  const data = await getAttendanceSummary()
+  // 时间线刷新和「刷新所有小组件」都走这里，需要拉到最新打卡。
+  // 锁屏或网络失败时改用今天的快照，倒计时仍按当前时刻重算。
+  let data = await getAttendanceSummary()
+  if (!data.ok) {
+    const cached = loadCachedAttendanceSummary()
+    if (cached.ok) {
+      data = cached
+    }
+  }
   const widget = await createWidget(data)
   Script.setWidget(widget)
   Script.complete()
 } else {
-  if (mode === "widget") {
-    const data = await getAttendanceSummary()
-    const widget = await createWidget(data)
-    await widget.presentMedium()
+  const fromShortcut = isLaunchedFromShortcut()
+
+  if (mode === "widget" || mode === "refresh") {
+    await runWidgetUpdate({ presentPreview: !fromShortcut && mode !== "refresh" })
   } else if (mode === "leave") {
     await handleLeaveCompany()
   } else if (mode === "schedule9") {
@@ -166,6 +188,47 @@ if (config.runsInWidget) {
   }
 
   Script.complete()
+}
+
+
+/**
+ * 是否由快捷指令或 Siri 拉起
+ *
+ * 点击桌面小组件会打开快捷指令。这时再弹预览会离开桌面，桌面快照往往不更新。
+ *
+ * @return 是快捷指令拉起时返回 true
+ * @author Kai
+ * @date 2026/11/19 20:50
+ */
+function isLaunchedFromShortcut() {
+  if (config.runsWithSiri) {
+    return true
+  }
+
+  const shortcutParam = args.shortcutParameter
+  if (shortcutParam !== undefined && shortcutParam !== null && String(shortcutParam).length > 0) {
+    return true
+  }
+
+  return false
+}
+
+/**
+ * 拉取打卡数据、写入快照并生成小组件
+ *
+ * @param options 展示选项。presentPreview 为 true 时弹出中号预览
+ * @author Kai
+ * @date 2026/11/19 20:50
+ */
+async function runWidgetUpdate(options) {
+  const presentPreview = !!(options && options.presentPreview)
+  const data = await getAttendanceSummary()
+  const widget = await createWidget(data)
+  Script.setWidget(widget)
+
+  if (presentPreview) {
+    await widget.presentMedium()
+  }
 }
 
 
@@ -186,9 +249,7 @@ async function showMainMenu() {
   const index = await alert.presentSheet()
 
   if (index === 0) {
-    const data = await getAttendanceSummary()
-    const widget = await createWidget(data)
-    await widget.presentMedium()
+    await runWidgetUpdate({ presentPreview: true })
   } else if (index === 1) {
     await handleDebug()
   } else if (index === 2) {
@@ -505,8 +566,11 @@ function makeAuthError(json, message, statusCode) {
  */
 async function requestAttendance(token) {
   const date = formatDateKey(new Date())
+  // 时间戳避免系统把 GET 打卡结果缓存成旧的下班卡
   const url =
-      `${CONFIG.API_BASE}?date=${encodeURIComponent(date)}&ID=${encodeURIComponent(CONFIG.ID)}`
+      `${CONFIG.API_BASE}?date=${encodeURIComponent(date)}` +
+      `&ID=${encodeURIComponent(CONFIG.ID)}` +
+      `&_cb=${Date.now()}`
 
   const req = new Request(url)
   req.method = "GET"
@@ -521,7 +585,9 @@ async function requestAttendance(token) {
     "Accept": "*/*",
     "deviceid": CONFIG.DEVICE_ID,
     "versionCode": "1986",
-    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Html5Plus/1.0 (Immersed/47) uni-app"
+    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Html5Plus/1.0 (Immersed/47) uni-app",
+    "Cache-Control": "no-cache, no-store, must-revalidate",
+    "Pragma": "no-cache"
   }
 
   let text = ""
@@ -1067,13 +1133,129 @@ function aesCbcEncrypt(data, key, iv) {
 async function getAttendanceSummary() {
   try {
     const raw = await fetchAttendance()
-    return normalizeAttendanceData(raw)
+    const data = normalizeAttendanceData(raw)
+
+    if (data.ok) {
+      data.snapshotUpdatedAt = new Date().toISOString()
+      saveAttendanceSnapshot(data)
+    }
+
+    return data
   } catch (e) {
     return {
       ok: false,
       error: String(e && e.message ? e.message : e)
     }
   }
+}
+
+/**
+ * 保存小组件展示所需字段，不保存完整原始响应
+ *
+ * @param data 标准化打卡摘要
+ * @author Kai
+ * @date 2026/11/19 20:50
+ */
+function saveAttendanceSnapshot(data) {
+  if (!data || !data.ok) {
+    return
+  }
+
+  const snapshot = {
+    savedAt: data.snapshotUpdatedAt || new Date().toISOString(),
+    date: formatDateKey(now),
+    personName: data.personName || "",
+    orgName: data.orgName || "",
+    shiftName: data.shiftName || "",
+    inTime: data.inTime ? data.inTime.toISOString() : null,
+    latestOutTime: data.latestOutTime ? data.latestOutTime.toISOString() : null,
+    inStatusDesc: data.inStatusDesc || "",
+    outStatusDesc: data.outStatusDesc || ""
+  }
+
+  try {
+    Keychain.set(CONFIG.ATTENDANCE_CACHE_KEY, JSON.stringify(snapshot))
+  } catch (e) {
+    // 缓存失败不影响这次真实查询
+  }
+}
+
+/**
+ * 小组件读取今天的快照，并按本次运行时刻重算工时
+ *
+ * @return 打卡摘要。没有今天的快照时 ok 为 false
+ * @author Kai
+ * @date 2026/11/19 20:50
+ */
+function loadCachedAttendanceSummary() {
+  try {
+    if (!Keychain.contains(CONFIG.ATTENDANCE_CACHE_KEY)) {
+      return {
+        ok: false,
+        cacheMiss: true,
+        error: "暂无缓存，请运行“更新打卡小组件”"
+      }
+    }
+
+    const snapshot = JSON.parse(Keychain.get(CONFIG.ATTENDANCE_CACHE_KEY))
+    if (!snapshot || !snapshot.date) {
+      return {
+        ok: false,
+        cacheMiss: true,
+        error: "本地缓存无效，请运行“更新打卡小组件”"
+      }
+    }
+
+    const snapshotDate = String(snapshot.date).split("/").join("-").slice(0, 10)
+    if (snapshotDate !== formatDateKey(now)) {
+      return {
+        ok: false,
+        cacheMiss: true,
+        error: "缓存日期为 " + snapshot.date + "，请触发一次更新"
+      }
+    }
+
+    const raw = {
+      date: snapshotDate,
+      personName: snapshot.personName || "",
+      orgName: snapshot.orgName || "",
+      shiftName: snapshot.shiftName || "",
+      clockInTime: snapshot.inTime || null,
+      clockOffTime: snapshot.latestOutTime || null,
+      inStatusDesc: snapshot.inStatusDesc || "",
+      outStatusDesc: snapshot.outStatusDesc || ""
+    }
+
+    const data = normalizeAttendanceData(raw)
+    if (data.ok) {
+      data.snapshotUpdatedAt = snapshot.savedAt || null
+      data.isCached = true
+    }
+    return data
+  } catch (e) {
+    return {
+      ok: false,
+      cacheMiss: true,
+      error: "读取本地缓存失败：" + String(e && e.message ? e.message : e)
+    }
+  }
+}
+
+/**
+ * 快照写入时间，显示成小时和分钟
+ *
+ * @param data 打卡摘要
+ * @return 时间文本
+ * @author Kai
+ * @date 2026/11/19 20:50
+ */
+function getSnapshotUpdatedText(data) {
+  if (!data || !data.snapshotUpdatedAt) {
+    return "--"
+  }
+
+  const date = new Date(data.snapshotUpdatedAt)
+  return isNaN(date.getTime()) ? "--" : formatTime(date)
 }
 
 
@@ -1269,7 +1451,7 @@ async function handleLeaveCompany() {
 // ==================== 功能 2：预约快满 9 小时提醒 ====================
 
 async function handleScheduleNineHours() {
-  if (!isWeekday(now)) {
+  if (!(await isChinaWorkday(now))) {
     return
   }
 
@@ -1321,7 +1503,7 @@ async function handleScheduleNineHours() {
 // ==================== 功能 3：定时检查是否快满 9 小时 ====================
 
 async function handleNearNineHours() {
-  if (!isWeekday(now)) {
+  if (!(await isChinaWorkday(now))) {
     return
   }
 
@@ -1372,11 +1554,27 @@ async function handleNearNineHours() {
 
 async function createWidget(data) {
   const family = config.widgetFamily || "medium"
+  const isAccessory = family.indexOf("accessory") === 0
 
   const widget = new ListWidget()
-  widget.backgroundColor = new Color("#111827")
 
-  if (family === "small") {
+  // 休息日隐藏全部组件内容。工作日包含调休补班。
+  if (!(await isChinaWorkday(now))) {
+    widget.refreshAfterDate = getNextWidgetRefreshDate()
+    return widget
+  }
+
+  if (!isAccessory) {
+    widget.backgroundColor = new Color("#111827")
+  }
+
+  if (family === "accessoryRectangular") {
+    renderAccessoryRectangular(widget, data)
+  } else if (family === "accessoryCircular") {
+    renderAccessoryCircular(widget, data)
+  } else if (family === "accessoryInline") {
+    renderAccessoryInline(widget, data)
+  } else if (family === "small") {
     widget.setPadding(10, 10, 10, 10)
     await renderSmallWidget(widget, data)
   } else if (family === "large") {
@@ -1388,9 +1586,167 @@ async function createWidget(data) {
   }
 
   widget.url = getWidgetUrl()
-  widget.refreshAfterDate = getNextWidgetRefreshDate()
+  widget.refreshAfterDate = getNextWidgetRefreshDate(data)
 
   return widget
+}
+
+/**
+ * 锁屏矩形第二行以外的状态句
+ *
+ * @param data 打卡摘要
+ * @return 一行状态
+ * @author Kai
+ * @date 2026/11/19 20:50
+ */
+function getLockScreenInlineText(data) {
+  if (!data || !data.ok) {
+    return "打卡数据需更新"
+  }
+  if (!data.hasClockIn) {
+    return "今日未打卡"
+  }
+
+  if (data.hasOutRecord) {
+    if (data.targetReached) {
+      return "打卡正常 · 下班 " + formatTime(data.latestOutTime)
+    }
+    return data.remainingMinutes > 0
+        ? "还差 " + data.remainingMinutes + " 分钟"
+        : "工时不足"
+  }
+
+  if (data.targetReached) {
+    return "已满 9 小时，请检查下班卡"
+  }
+  return data.remainingMinutes > 0
+      ? "还差 " + data.remainingMinutes + " 分钟可下班"
+      : "已满 9 小时"
+}
+
+/**
+ * 锁屏圆形里的短状态
+ *
+ * @param data 打卡摘要
+ * @return 短文本
+ * @author Kai
+ * @date 2026/11/19 20:50
+ */
+function getLockScreenShortText(data) {
+  if (!data || !data.ok) {
+    return "更新"
+  }
+  if (!data.hasClockIn) {
+    return "未打卡"
+  }
+
+  if (data.hasOutRecord) {
+    if (data.targetReached) {
+      return "正常"
+    }
+    return data.remainingMinutes > 0 ? String(data.remainingMinutes) + "分" : "不足"
+  }
+
+  if (data.targetReached) {
+    return "漏卡"
+  }
+  return data.remainingMinutes > 0 ? String(data.remainingMinutes) + "分" : "可下班"
+}
+
+/**
+ * 还在上班且未到可下班时间时，用系统倒计时；否则用文字状态
+ *
+ * @param widget 锁屏组件
+ * @param data 打卡摘要
+ * @param fallbackText 不倒计时时显示的文字
+ * @return 日期元素或文字元素
+ * @author Kai
+ * @date 2026/11/19 20:50
+ */
+function addLockScreenCountdown(widget, data, fallbackText) {
+  if (
+      data &&
+      data.ok &&
+      data.hasClockIn &&
+      !data.hasOutRecord &&
+      data.targetTime &&
+      data.targetTime.getTime() > now.getTime()
+  ) {
+    const timer = widget.addDate(data.targetTime)
+    timer.applyTimerStyle()
+    return timer
+  }
+
+  return widget.addText(fallbackText)
+}
+
+/**
+ * 锁屏矩形：第一行倒计时或状态，第二行上下班时间，第三行快照时间
+ *
+ * @param widget 锁屏组件
+ * @param data 打卡摘要
+ * @author Kai
+ * @date 2026/11/19 20:50
+ */
+function renderAccessoryRectangular(widget, data) {
+  widget.setPadding(0, 0, 0, 0)
+
+  const title = addLockScreenCountdown(widget, data, getLockScreenInlineText(data))
+  title.font = Font.boldSystemFont(13)
+  title.lineLimit = 1
+  title.minimumScaleFactor = 0.65
+
+  widget.addSpacer(2)
+
+  const times = data && data.ok && data.hasClockIn
+      ? "上班 " + formatTime(data.inTime) + " · 满时 " + formatTime(data.targetTime)
+      : "运行更新打卡快捷指令"
+  const detail = widget.addText(times)
+  detail.font = Font.systemFont(10)
+  detail.lineLimit = 1
+  detail.minimumScaleFactor = 0.65
+
+  if (data && data.ok) {
+    const updated = widget.addText("更新 " + getSnapshotUpdatedText(data))
+    updated.font = Font.systemFont(9)
+    updated.lineLimit = 1
+  }
+}
+
+/**
+ * 锁屏圆形：只放倒计时或短状态
+ *
+ * @param widget 锁屏组件
+ * @param data 打卡摘要
+ * @author Kai
+ * @date 2026/11/19 20:50
+ */
+function renderAccessoryCircular(widget, data) {
+  widget.setPadding(0, 0, 0, 0)
+  widget.addSpacer()
+
+  const text = addLockScreenCountdown(widget, data, getLockScreenShortText(data))
+  text.font = Font.boldSystemFont(15)
+  text.centerAlignText()
+  text.lineLimit = 1
+  text.minimumScaleFactor = 0.5
+
+  widget.addSpacer()
+}
+
+/**
+ * 锁屏日期上方的单行
+ *
+ * @param widget 锁屏组件
+ * @param data 打卡摘要
+ * @author Kai
+ * @date 2026/11/19 20:50
+ */
+function renderAccessoryInline(widget, data) {
+  const text = addLockScreenCountdown(widget, data, getLockScreenInlineText(data))
+  text.font = Font.systemFont(12)
+  text.lineLimit = 1
+  text.minimumScaleFactor = 0.65
 }
 
 
@@ -1402,7 +1758,7 @@ async function renderSmallWidget(widget, data) {
   widget.addSpacer(7)
 
   if (!data.ok) {
-    const t = widget.addText("加载失败")
+    const t = widget.addText(data.cacheMiss ? "需要更新" : "加载失败")
     t.font = Font.boldSystemFont(15)
     t.textColor = new Color("#FCA5A5")
     t.lineLimit = 1
@@ -1653,7 +2009,7 @@ function addCompactHeader(widget, titleText) {
 }
 
 function renderErrorBlock(widget, data) {
-  const error = widget.addText("接口请求失败")
+  const error = widget.addText(data.cacheMiss ? "需要更新" : "接口请求失败")
   error.font = Font.boldSystemFont(15)
   error.textColor = new Color("#FCA5A5")
   error.lineLimit = 1
@@ -2115,7 +2471,76 @@ function formatDateKey(date) {
   return `${y}-${m}-${d}`
 }
 
-function isWeekday(date) {
+/**
+ * 判断是否为中国工作日，含调休补班
+ *
+ * timor.tech 的 type：0 工作日，1 周末，2 节假日，3 调休补班。
+ *
+ * @param date 待判断日期
+ * @return 是工作日时返回 true
+ * @author Kai
+ * @date 2026/11/19 20:50
+ */
+async function isChinaWorkday(date) {
+  const dateKey = formatDateKey(date)
+  const cacheKey = "china-workday-" + dateKey
+
+  try {
+    if (Keychain.contains(cacheKey)) {
+      const cached = JSON.parse(Keychain.get(cacheKey))
+      const ageMs = Date.now() - cached.savedAt
+
+      if (ageMs < CONFIG.HOLIDAY_CACHE_HOURS * 60 * 60 * 1000) {
+        return cached.isWorkday
+      }
+    }
+  } catch (e) {
+    // 缓存坏了就重新请求
+  }
+
+  try {
+    const url = CONFIG.HOLIDAY_API_BASE + "/" + encodeURIComponent(dateKey)
+    const req = new Request(url)
+    req.method = "GET"
+    req.timeoutInterval = 8
+    req.headers = {
+      "Content-Type": "application/json"
+    }
+
+    const json = await req.loadJSON()
+    if (!json || json.code !== 0 || !json.type) {
+      throw new Error("节假日接口返回异常")
+    }
+
+    const type = Number(json.type.type)
+    const isWorkday = type === 0 || type === 3
+
+    Keychain.set(cacheKey, JSON.stringify({
+      date: dateKey,
+      isWorkday: isWorkday,
+      type: type,
+      name: json.type.name || "",
+      savedAt: Date.now()
+    }))
+
+    return isWorkday
+  } catch (e) {
+    if (CONFIG.HOLIDAY_FALLBACK_TO_WEEKDAY) {
+      return isNormalWeekday(date)
+    }
+    return false
+  }
+}
+
+/**
+ * 节假日接口失败时，按周一到周五判断
+ *
+ * @param date 待判断日期
+ * @return 是工作日时返回 true
+ * @author Kai
+ * @date 2026/11/19 20:50
+ */
+function isNormalWeekday(date) {
   const day = date.getDay()
   return day >= 1 && day <= 5
 }
@@ -2123,12 +2548,38 @@ function isWeekday(date) {
 
 // ==================== 工具函数：小组件 / 通知 ====================
 
+/**
+ * 小组件点击跳转的快捷指令地址
+ *
+ * 使用 x-callback-url，并带本次渲染时间戳，减轻点一下没反应。
+ *
+ * @return shortcuts URL
+ * @author Kai
+ * @date 2026/11/19 20:50
+ */
 function getWidgetUrl() {
-  return "shortcuts://run-shortcut?name=" + encodeURIComponent(CONFIG.SHORTCUT_NAME)
+  const name = encodeURIComponent(CONFIG.SHORTCUT_NAME)
+  return "shortcuts://x-callback-url/run-shortcut?name=" + name + "&_n=" + Date.now()
 }
 
-function getNextWidgetRefreshDate() {
-  return new Date(Date.now() + CONFIG.WIDGET_REFRESH_MINUTES * 60 * 1000)
+/**
+ * 下次建议刷新时间
+ *
+ * 还在倒计时时缩短到 1 分钟，方便点击后系统接受新快照。
+ *
+ * @param data 打卡摘要，休息日可以不传
+ * @return 刷新时间
+ * @author Kai
+ * @date 2026/11/19 20:50
+ */
+function getNextWidgetRefreshDate(data) {
+  let minutes = CONFIG.WIDGET_REFRESH_MINUTES
+
+  if (data && data.ok && data.hasClockIn && !data.hasOutRecord && !data.targetReached) {
+    minutes = Math.min(minutes, 1)
+  }
+
+  return new Date(Date.now() + minutes * 60 * 1000)
 }
 
 /**
