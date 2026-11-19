@@ -1247,24 +1247,21 @@ async function handleLeaveCompany() {
   }
 
   if (!data.hasClockIn) {
-    await notify(
-        "打卡提醒",
-        "今天还没有查询到上班打卡记录，请确认是否已经打卡。"
-    )
+    await notifyBrief("未打卡", "今天还没有上班记录")
     return
   }
 
   if (!data.targetReached) {
-    await notify(
-        "工时未满 9 小时",
-        formatNotifyBody(data, ["还差 " + data.remainingMinutes + " 分钟"])
+    await notifyBrief(
+        "还差 " + data.remainingMinutes + " 分钟",
+        formatNotifyTimes(data)
     )
     return
   }
 
-  await notify(
-      "工时已满 9 小时",
-      formatNotifyBody(data, data.hasOutRecord ? [] : ["还没打下班卡"])
+  await notifyBrief(
+      data.hasOutRecord ? "已满 9 小时" : "已满，未打卡",
+      formatNotifyTimes(data)
   )
 }
 
@@ -1284,10 +1281,7 @@ async function handleScheduleNineHours() {
   }
 
   if (!data.hasClockIn) {
-    await notify(
-        "工时提醒",
-        "还没有查询到今天的上班打卡记录，暂时无法预约 9 小时提醒。"
-    )
+    await notifyBrief("未打卡", "今天还没有上班记录")
     return
   }
 
@@ -1307,14 +1301,14 @@ async function handleScheduleNineHours() {
   }
 
   if (remindTime <= now) {
-    await notify(
-        "快满 9 小时了",
-        formatNotifyBody(data, ["还差 " + data.remainingMinutes + " 分钟"])
+    await notifyBrief(
+        "还差 " + data.remainingMinutes + " 分钟",
+        formatNotifyTimes(data)
     )
   } else {
     const n = new Notification()
-    n.title = "快满 9 小时了"
-    n.body = formatNotifyBody(data, [], false)
+    n.title = "还差 " + CONFIG.NEAR_MINUTES + " 分钟"
+    n.subtitle = formatNotifyTimes(data)
     n.sound = "default"
     n.setTriggerDate(remindTime)
     await n.schedule()
@@ -1345,9 +1339,9 @@ async function handleNearNineHours() {
     const key = "targetReached-" + formatDateKey(now)
 
     if (!Keychain.contains(key)) {
-      await notify(
-          "今日工时已满 9 小时",
-          formatNotifyBody(data, data.hasOutRecord ? [] : ["还没打下班卡"])
+      await notifyBrief(
+          data.hasOutRecord ? "已满 9 小时" : "已满，未打卡",
+          formatNotifyTimes(data)
       )
 
       Keychain.set(key, "1")
@@ -1363,9 +1357,9 @@ async function handleNearNineHours() {
     const key = "near9-" + formatDateKey(now)
 
     if (!Keychain.contains(key)) {
-      await notify(
-          "快满 9 小时了",
-          formatNotifyBody(data, ["还差 " + data.remainingMinutes + " 分钟"])
+      await notifyBrief(
+          "还差 " + data.remainingMinutes + " 分钟",
+          formatNotifyTimes(data)
       )
 
       Keychain.set(key, "1")
@@ -2138,46 +2132,42 @@ function getNextWidgetRefreshDate() {
 }
 
 /**
- * 通知里的开始和结束时间
+ * 通知第二行：上班时间到结束时间
  *
- * 开始用上班卡。已经打下班卡时，结束用下班卡；还没打时用可下班时间。
+ * 已经打下班卡时，结束用下班卡。还没打时，结束用可下班时间。
  *
  * @param data 打卡摘要
- * @param extraLines 追加在时间后面的短句
- * @param includeDuration 是否写上工时。预约到未来的通知不要写，避免触发时工时已过时
- * @return 通知正文
+ * @return 一行时间范围
  * @author Kai
- * @date 2026/11/19 20:41
+ * @date 2026/11/19 20:43
  */
-function formatNotifyBody(data, extraLines, includeDuration) {
+function formatNotifyTimes(data) {
   const start = data.hasClockIn ? formatTime(data.inTime) : "--"
-  let end = "--"
-  let endMark = ""
+  let end = data.targetTime ? formatTime(data.targetTime) : "--"
+  let mark = " 可下班"
 
   if (data.hasOutRecord && data.latestOutTime) {
     end = formatTime(data.latestOutTime)
-  } else if (data.targetTime) {
-    end = formatTime(data.targetTime)
-    endMark = "（可下班）"
+    mark = ""
   }
 
-  const lines = [
-    "开始 " + start,
-    "结束 " + end + endMark
-  ]
+  return start + " – " + end + mark
+}
 
-  if (includeDuration !== false && data.hasClockIn) {
-    lines.push("工时 " + formatDuration(data.currentWorkMs))
-  }
-
-  const extras = extraLines || []
-  for (let i = 0; i < extras.length; i++) {
-    if (extras[i]) {
-      lines.push(extras[i])
-    }
-  }
-
-  return lines.join("\n")
+/**
+ * 只占标题和副标题两行的通知。Scriptable 不能改通知图标。
+ *
+ * @param title 第一行
+ * @param subtitle 第二行
+ * @author Kai
+ * @date 2026/11/19 20:43
+ */
+async function notifyBrief(title, subtitle) {
+  const n = new Notification()
+  n.title = title
+  n.subtitle = subtitle
+  n.sound = "default"
+  await n.schedule()
 }
 
 async function notify(title, body) {
