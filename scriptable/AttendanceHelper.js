@@ -17,9 +17,10 @@
 // schedule9  工作日根据上班时间预约“快满 9 小时”提醒
 // near9      工作日下午定时检查是否快满 / 已满 9 小时
 // debug      查看接口解析结果
+// update     从 GitHub 下载最新脚本并覆盖当前文件
 //
 // 快捷指令 / 小组件参数：
-// widget / leave / schedule9 / near9 / debug
+// widget / leave / schedule9 / near9 / debug / update
 //
 // Scriptable 脚本建议命名：
 // AttendanceHelper
@@ -70,7 +71,22 @@ const CONFIG = {
   WIDGET_REFRESH_MINUTES: 5,
 
   // 接口固定参数
-  ID: "myStatic"
+  ID: "myStatic",
+
+  // 私有仓库。更新脚本时从这里下载，不用再整段复制
+  GITHUB_REPO: "biannian/attendance-helper-ios",
+
+  // 仓库里的脚本路径
+  GITHUB_SCRIPT_PATH: "scriptable/AttendanceHelper.js",
+
+  // 更新时读取的分支
+  GITHUB_REF: "main",
+
+  // 可留空。第一次更新时填写只读 Token，之后记在钥匙串
+  GITHUB_TOKEN: "",
+
+  // GitHub Token 在钥匙串里的键名
+  GITHUB_TOKEN_KEYCHAIN: "attendance-helper-github-token"
 }
 
 const now = new Date()
@@ -102,6 +118,8 @@ if (config.runsInWidget) {
     await handleNearNineHours()
   } else if (mode === "debug") {
     await handleDebug()
+  } else if (mode === "update") {
+    await handleUpdateScript()
   } else {
     await showMainMenu()
   }
@@ -121,6 +139,7 @@ async function showMainMenu() {
   alert.addAction("离开公司检查")
   alert.addAction("预约 9 小时提醒")
   alert.addAction("检查是否快满 9 小时")
+  alert.addAction("更新脚本")
   alert.addCancelAction("取消")
 
   const index = await alert.presentSheet()
@@ -137,7 +156,216 @@ async function showMainMenu() {
     await handleScheduleNineHours()
   } else if (index === 4) {
     await handleNearNineHours()
+  } else if (index === 5) {
+    await handleUpdateScript()
   }
+}
+
+
+// ==================== 从 GitHub 更新脚本 ====================
+
+/**
+ * 下载最新脚本并覆盖当前文件
+ *
+ * @author Kai
+ * @date 2026/11/19 19:03
+ */
+async function handleUpdateScript() {
+  let message = ""
+
+  try {
+    const changed = await updateScriptFromGit()
+    message = changed
+        ? "脚本已更新。退出后重新打开，小组件才会用新代码。"
+        : "已经是最新版本。"
+  } catch (e) {
+    message = String(e && e.message ? e.message : e)
+  }
+
+  await notify(message.indexOf("已更新") !== -1 ? "打卡脚本" : "更新脚本", message)
+
+  const alert = new Alert()
+  alert.title = "更新脚本"
+  alert.message = message
+  alert.addAction("好")
+  await alert.present()
+}
+
+/**
+ * 从私有仓库拉取脚本并写回当前文件
+ *
+ * @return 文件内容有变化时返回 true
+ * @author Kai
+ * @date 2026/11/19 19:03
+ */
+async function updateScriptFromGit() {
+  const token = await getGitHubToken()
+  const latest = await downloadScriptSource(token)
+  const fm = scriptFileManager()
+  const path = module.filename
+
+  if (!path) {
+    throw new Error("找不到当前脚本文件，无法写回")
+  }
+
+  if (fm.fileExists(path)) {
+    await fm.downloadFileFromiCloud(path)
+  }
+
+  const current = fm.readString(path)
+
+  if (current === latest) {
+    return false
+  }
+
+  fm.writeString(path, latest)
+  return true
+}
+
+/**
+ * 读取 GitHub 只读 Token，没有时让用户填一次
+ *
+ * @return Token 字符串
+ * @author Kai
+ * @date 2026/11/19 19:03
+ */
+async function getGitHubToken() {
+  try {
+    if (Keychain.contains(CONFIG.GITHUB_TOKEN_KEYCHAIN)) {
+      const saved = String(Keychain.get(CONFIG.GITHUB_TOKEN_KEYCHAIN) || "").trim()
+      if (saved) {
+        return saved.replace(/^Bearer\s+/i, "")
+      }
+    }
+  } catch (e) {
+    // 钥匙串读不到时再问用户
+  }
+
+  if (CONFIG.GITHUB_TOKEN) {
+    return String(CONFIG.GITHUB_TOKEN).trim().replace(/^Bearer\s+/i, "")
+  }
+
+  const alert = new Alert()
+  alert.title = "更新脚本"
+  alert.message = "仓库是私有的。填一次 GitHub 只读 Token，之后记在钥匙串，不用再复制整段代码。"
+  alert.addTextField("github_pat_ 或 ghp_")
+  alert.addAction("保存并更新")
+  alert.addCancelAction("取消")
+
+  const index = await alert.presentAlert()
+
+  if (index !== 0) {
+    throw new Error("已取消更新")
+  }
+
+  const token = String(alert.textFieldValue(0) || "").trim().replace(/^Bearer\s+/i, "")
+
+  if (!token) {
+    throw new Error("没有填写 GitHub Token")
+  }
+
+  try {
+    Keychain.set(CONFIG.GITHUB_TOKEN_KEYCHAIN, token)
+  } catch (e) {
+    // 记不住也继续用这一次
+  }
+
+  return token
+}
+
+/**
+ * 下载仓库里的打卡脚本
+ *
+ * @param token GitHub 只读 Token
+ * @return 脚本源码
+ * @author Kai
+ * @date 2026/11/19 19:03
+ */
+async function downloadScriptSource(token) {
+  const url =
+      "https://api.github.com/repos/" +
+      CONFIG.GITHUB_REPO +
+      "/contents/" +
+      CONFIG.GITHUB_SCRIPT_PATH +
+      "?ref=" + encodeURIComponent(CONFIG.GITHUB_REF)
+  const req = new Request(url)
+  req.method = "GET"
+  req.timeoutInterval = 20
+  req.headers = {
+    "Authorization": "Bearer " + token,
+    "Accept": "application/vnd.github.raw",
+    "User-Agent": "AttendanceHelper",
+    "X-GitHub-Api-Version": "2022-11-28"
+  }
+
+  let text = ""
+  let status = 0
+
+  try {
+    text = await req.loadString()
+    status = req.response ? req.response.statusCode : 0
+  } catch (e) {
+    status = req.response ? req.response.statusCode : 0
+    text = ""
+  }
+
+  if (status === 401 || status === 403) {
+    try {
+      Keychain.remove(CONFIG.GITHUB_TOKEN_KEYCHAIN)
+    } catch (e) {
+      // 清不掉也无妨，下次会再问
+    }
+    throw new Error("GitHub Token 无效，或没有读取这个仓库的权限")
+  }
+
+  if (status && status !== 200) {
+    throw new Error("下载失败：" + status)
+  }
+
+  if (!isAttendanceScript(text)) {
+    throw new Error("下载内容不是打卡脚本")
+  }
+
+  return text
+}
+
+/**
+ * 确认下载下来的是打卡脚本，避免把错误页写进文件
+ *
+ * @param code 下载到的文本
+ * @return 可以写回时返回 true
+ * @author Kai
+ * @date 2026/11/19 19:03
+ */
+function isAttendanceScript(code) {
+  if (!code || code.length < 500) {
+    return false
+  }
+
+  if (code.indexOf("<html") !== -1 || code.indexOf("<!DOCTYPE") !== -1) {
+    return false
+  }
+
+  return code.indexOf("AttendanceHelper") !== -1 &&
+      code.indexOf("fetchAttendance") !== -1 &&
+      code.indexOf("API_BASE") !== -1
+}
+
+/**
+ * 按脚本实际所在位置选择 iCloud 或本机文件
+ *
+ * @return Scriptable 文件管理器
+ * @author Kai
+ * @date 2026/11/19 19:03
+ */
+function scriptFileManager() {
+  const path = module.filename || ""
+
+  if (path.indexOf("iCloud") !== -1) {
+    return FileManager.iCloud()
+  }
+
+  return FileManager.local()
 }
 
 
