@@ -86,7 +86,16 @@ const CONFIG = {
   GITHUB_TOKEN: "",
 
   // GitHub Token 在钥匙串里的键名
-  GITHUB_TOKEN_KEYCHAIN: "attendance-helper-github-token"
+  GITHUB_TOKEN_KEYCHAIN: "attendance-helper-github-token",
+
+  // 登录后要进入的团队。留空则用账号里的当前团队，没有当前团队时用第一个
+  TEAM_NO: "",
+
+  // 账号详情，用来确定团队编号
+  ACCOUNT_DETAIL_URL: "https://api.hikiot.com/api-saas/v1/account/detail",
+
+  // 选定团队。未选团队时，打卡接口会返回登录状态已失效
+  TEAM_CHANGE_URL: "https://api.hikiot.com/api-link-saas/v3/team/change"
 }
 
 // 密钥必须在主入口的 await 之前赋值。
@@ -460,11 +469,30 @@ function isAuthFailure(statusCode, json, message) {
       (json && (json.msg || json.message)) || message || ""
   )
 
-  if (statusCode === 401 || code === 401) {
+  if (statusCode === 401 || code === 401 || code === 999999 || code === 999998 || code === 999997 || code === 999996) {
     return true
   }
 
-  return /access token|token expired|invalid access token|登录状态已失效|请重新登录/i.test(text)
+  return /access token|token expired|invalid access token|登录状态已?失效|请重新登录/i.test(text)
+}
+
+/**
+ * 组装登录失效错误，带上业务码供后续决定是选团队还是重新登录
+ *
+ * @param json 接口 JSON
+ * @param message 异常文案
+ * @param statusCode HTTP 状态码
+ * @return 带 authFailure 标记的错误
+ * @author Kai
+ * @date 2026/11/19 20:34
+ */
+function makeAuthError(json, message, statusCode) {
+  const err = new Error((json && (json.msg || json.message)) || message || "登录已失效")
+  err.authFailure = true
+  err.authCode = json && json.code !== undefined && json.code !== null
+      ? Number(json.code)
+      : (statusCode === 401 ? 401 : 0)
+  return err
 }
 
 /**
@@ -506,9 +534,7 @@ async function requestAttendance(token) {
     statusCode = req.response ? req.response.statusCode : 0
     const message = String(e && e.message ? e.message : e)
     if (isAuthFailure(statusCode, null, message)) {
-      const err = new Error(message || "登录已失效")
-      err.authFailure = true
-      throw err
+      throw makeAuthError(null, message, statusCode)
     }
     throw new Error(message || "网络请求失败")
   }
@@ -525,9 +551,7 @@ async function requestAttendance(token) {
   }
 
   if (isAuthFailure(statusCode, json, "")) {
-    const err = new Error(json.msg || json.message || "登录已失效")
-    err.authFailure = true
-    throw err
+    throw makeAuthError(json, "", statusCode)
   }
 
   if (
@@ -588,7 +612,99 @@ async function refreshAccessToken() {
   }
 
   writeStoredToken(token)
+  await selectCurrentTeam(token)
   return token
+}
+
+/**
+ * 携带登录 Token 请求账号或团队接口
+ *
+ * @param url 接口地址
+ * @param method GET 或 POST
+ * @param token Bearer Token
+ * @param body POST 请求体；GET 时不传
+ * @return 接口 JSON
+ * @author Kai
+ * @date 2026/11/19 20:34
+ */
+async function authorizedJson(url, method, token, body) {
+  const req = new Request(url)
+  req.method = method
+  req.timeoutInterval = 15
+  if (body) {
+    req.body = JSON.stringify(body)
+  }
+  req.headers = {
+    "Accept": "application/json, text/plain, */*",
+    "Content-Type": "application/json",
+    "Authorization": "Bearer " + token,
+    "deviceid": CONFIG.DEVICE_ID,
+    "terminal": "2",
+    "STN-PhoneType": "Iphone",
+    "devicename": "unknow 0"
+  }
+
+  let text = ""
+  let statusCode = 0
+
+  try {
+    text = await req.loadString()
+    statusCode = req.response ? req.response.statusCode : 0
+  } catch (e) {
+    statusCode = req.response ? req.response.statusCode : 0
+    const message = String(e && e.message ? e.message : e)
+    if (isAuthFailure(statusCode, null, message)) {
+      throw makeAuthError(null, message, statusCode)
+    }
+    throw new Error(message || "网络请求失败")
+  }
+
+  let json = null
+  try {
+    json = JSON.parse(text)
+  } catch (e) {
+    json = null
+  }
+
+  if (isAuthFailure(statusCode, json, "")) {
+    throw makeAuthError(json, "", statusCode)
+  }
+
+  if (!json || (json.code !== undefined && json.code !== null && Number(json.code) !== 0 && Number(json.code) !== 200)) {
+    throw new Error((json && (json.msg || json.message)) || "请求失败")
+  }
+
+  return json
+}
+
+/**
+ * 登录后进入团队。未选团队时打卡接口会提示登录状态已失效
+ *
+ * @param token 刚登录得到的 Bearer Token
+ * @return 进入的团队编号
+ * @author Kai
+ * @date 2026/11/19 20:34
+ */
+async function selectCurrentTeam(token) {
+  const detail = await authorizedJson(CONFIG.ACCOUNT_DETAIL_URL, "GET", token)
+  const data = detail.data || {}
+  const teams = Array.isArray(data.teamInfoList) ? data.teamInfoList : []
+  let teamNo = CONFIG.TEAM_NO || data.onLineTeamNo || ""
+
+  if (!teamNo && teams.length > 0) {
+    teamNo = teams[0].teamNo || ""
+  }
+
+  if (!teamNo) {
+    throw new Error("登录成功，但没有可进入的团队")
+  }
+
+  await authorizedJson(CONFIG.TEAM_CHANGE_URL, "POST", token, {
+    teamNo: teamNo,
+    terminal: 2
+  })
+
+  return teamNo
 }
 
 /**
@@ -596,10 +712,10 @@ async function refreshAccessToken() {
  *
  * @return 打卡接口 JSON
  * @author Kai
- * @date 2026/11/19 18:57
+ * @date 2026/11/19 20:34
  */
 async function fetchAttendance() {
-  const token = readStoredToken()
+  let token = readStoredToken()
 
   try {
     return await requestAttendance(token)
@@ -607,10 +723,22 @@ async function fetchAttendance() {
     if (!e || !e.authFailure) {
       throw e
     }
+
+    // 999999 表示 Token 还在，但这次登录还没进入团队
+    if (Number(e.authCode) === 999999 && token) {
+      try {
+        await selectCurrentTeam(token)
+        return await requestAttendance(token)
+      } catch (teamError) {
+        if (!teamError || !teamError.authFailure) {
+          throw teamError
+        }
+      }
+    }
   }
 
-  const freshToken = await refreshAccessToken()
-  return await requestAttendance(freshToken)
+  token = await refreshAccessToken()
+  return await requestAttendance(token)
 }
 
 
