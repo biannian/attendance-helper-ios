@@ -1123,10 +1123,7 @@ function normalizeAttendanceData(raw) {
     "signInTime"
   ])
 
-  // 注意：
-  // 这里的 clockOffTime / clockOutTime 不直接当作“最终下班”
-  // 因为你之前说过，上厕所 / 临时离场也可能产生这个字段。
-  // 所以这里只叫“最近离场”。
+  // 接口里的下班卡时间。打卡之后工时停在这一刻，不再按当前时间累计。
   const latestOutRaw = deepPick(root, [
     "clockOffTime",
     "clockOutTime",
@@ -1170,14 +1167,17 @@ function normalizeAttendanceData(raw) {
   let targetTime = null
 
   if (hasClockIn) {
-    currentWorkMs = Math.max(0, now.getTime() - inTime.getTime())
     targetTime = new Date(inTime.getTime() + targetMs)
 
     if (hasOutRecord) {
+      // 已打下班卡：工时固定为下班卡减上班卡
       latestOutWorkMs = Math.max(
           0,
           latestOutTime.getTime() - inTime.getTime()
       )
+      currentWorkMs = latestOutWorkMs
+    } else {
+      currentWorkMs = Math.max(0, now.getTime() - inTime.getTime())
     }
   }
 
@@ -1185,17 +1185,26 @@ function normalizeAttendanceData(raw) {
 
   let remainingMinutes = 0
   if (hasClockIn && !targetReached) {
-    remainingMinutes = Math.max(
-        0,
-        Math.ceil((targetTime.getTime() - now.getTime()) / 1000 / 60)
-    )
+    if (hasOutRecord) {
+      remainingMinutes = Math.max(
+          0,
+          Math.ceil((targetMs - currentWorkMs) / 1000 / 60)
+      )
+    } else {
+      remainingMinutes = Math.max(
+          0,
+          Math.ceil((targetTime.getTime() - now.getTime()) / 1000 / 60)
+      )
+    }
   }
 
   const countdownText = !hasClockIn
       ? "--"
       : targetReached
           ? "已达标"
-          : formatCountdown(targetTime.getTime() - now.getTime())
+          : hasOutRecord
+              ? formatCountdown(targetMs - currentWorkMs)
+              : formatCountdown(targetTime.getTime() - now.getTime())
 
   return {
     ok: true,
@@ -1753,6 +1762,11 @@ function addDetailRow(widget, label, value) {
 }
 
 function addProgressBar(parent, data, width) {
+  // 下班卡已经覆盖可下班时间，进度条不再变化，直接不画
+  if (data.hasOutRecord && data.targetReached) {
+    return
+  }
+
   const barWidth = width || 240
   const barHeight = 6
 
