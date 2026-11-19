@@ -1255,32 +1255,16 @@ async function handleLeaveCompany() {
   }
 
   if (!data.targetReached) {
-    let extra = ""
-
-    if (data.hasOutRecord && data.latestOutTime) {
-      extra =
-          `\n最近离场：${formatTime(data.latestOutTime)}` +
-          `\n离场时工时：${formatDuration(data.latestOutWorkMs)}`
-    }
-
     await notify(
         "工时未满 9 小时",
-        `当前工时：${formatDuration(data.currentWorkMs)}` +
-        `\n还差约 ${data.remainingMinutes} 分钟。` +
-        `\n\n上班：${formatTime(data.inTime)}` +
-        `\n预计满 ${CONFIG.TARGET_HOURS} 小时：${formatTime(data.targetTime)}` +
-        extra
+        formatNotifyBody(data, ["还差 " + data.remainingMinutes + " 分钟"])
     )
-
     return
   }
 
   await notify(
       "工时已满 9 小时",
-      `当前工时：${formatDuration(data.currentWorkMs)}。` +
-      `\n\n上班：${formatTime(data.inTime)}` +
-      `\n满 ${CONFIG.TARGET_HOURS} 小时：${formatTime(data.targetTime)}` +
-      `\n\n如果这是下班离开，请确认下班打卡状态。`
+      formatNotifyBody(data, data.hasOutRecord ? [] : ["还没打下班卡"])
   )
 }
 
@@ -1325,16 +1309,12 @@ async function handleScheduleNineHours() {
   if (remindTime <= now) {
     await notify(
         "快满 9 小时了",
-        `今天上班时间：${formatTime(data.inTime)}` +
-        `\n当前工时：${formatDuration(data.currentWorkMs)}` +
-        `\n预计 ${formatTime(data.targetTime)} 满 ${CONFIG.TARGET_HOURS} 小时。`
+        formatNotifyBody(data, ["还差 " + data.remainingMinutes + " 分钟"])
     )
   } else {
     const n = new Notification()
     n.title = "快满 9 小时了"
-    n.body =
-        `今天上班时间：${formatTime(data.inTime)}` +
-        `\n预计 ${formatTime(data.targetTime)} 满 ${CONFIG.TARGET_HOURS} 小时。`
+    n.body = formatNotifyBody(data, [], false)
     n.sound = "default"
     n.setTriggerDate(remindTime)
     await n.schedule()
@@ -1367,9 +1347,7 @@ async function handleNearNineHours() {
     if (!Keychain.contains(key)) {
       await notify(
           "今日工时已满 9 小时",
-          `当前工时：${formatDuration(data.currentWorkMs)}` +
-          `\n上班时间：${formatTime(data.inTime)}` +
-          `\n可以下班前记得确认打卡。`
+          formatNotifyBody(data, data.hasOutRecord ? [] : ["还没打下班卡"])
       )
 
       Keychain.set(key, "1")
@@ -1387,9 +1365,7 @@ async function handleNearNineHours() {
     if (!Keychain.contains(key)) {
       await notify(
           "快满 9 小时了",
-          `还差约 ${data.remainingMinutes} 分钟满 ${CONFIG.TARGET_HOURS} 小时。` +
-          `\n\n上班：${formatTime(data.inTime)}` +
-          `\n预计：${formatTime(data.targetTime)} 满 ${CONFIG.TARGET_HOURS} 小时。`
+          formatNotifyBody(data, ["还差 " + data.remainingMinutes + " 分钟"])
       )
 
       Keychain.set(key, "1")
@@ -2159,6 +2135,49 @@ function getWidgetUrl() {
 
 function getNextWidgetRefreshDate() {
   return new Date(Date.now() + CONFIG.WIDGET_REFRESH_MINUTES * 60 * 1000)
+}
+
+/**
+ * 通知里的开始和结束时间
+ *
+ * 开始用上班卡。已经打下班卡时，结束用下班卡；还没打时用可下班时间。
+ *
+ * @param data 打卡摘要
+ * @param extraLines 追加在时间后面的短句
+ * @param includeDuration 是否写上工时。预约到未来的通知不要写，避免触发时工时已过时
+ * @return 通知正文
+ * @author Kai
+ * @date 2026/11/19 20:41
+ */
+function formatNotifyBody(data, extraLines, includeDuration) {
+  const start = data.hasClockIn ? formatTime(data.inTime) : "--"
+  let end = "--"
+  let endMark = ""
+
+  if (data.hasOutRecord && data.latestOutTime) {
+    end = formatTime(data.latestOutTime)
+  } else if (data.targetTime) {
+    end = formatTime(data.targetTime)
+    endMark = "（可下班）"
+  }
+
+  const lines = [
+    "开始 " + start,
+    "结束 " + end + endMark
+  ]
+
+  if (includeDuration !== false && data.hasClockIn) {
+    lines.push("工时 " + formatDuration(data.currentWorkMs))
+  }
+
+  const extras = extraLines || []
+  for (let i = 0; i < extras.length; i++) {
+    if (extras[i]) {
+      lines.push(extras[i])
+    }
+  }
+
+  return lines.join("\n")
 }
 
 async function notify(title, body) {
