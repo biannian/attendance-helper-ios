@@ -2,6 +2,17 @@
 
 Scriptable 今日打卡小组件 + 快捷指令提醒（`scriptable/AttendanceHelper.js`）。
 
+## 更新到手机
+
+仓库是私有的，Scriptable 不能直接打开 GitHub 页面。不用再复制整份 `AttendanceHelper.js`。
+
+1. 在 GitHub 建一个只读 Token：只授权这个仓库，权限勾选 Contents 的 Read。
+2. 把 `scriptable/InstallAttendanceHelper.js` 新建到 Scriptable 里，运行一次，粘贴 Token。
+3. 安装器会把最新脚本写成 `AttendanceHelper`。小组件选这个脚本。
+4. 以后要更新：再运行安装器，或在打卡脚本菜单里点「更新脚本」，参数也可以填 `update`。
+
+钥匙串里的打卡 Token 和 GitHub Token 不会被覆盖清掉。脚本文件会按仓库里的版本整份替换。
+
 ## 模式
 
 | 参数 | 说明 |
