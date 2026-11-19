@@ -1,6 +1,14 @@
+/*
+ * Copyright (c) iGroup China.
+ * All rights reserved.
+ */
+
 // ==================================================
 // AttendanceHelper
 // Scriptable 今日打卡小组件 + 快捷指令提醒
+//
+// Token 过期或失效时，用账号密码重新登录并写入钥匙串。
+// 另一台设备重新登录不会让这把 Token 失效。
 // ==================================================
 //
 // 支持模式：
@@ -25,10 +33,25 @@ const CONFIG = {
   // 正式打卡接口
   API_BASE: "https://api.hikiot.com/api-attendance/v1/statistics/v2/individual/single/daily",
 
-  // 这里填你的 Bearer Token，不要带 Bearer 前缀
+  // 初始 Bearer Token，不要带 Bearer 前缀。钥匙串里已有新 Token 时优先用钥匙串
   TOKEN: "1c1ae3b0-a900-45ba-b0da-234d5cb8f1c1",
 
-  // 这里填你的 deviceid
+  // 登录账号。打卡接口报 Token 失效时，用它重新登录
+  USERNAME: "19002664001",
+
+  // 登录密码明文。提交前按网页登录页同一套 AES 加密
+  PASSWORD: "K1panguangke",
+
+  // 密码登录接口。成功时 data.token 是新的 Bearer Token
+  LOGIN_URL: "https://api.hikiot.com/api-saas/open/v1/pwdLogin",
+
+  // 网页端固定的客户端标识，不是用户 Token
+  LOGIN_BASIC: "Basic bGluay13ZWI6bGluaw==",
+
+  // 钥匙串键名。登录成功后把新 Token 存在这里，小组件下次直接用
+  TOKEN_KEYCHAIN: "attendance-helper-token",
+
+  // 已登记的 deviceid。换成本机没登记过的值会要求安全验证，拿不到 Token
   DEVICE_ID: "050309CD-F3D6-4F9E-AE03-729615B05E8A-73263-00002858645B11BC",
 
   // 公司名称，用于通知文案
@@ -120,7 +143,79 @@ async function showMainMenu() {
 
 // ==================== 请求打卡接口 ====================
 
-async function fetchAttendance() {
+/**
+ * 读取当前可用的登录 Token
+ *
+ * @return 钥匙串中的 Token；没有时返回配置里的初始 Token
+ * @author Kai
+ * @date 2026/11/19 18:57
+ */
+function readStoredToken() {
+  try {
+    if (Keychain.contains(CONFIG.TOKEN_KEYCHAIN)) {
+      const saved = Keychain.get(CONFIG.TOKEN_KEYCHAIN)
+      if (saved) {
+        return saved
+      }
+    }
+  } catch (e) {
+    // 锁屏时钥匙串可能读不到，继续用配置里的 Token
+  }
+
+  return CONFIG.TOKEN
+}
+
+/**
+ * 保存新登录 Token
+ *
+ * @param token 登录接口返回的 Bearer Token
+ * @author Kai
+ * @date 2026/11/19 18:57
+ */
+function writeStoredToken(token) {
+  CONFIG.TOKEN = token
+
+  try {
+    Keychain.set(CONFIG.TOKEN_KEYCHAIN, token)
+  } catch (e) {
+    // 写不进钥匙串时，本次运行仍使用内存中的新 Token
+  }
+}
+
+/**
+ * 判断这次失败是不是 Token 过期或失效
+ *
+ * @param statusCode HTTP 状态码
+ * @param json 接口 JSON；没有响应体时传 null
+ * @param message 异常文案
+ * @return 需要重新登录时返回 true
+ * @author Kai
+ * @date 2026/11/19 18:57
+ */
+function isAuthFailure(statusCode, json, message) {
+  const code = json && json.code !== undefined && json.code !== null
+      ? Number(json.code)
+      : null
+  const text = String(
+      (json && (json.msg || json.message)) || message || ""
+  )
+
+  if (statusCode === 401 || code === 401) {
+    return true
+  }
+
+  return /access token|token expired|invalid access token|登录状态已失效|请重新登录/i.test(text)
+}
+
+/**
+ * 拉取一天的打卡数据
+ *
+ * @param token Bearer Token，不要带 Bearer 前缀
+ * @return 打卡接口 JSON
+ * @author Kai
+ * @date 2026/11/19 18:57
+ */
+async function requestAttendance(token) {
   const date = formatDateKey(new Date())
   const url =
       `${CONFIG.API_BASE}?date=${encodeURIComponent(date)}&ID=${encodeURIComponent(CONFIG.ID)}`
@@ -130,7 +225,7 @@ async function fetchAttendance() {
   req.timeoutInterval = 15
 
   req.headers = {
-    "Authorization": `Bearer ${CONFIG.TOKEN}`,
+    "Authorization": `Bearer ${token}`,
     "UNI-Request-Source": "1",
     "terminal": "1",
     "appNo": "__UNI__89A1A02",
@@ -141,10 +236,38 @@ async function fetchAttendance() {
     "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Html5Plus/1.0 (Immersed/47) uni-app"
   }
 
-  const json = await req.loadJSON()
+  let text = ""
+  let statusCode = 0
+
+  try {
+    text = await req.loadString()
+    statusCode = req.response ? req.response.statusCode : 0
+  } catch (e) {
+    statusCode = req.response ? req.response.statusCode : 0
+    const message = String(e && e.message ? e.message : e)
+    if (isAuthFailure(statusCode, null, message)) {
+      const err = new Error(message || "登录已失效")
+      err.authFailure = true
+      throw err
+    }
+    throw new Error(message || "网络请求失败")
+  }
+
+  let json = null
+  try {
+    json = JSON.parse(text)
+  } catch (e) {
+    json = null
+  }
 
   if (!json) {
     throw new Error("接口无返回")
+  }
+
+  if (isAuthFailure(statusCode, json, "")) {
+    const err = new Error(json.msg || json.message || "登录已失效")
+    err.authFailure = true
+    throw err
   }
 
   if (
@@ -157,6 +280,425 @@ async function fetchAttendance() {
   }
 
   return json
+}
+
+/**
+ * 用账号密码登录并保存新 Token
+ *
+ * @return 新的 Bearer Token
+ * @author Kai
+ * @date 2026/11/19 18:57
+ */
+async function refreshAccessToken() {
+  if (!CONFIG.USERNAME || !CONFIG.PASSWORD) {
+    throw new Error("缺少账号或密码，无法更新 Token")
+  }
+
+  const req = new Request(CONFIG.LOGIN_URL)
+  req.method = "POST"
+  req.timeoutInterval = 15
+  req.body = JSON.stringify({
+    username: CONFIG.USERNAME,
+    password: encryptLoginPassword(CONFIG.PASSWORD),
+    isAuto: false
+  })
+  req.headers = {
+    "Accept": "application/json, text/plain, */*",
+    "Content-Type": "application/json",
+    "Authorization": CONFIG.LOGIN_BASIC,
+    "login-source": "link-web",
+    "deviceid": CONFIG.DEVICE_ID,
+    "STN-PhoneType": "Iphone",
+    "devicename": "unknow 0",
+    "terminal": "2",
+    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Html5Plus/1.0 (Immersed/47) uni-app"
+  }
+
+  const text = await req.loadString()
+  let json = null
+  try {
+    json = JSON.parse(text)
+  } catch (e) {
+    json = null
+  }
+
+  const token = json && json.data ? json.data.token : ""
+  if (!json || Number(json.code) !== 0 || !token) {
+    throw new Error((json && (json.msg || json.message)) || "更新 Token 失败")
+  }
+
+  writeStoredToken(token)
+  return token
+}
+
+/**
+ * 获取打卡数据。Token 失效时自动登录一次并重试
+ *
+ * @return 打卡接口 JSON
+ * @author Kai
+ * @date 2026/11/19 18:57
+ */
+async function fetchAttendance() {
+  const token = readStoredToken()
+
+  try {
+    return await requestAttendance(token)
+  } catch (e) {
+    if (!e || !e.authFailure) {
+      throw e
+    }
+  }
+
+  const freshToken = await refreshAccessToken()
+  return await requestAttendance(freshToken)
+}
+
+
+// ==================== 登录密码加密 ====================
+// 与网页登录页一致：AES-256-CBC、PKCS7，只对密文做 Base64。
+
+/** 网页登录页 AES-256 密钥，按 UTF-8 字节使用 */
+const LOGIN_AES_KEY = "I0YmM5NTgtY2IyYi00OWIzLWFkZTktZj"
+
+/** 网页登录页 AES 初始向量 */
+const LOGIN_AES_IV = "BjNzhiZDctOGMxOS"
+
+/** AES S 盒 */
+const AES_SBOX = [
+  0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
+  0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0, 0xad, 0xd4, 0xa2, 0xaf, 0x9c, 0xa4, 0x72, 0xc0,
+  0xb7, 0xfd, 0x93, 0x26, 0x36, 0x3f, 0xf7, 0xcc, 0x34, 0xa5, 0xe5, 0xf1, 0x71, 0xd8, 0x31, 0x15,
+  0x04, 0xc7, 0x23, 0xc3, 0x18, 0x96, 0x05, 0x9a, 0x07, 0x12, 0x80, 0xe2, 0xeb, 0x27, 0xb2, 0x75,
+  0x09, 0x83, 0x2c, 0x1a, 0x1b, 0x6e, 0x5a, 0xa0, 0x52, 0x3b, 0xd6, 0xb3, 0x29, 0xe3, 0x2f, 0x84,
+  0x53, 0xd1, 0x00, 0xed, 0x20, 0xfc, 0xb1, 0x5b, 0x6a, 0xcb, 0xbe, 0x39, 0x4a, 0x4c, 0x58, 0xcf,
+  0xd0, 0xef, 0xaa, 0xfb, 0x43, 0x4d, 0x33, 0x85, 0x45, 0xf9, 0x02, 0x7f, 0x50, 0x3c, 0x9f, 0xa8,
+  0x51, 0xa3, 0x40, 0x8f, 0x92, 0x9d, 0x38, 0xf5, 0xbc, 0xb6, 0xda, 0x21, 0x10, 0xff, 0xf3, 0xd2,
+  0xcd, 0x0c, 0x13, 0xec, 0x5f, 0x97, 0x44, 0x17, 0xc4, 0xa7, 0x7e, 0x3d, 0x64, 0x5d, 0x19, 0x73,
+  0x60, 0x81, 0x4f, 0xdc, 0x22, 0x2a, 0x90, 0x88, 0x46, 0xee, 0xb8, 0x14, 0xde, 0x5e, 0x0b, 0xdb,
+  0xe0, 0x32, 0x3a, 0x0a, 0x49, 0x06, 0x24, 0x5c, 0xc2, 0xd3, 0xac, 0x62, 0x91, 0x95, 0xe4, 0x79,
+  0xe7, 0xc8, 0x37, 0x6d, 0x8d, 0xd5, 0x4e, 0xa9, 0x6c, 0x56, 0xf4, 0xea, 0x65, 0x7a, 0xae, 0x08,
+  0xba, 0x78, 0x25, 0x2e, 0x1c, 0xa6, 0xb4, 0xc6, 0xe8, 0xdd, 0x74, 0x1f, 0x4b, 0xbd, 0x8b, 0x8a,
+  0x70, 0x3e, 0xb5, 0x66, 0x48, 0x03, 0xf6, 0x0e, 0x61, 0x35, 0x57, 0xb9, 0x86, 0xc1, 0x1d, 0x9e,
+  0xe1, 0xf8, 0x98, 0x11, 0x69, 0xd9, 0x8e, 0x94, 0x9b, 0x1e, 0x87, 0xe9, 0xce, 0x55, 0x28, 0xdf,
+  0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16
+]
+
+/** AES 轮常数 */
+const AES_RCON = [0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36]
+
+/**
+ * 把登录密码加密成网页登录接口要的密文
+ *
+ * @param plainText 登录密码明文
+ * @return Base64 密文
+ * @author Kai
+ * @date 2026/11/19 18:57
+ */
+function encryptLoginPassword(plainText) {
+  const key = utf8Bytes(LOGIN_AES_KEY)
+  const iv = utf8Bytes(LOGIN_AES_IV)
+  const encrypted = aesCbcEncrypt(pkcs7Pad(utf8Bytes(plainText)), key, iv)
+  return base64Encode(encrypted)
+}
+
+/**
+ * 字符串转 UTF-8 字节
+ *
+ * @param str 原文
+ * @return 字节数组
+ * @author Kai
+ * @date 2026/11/19 18:57
+ */
+function utf8Bytes(str) {
+  const out = []
+
+  for (let i = 0; i < str.length; i++) {
+    const c = str.charCodeAt(i)
+
+    if (c < 0x80) {
+      out.push(c)
+    } else if (c < 0x800) {
+      out.push(0xc0 | (c >> 6), 0x80 | (c & 0x3f))
+    } else {
+      out.push(
+          0xe0 | (c >> 12),
+          0x80 | ((c >> 6) & 0x3f),
+          0x80 | (c & 0x3f)
+      )
+    }
+  }
+
+  return out
+}
+
+/**
+ * PKCS7 填充到 16 字节整数倍
+ *
+ * @param bytes 原字节
+ * @return 填充后的字节
+ * @author Kai
+ * @date 2026/11/19 18:57
+ */
+function pkcs7Pad(bytes) {
+  const pad = 16 - (bytes.length % 16)
+  const out = bytes.slice()
+
+  for (let i = 0; i < pad; i++) {
+    out.push(pad)
+  }
+
+  return out
+}
+
+/**
+ * 字节数组转 Base64
+ *
+ * @param bytes 字节数组
+ * @return Base64 字符串
+ * @author Kai
+ * @date 2026/11/19 18:57
+ */
+function base64Encode(bytes) {
+  const table = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+  let out = ""
+
+  for (let i = 0; i < bytes.length; i += 3) {
+    const b0 = bytes[i]
+    const b1 = i + 1 < bytes.length ? bytes[i + 1] : 0
+    const b2 = i + 2 < bytes.length ? bytes[i + 2] : 0
+    const n = (b0 << 16) | (b1 << 8) | b2
+
+    out += table[(n >> 18) & 63]
+    out += table[(n >> 12) & 63]
+    out += i + 1 < bytes.length ? table[(n >> 6) & 63] : "="
+    out += i + 2 < bytes.length ? table[n & 63] : "="
+  }
+
+  return out
+}
+
+/**
+ * GF(2^8) 乘法
+ *
+ * @param a 乘数
+ * @param b 乘数
+ * @return 乘积
+ * @author Kai
+ * @date 2026/11/19 18:57
+ */
+function aesMul(a, b) {
+  let product = 0
+
+  for (let i = 0; i < 8; i++) {
+    if (b & 1) {
+      product ^= a
+    }
+
+    const hi = a & 0x80
+    a = (a << 1) & 0xff
+
+    if (hi) {
+      a ^= 0x1b
+    }
+
+    b >>= 1
+  }
+
+  return product & 0xff
+}
+
+/**
+ * AES 字节代换
+ *
+ * @param word 4 字节
+ * @return 代换后的 4 字节
+ * @author Kai
+ * @date 2026/11/19 18:57
+ */
+function aesSubWord(word) {
+  return [AES_SBOX[word[0]], AES_SBOX[word[1]], AES_SBOX[word[2]], AES_SBOX[word[3]]]
+}
+
+/**
+ * AES 字循环
+ *
+ * @param word 4 字节
+ * @return 循环后的 4 字节
+ * @author Kai
+ * @date 2026/11/19 18:57
+ */
+function aesRotWord(word) {
+  return [word[1], word[2], word[3], word[0]]
+}
+
+/**
+ * 扩展 AES-256 轮密钥
+ *
+ * @param key 32 字节密钥
+ * @return 60 个 4 字节轮密钥字
+ * @author Kai
+ * @date 2026/11/19 18:57
+ */
+function aesExpandKey(key) {
+  const keyWords = 8
+  const words = new Array(60)
+
+  for (let i = 0; i < keyWords; i++) {
+    words[i] = [key[4 * i], key[4 * i + 1], key[4 * i + 2], key[4 * i + 3]]
+  }
+
+  for (let i = keyWords; i < words.length; i++) {
+    let temp = words[i - 1].slice()
+
+    if (i % keyWords === 0) {
+      temp = aesSubWord(aesRotWord(temp))
+      temp[0] ^= AES_RCON[i / keyWords]
+    } else if (i % keyWords === 4) {
+      temp = aesSubWord(temp)
+    }
+
+    const prev = words[i - keyWords]
+    words[i] = [
+      prev[0] ^ temp[0],
+      prev[1] ^ temp[1],
+      prev[2] ^ temp[2],
+      prev[3] ^ temp[3]
+    ]
+  }
+
+  return words
+}
+
+/**
+ * 轮密钥加
+ *
+ * @param state 16 字节状态
+ * @param words 轮密钥
+ * @param round 轮次
+ * @author Kai
+ * @date 2026/11/19 18:57
+ */
+function aesAddRoundKey(state, words, round) {
+  for (let col = 0; col < 4; col++) {
+    const word = words[round * 4 + col]
+
+    for (let row = 0; row < 4; row++) {
+      state[row + 4 * col] ^= word[row]
+    }
+  }
+}
+
+/**
+ * 状态字节代换
+ *
+ * @param state 16 字节状态
+ * @author Kai
+ * @date 2026/11/19 18:57
+ */
+function aesSubBytes(state) {
+  for (let i = 0; i < 16; i++) {
+    state[i] = AES_SBOX[state[i]]
+  }
+}
+
+/**
+ * 行移位
+ *
+ * @param state 16 字节状态
+ * @author Kai
+ * @date 2026/11/19 18:57
+ */
+function aesShiftRows(state) {
+  const snapshot = state.slice()
+
+  for (let row = 1; row < 4; row++) {
+    for (let col = 0; col < 4; col++) {
+      state[row + 4 * col] = snapshot[row + 4 * ((col + row) % 4)]
+    }
+  }
+}
+
+/**
+ * 列混合
+ *
+ * @param state 16 字节状态
+ * @author Kai
+ * @date 2026/11/19 18:57
+ */
+function aesMixColumns(state) {
+  for (let col = 0; col < 4; col++) {
+    const index = 4 * col
+    const a0 = state[index]
+    const a1 = state[index + 1]
+    const a2 = state[index + 2]
+    const a3 = state[index + 3]
+
+    state[index] = aesMul(a0, 2) ^ aesMul(a1, 3) ^ a2 ^ a3
+    state[index + 1] = a0 ^ aesMul(a1, 2) ^ aesMul(a2, 3) ^ a3
+    state[index + 2] = a0 ^ a1 ^ aesMul(a2, 2) ^ aesMul(a3, 3)
+    state[index + 3] = aesMul(a0, 3) ^ a1 ^ a2 ^ aesMul(a3, 2)
+  }
+}
+
+/**
+ * 加密一个 16 字节分组
+ *
+ * @param block 16 字节明文分组
+ * @param words 轮密钥
+ * @return 16 字节密文分组
+ * @author Kai
+ * @date 2026/11/19 18:57
+ */
+function aesEncryptBlock(block, words) {
+  const state = block.slice()
+  const rounds = 14
+
+  aesAddRoundKey(state, words, 0)
+
+  for (let round = 1; round < rounds; round++) {
+    aesSubBytes(state)
+    aesShiftRows(state)
+    aesMixColumns(state)
+    aesAddRoundKey(state, words, round)
+  }
+
+  aesSubBytes(state)
+  aesShiftRows(state)
+  aesAddRoundKey(state, words, rounds)
+
+  return state
+}
+
+/**
+ * AES-256-CBC 加密
+ *
+ * @param data 已填充的明文字节
+ * @param key 32 字节密钥
+ * @param iv 16 字节初始向量
+ * @return 密文字节
+ * @author Kai
+ * @date 2026/11/19 18:57
+ */
+function aesCbcEncrypt(data, key, iv) {
+  const words = aesExpandKey(key)
+  const out = []
+  let prev = iv.slice()
+
+  for (let offset = 0; offset < data.length; offset += 16) {
+    const block = []
+
+    for (let i = 0; i < 16; i++) {
+      block[i] = data[offset + i] ^ prev[i]
+    }
+
+    prev = aesEncryptBlock(block, words)
+
+    for (let i = 0; i < 16; i++) {
+      out.push(prev[i])
+    }
+  }
+
+  return out
 }
 
 
@@ -779,7 +1321,7 @@ function renderErrorBlock(widget, data) {
 
   widget.addSpacer(5)
 
-  const msg = widget.addText(data.error || "请检查 Token / 网络 / deviceid")
+  const msg = widget.addText(data.error || "请检查账号、密码、网络或 deviceid")
   msg.font = Font.systemFont(11)
   msg.textColor = new Color("#9CA3AF")
   msg.lineLimit = 4
