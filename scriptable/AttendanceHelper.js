@@ -20,10 +20,13 @@
 // debug      查看接口解析结果
 // update     从 GitHub 下载最新脚本并覆盖当前文件
 //
-// 快捷指令 / 小组件参数：
-// widget / refresh / leave / schedule9 / near9 / debug / update / account
-// leave、refresh、schedule9、near9 仍只填模式名，账号从钥匙串读。
-// account：传入账号、密码、设备 ID，写入钥匙串。更新脚本不会覆盖这三项。
+// 快捷指令参数可以是四行文本，一条指令同时带上动作和账号：
+// refresh
+// 账号
+// 密码
+// 设备ID
+// 第一行换成 leave、schedule9、near9、debug、update 就是对应动作。
+// 脚本会把账号写入钥匙串，桌面自动刷新不用再传。点小组件走「更新打卡小组件」。
 //
 // Scriptable 脚本建议命名：
 // AttendanceHelper
@@ -268,10 +271,13 @@ function readLaunchRequest() {
 /**
  * 把快捷指令参数拆成运行模式和账号
  *
+ * 四行文本时，第一行是动作，后面三行是账号、密码、设备 ID。
+ * 这样一条快捷指令就能完成登录和对应动作。
+ *
  * @param raw 小组件参数、快捷指令文本或词典
  * @return 模式和账号
  * @author Kai
- * @date 2026/11/23 18:25
+ * @date 2026/11/23 18:34
  */
 function parseLaunchParameter(raw) {
   let data = raw
@@ -285,20 +291,22 @@ function parseLaunchParameter(raw) {
       } catch (e) {
         return { mode: text.toLowerCase(), account: null }
       }
-    } else if (/^account(\s|$)/i.test(text)) {
-      const lines = text.split(/\r?\n/)
-      if (lines.length >= 4) {
-        data = {
-          mode: "account",
-          username: lines[1].trim(),
-          password: lines[2],
-          deviceId: lines.slice(3).join("\n").trim()
-        }
-      } else {
-        return { mode: "account", account: null }
-      }
     } else {
-      return { mode: text.toLowerCase(), account: null }
+      const lines = text.split(/\r?\n/)
+      const modeName = String(lines[0] || "").trim().toLowerCase()
+
+      if (lines.length >= 4 && isLaunchMode(modeName)) {
+        return {
+          mode: modeName,
+          account: {
+            username: lines[1].trim(),
+            password: lines[2],
+            deviceId: lines.slice(3).join("\n").trim()
+          }
+        }
+      }
+
+      return { mode: modeName || "widget", account: null }
     }
   }
 
@@ -322,6 +330,27 @@ function parseLaunchParameter(raw) {
     mode: modeText || (hasAccount ? "account" : "widget"),
     account: account
   }
+}
+
+/**
+ * 判断快捷指令第一行是不是已知动作
+ *
+ * @param mode 参数第一行
+ * @return 是 refresh、leave 这类动作时返回 true
+ * @author Kai
+ * @date 2026/11/23 18:34
+ */
+function isLaunchMode(mode) {
+  return [
+    "widget",
+    "refresh",
+    "leave",
+    "schedule9",
+    "near9",
+    "debug",
+    "update",
+    "account"
+  ].indexOf(mode) !== -1
 }
 
 /**
