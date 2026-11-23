@@ -770,14 +770,17 @@ function scriptFileManager() {
 /**
  * 读取当前可用的登录 Token
  *
+ * 空白 Token 视为没有登录。拼进请求头会变成 "Bearer "，
+ * 网关会回 500「系统暂时不可访问」，而不是要求重新登录。
+ *
  * @return 钥匙串中的 Token；没有时返回配置里的初始 Token
  * @author Kai
- * @date 2026/11/19 18:57
+ * @date 2026/11/23 18:56
  */
 function readStoredToken() {
   try {
     if (Keychain.contains(CONFIG.TOKEN_KEYCHAIN)) {
-      const saved = Keychain.get(CONFIG.TOKEN_KEYCHAIN)
+      const saved = String(Keychain.get(CONFIG.TOKEN_KEYCHAIN) || "").trim()
       if (saved) {
         return saved
       }
@@ -786,7 +789,7 @@ function readStoredToken() {
     // 锁屏时钥匙串可能读不到，继续用配置里的 Token
   }
 
-  return CONFIG.TOKEN
+  return String(CONFIG.TOKEN || "").trim()
 }
 
 /**
@@ -853,12 +856,20 @@ function makeAuthError(json, message, statusCode) {
 /**
  * 拉取一天的打卡数据
  *
+ * 没有 Token 时不发请求。空的 Authorization 会被网关说成系统不可用，
+ * 调用方会因此跳过账号登录。
+ *
  * @param token Bearer Token，不要带 Bearer 前缀
  * @return 打卡接口 JSON
  * @author Kai
- * @date 2026/11/19 18:57
+ * @date 2026/11/23 18:56
  */
 async function requestAttendance(token) {
+  const accessToken = String(token || "").trim()
+  if (!accessToken) {
+    throw makeAuthError(null, "还没有登录", 401)
+  }
+
   const date = formatDateKey(new Date())
   // 时间戳避免系统把 GET 打卡结果缓存成旧的下班卡
   const url =
@@ -871,7 +882,7 @@ async function requestAttendance(token) {
   req.timeoutInterval = 15
 
   req.headers = {
-    "Authorization": `Bearer ${token}`,
+    "Authorization": "Bearer " + accessToken,
     "UNI-Request-Source": "1",
     "terminal": "1",
     "appNo": "__UNI__89A1A02",
@@ -1068,11 +1079,13 @@ async function selectCurrentTeam(token) {
 }
 
 /**
- * 获取打卡数据。Token 失效时自动登录一次并重试
+ * 获取打卡数据。没有 Token 或 Token 失效时，用账号登录一次再拉
+ *
+ * 快捷指令写入新账号会清掉旧 Token。这时要先登录，不能先打卡。
  *
  * @return 打卡接口 JSON
  * @author Kai
- * @date 2026/11/19 20:34
+ * @date 2026/11/23 18:56
  */
 async function fetchAttendance() {
   let token = readStoredToken()
