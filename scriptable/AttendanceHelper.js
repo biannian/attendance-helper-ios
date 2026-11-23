@@ -1697,7 +1697,7 @@ async function handleLeaveCompany() {
 
   if (!data.targetReached) {
     await notifyBrief(
-        "还差 " + data.remainingMinutes + " 分钟",
+        formatRemainTitle(data.remainingMinutes),
         formatNotifyTimes(data)
     )
     return
@@ -1746,12 +1746,12 @@ async function handleScheduleNineHours() {
 
   if (remindTime <= now) {
     await notifyBrief(
-        "还差 " + data.remainingMinutes + " 分钟",
+        formatRemainTitle(data.remainingMinutes),
         formatNotifyTimes(data)
     )
   } else {
     const n = new Notification()
-    n.title = "还差 " + CONFIG.NEAR_MINUTES + " 分钟"
+    n.title = formatRemainTitle(CONFIG.NEAR_MINUTES)
     n.subtitle = formatNotifyTimes(data)
     n.sound = "default"
     n.setTriggerDate(remindTime)
@@ -1802,7 +1802,7 @@ async function handleNearNineHours() {
 
     if (!Keychain.contains(key)) {
       await notifyBrief(
-          "还差 " + data.remainingMinutes + " 分钟",
+          formatRemainTitle(data.remainingMinutes),
           formatNotifyTimes(data)
       )
 
@@ -1871,10 +1871,10 @@ function getLockScreenInlineText(data) {
 
   if (data.hasOutRecord) {
     if (data.targetReached) {
-      return "打卡正常 · 下班 " + formatTime(data.latestOutTime)
+      return "打卡正常 · 下班卡 " + formatTime(data.latestOutTime)
     }
     return data.remainingMinutes > 0
-        ? "还差 " + data.remainingMinutes + " 分钟"
+        ? formatRemainTitle(data.remainingMinutes)
         : "工时不足"
   }
 
@@ -1882,7 +1882,7 @@ function getLockScreenInlineText(data) {
     return "已满 9 小时，请检查下班卡"
   }
   return data.remainingMinutes > 0
-      ? "还差 " + data.remainingMinutes + " 分钟可下班"
+      ? formatRemainTitle(data.remainingMinutes) + "可下班"
       : "已满 9 小时"
 }
 
@@ -1906,13 +1906,13 @@ function getLockScreenShortText(data) {
     if (data.targetReached) {
       return "正常"
     }
-    return data.remainingMinutes > 0 ? String(data.remainingMinutes) + "分" : "不足"
+    return data.remainingMinutes > 0 ? formatRemainCompact(data.remainingMinutes) : "不足"
   }
 
   if (data.targetReached) {
     return "漏卡"
   }
-  return data.remainingMinutes > 0 ? String(data.remainingMinutes) + "分" : "可下班"
+  return data.remainingMinutes > 0 ? formatRemainCompact(data.remainingMinutes) : "可下班"
 }
 
 /**
@@ -1995,7 +1995,7 @@ function renderAccessoryRectangular(widget, data) {
   widget.addSpacer(2)
 
   const times = data && data.ok && data.hasClockIn
-      ? "上班 " + formatTime(data.inTime) + " · 满时 " + formatTime(data.targetTime)
+      ? "上班卡 " + formatTime(data.inTime) + " · 下班卡 " + (data.hasOutRecord ? formatTime(data.latestOutTime) : "未打")
       : "运行更新打卡快捷指令"
   const detail = widget.addText(times)
   detail.font = Font.systemFont(10)
@@ -2095,14 +2095,14 @@ async function renderSmallWidget(widget, data) {
 
   addMiniLine(
       widget,
-      "上",
+      "上班卡",
       data.hasClockIn ? formatTime(data.inTime) : "--"
   )
 
   addMiniLine(
       widget,
-      "满",
-      data.hasClockIn ? formatTime(data.targetTime) : "--"
+      "下班卡",
+      data.hasOutRecord ? formatTime(data.latestOutTime) : "未打"
   )
 
   widget.addSpacer()
@@ -2176,7 +2176,7 @@ async function renderMediumWidget(widget, data) {
 
   addInfoCell(
       row1,
-      "上班",
+      "上班卡",
       data.hasClockIn ? formatTime(data.inTime) : "--",
       "#60A5FA",
       cellWidth,
@@ -2201,8 +2201,8 @@ async function renderMediumWidget(widget, data) {
 
   addInfoCell(
       row2,
-      "最近离场",
-      data.hasOutRecord ? formatTime(data.latestOutTime) : "暂无",
+      "下班卡",
+      data.hasOutRecord ? formatTime(data.latestOutTime) : "未打",
       data.hasOutRecord ? "#F87171" : "#9CA3AF",
       cellWidth,
       32
@@ -2268,7 +2268,7 @@ async function renderLargeWidget(widget, data) {
 
   addDetailRow(
       widget,
-      "上班",
+      "上班卡",
       data.hasClockIn
           ? `${formatTime(data.inTime)} ${data.inStatusDesc || ""}`.trim()
           : "未打卡"
@@ -2276,10 +2276,10 @@ async function renderLargeWidget(widget, data) {
 
   addDetailRow(
       widget,
-      "最近离场",
+      "下班卡",
       data.hasOutRecord
           ? `${formatTime(data.latestOutTime)} ${data.outStatusDesc || ""}`.trim()
-          : "暂无"
+          : "未打"
   )
 
   addDetailRow(
@@ -2446,6 +2446,14 @@ function addProgressBar(parent, data, width) {
 
 // ==================== 状态文案 ====================
 
+/**
+ * 小组件主状态。未满 9 小时时，还差时长按小时和分钟显示。
+ *
+ * @param data 打卡摘要
+ * @return 主文案、短文案、副文案和颜色
+ * @author Kai
+ * @date 2026/11/23 14:36
+ */
 function getStatusMeta(data) {
   if (!data || !data.ok) {
     return {
@@ -2478,26 +2486,26 @@ function getStatusMeta(data) {
     return {
       mainText: "已满 9 小时",
       shortText: "可下班",
-      subText: `上班 ${formatTime(data.inTime)}，已达标`,
+      subText: `上班卡 ${formatTime(data.inTime)}，已达标`,
       color: "#34D399"
     }
   }
 
-  const remain = data.remainingMinutes || 0
+  const remainText = formatRemainText(data.remainingMinutes || 0)
 
   if (data.hasOutRecord) {
     return {
-      mainText: `还差 ${remain} 分钟`,
-      shortText: `${remain} 分钟`,
-      subText: `最近离场 ${formatTime(data.latestOutTime)}`,
+      mainText: "还差 " + remainText,
+      shortText: remainText,
+      subText: "下班卡 " + formatTime(data.latestOutTime),
       color: "#F87171"
     }
   }
 
   return {
-    mainText: `还差 ${remain} 分钟`,
-    shortText: `${remain} 分钟`,
-    subText: `预计 ${formatTime(data.targetTime)} 可下班`,
+    mainText: "还差 " + remainText,
+    shortText: remainText,
+    subText: "可下班 " + formatTime(data.targetTime),
     color: "#60A5FA"
   }
 }
@@ -2518,13 +2526,13 @@ async function handleDebug() {
         `组织：${data.orgName || "--"}\n` +
         `班次：${data.shiftName || "--"}\n` +
         `日期：${data.date || "--"}\n\n` +
-        `上班：${data.hasClockIn ? formatTime(data.inTime) : "未打卡"} ${data.inStatusDesc || ""}\n` +
-        `最近离场：${data.hasOutRecord ? formatTime(data.latestOutTime) : "暂无"} ${data.outStatusDesc || ""}\n\n` +
+        `上班卡：${data.hasClockIn ? formatTime(data.inTime) : "未打卡"} ${data.inStatusDesc || ""}\n` +
+        `下班卡：${data.hasOutRecord ? formatTime(data.latestOutTime) : "未打"} ${data.outStatusDesc || ""}\n\n` +
         `当前工时：${data.hasOutRecord ? formatDuration(data.currentWorkMs) : "--"}\n` +
         `离场时工时：${data.hasOutRecord ? formatDuration(data.latestOutWorkMs) : "--"}\n` +
         `可下班：${data.hasClockIn ? formatTime(data.targetTime) : "--"}\n` +
         `是否已满：${data.targetReached ? "是" : "否"}\n` +
-        `剩余分钟：${data.remainingMinutes}\n` +
+        `还差：${data.targetReached ? "已达标" : formatRemainText(data.remainingMinutes)}\n` +
         `倒计时：${data.countdownText}`
   }
 
@@ -2771,19 +2779,69 @@ function formatCountdown(ms) {
     return "已达标"
   }
 
-  const totalMinutes = Math.ceil(ms / 1000 / 60)
-  const h = Math.floor(totalMinutes / 60)
-  const m = totalMinutes % 60
+  return formatRemainText(Math.ceil(ms / 1000 / 60))
+}
 
-  if (h <= 0) {
-    return `${m}分钟`
+/**
+ * 剩余工时，按小时和分钟书写
+ *
+ * 不足 1 小时只写分钟。整小时不补 0 分钟。
+ *
+ * @param minutes 剩余分钟
+ * @return 如 1小时20分钟、2小时、5分钟
+ * @author Kai
+ * @date 2026/11/23 14:36
+ */
+function formatRemainText(minutes) {
+  const total = Math.max(0, Math.round(Number(minutes) || 0))
+  const hours = Math.floor(total / 60)
+  const mins = total % 60
+
+  if (hours <= 0) {
+    return mins + "分钟"
   }
 
-  if (m <= 0) {
-    return `${h}小时`
+  if (mins <= 0) {
+    return hours + "小时"
   }
 
-  return `${h}小时${m}分`
+  return hours + "小时" + mins + "分钟"
+}
+
+/**
+ * 通知和状态标题里的还差时长
+ *
+ * @param minutes 剩余分钟
+ * @return 如 还差 1小时20分钟
+ * @author Kai
+ * @date 2026/11/23 14:36
+ */
+function formatRemainTitle(minutes) {
+  return "还差 " + formatRemainText(minutes)
+}
+
+/**
+ * 锁屏圆形里的还差时长，空间只够时和分
+ *
+ * @param minutes 剩余分钟
+ * @return 如 1时20分、2时、5分
+ * @author Kai
+ * @date 2026/11/23 14:36
+ */
+function formatRemainCompact(minutes) {
+  const total = Math.max(0, Math.round(Number(minutes) || 0))
+  const hours = Math.floor(total / 60)
+  const mins = total % 60
+
+  if (hours <= 0) {
+    return mins + "分"
+  }
+
+  if (mins <= 0) {
+    return hours + "时"
+  }
+
+  return hours + "时" + mins + "分"
 }
 
 function formatDateKey(date) {
@@ -3022,26 +3080,30 @@ function addDays(day, days) {
 }
 
 /**
- * 通知第二行：上班时间到结束时间
+ * 通知第二行：上班卡和下班卡分开写
  *
- * 已经打下班卡时，结束用下班卡。还没打时，结束用可下班时间。
+ * 已打下班卡时显示下班时间。还没打时下班卡写未打，后面附上可下班时间。
  *
  * @param data 打卡摘要
- * @return 一行时间范围
+ * @return 一行打卡时间
  * @author Kai
- * @date 2026/11/19 20:43
+ * @date 2026/11/23 14:36
  */
 function formatNotifyTimes(data) {
   const start = data.hasClockIn ? formatTime(data.inTime) : "--"
-  let end = data.targetTime ? formatTime(data.targetTime) : "--"
-  let mark = " 可下班"
+  let text = "上班卡 " + start
 
   if (data.hasOutRecord && data.latestOutTime) {
-    end = formatTime(data.latestOutTime)
-    mark = ""
+    return text + " · 下班卡 " + formatTime(data.latestOutTime)
   }
 
-  return start + " – " + end + mark
+  text += " · 下班卡 未打"
+
+  if (data.targetTime) {
+    text += " · 可下班 " + formatTime(data.targetTime)
+  }
+
+  return text
 }
 
 /**
