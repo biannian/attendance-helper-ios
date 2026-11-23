@@ -21,7 +21,9 @@
 // update     从 GitHub 下载最新脚本并覆盖当前文件
 //
 // 快捷指令 / 小组件参数：
-// widget / refresh / leave / schedule9 / near9 / debug / update
+// widget / refresh / leave / schedule9 / near9 / debug / update / account
+// leave、refresh、schedule9、near9 仍只填模式名，账号从钥匙串读。
+// account：传入账号、密码、设备 ID，写入钥匙串。更新脚本不会覆盖这三项。
 //
 // Scriptable 脚本建议命名：
 // AttendanceHelper
@@ -36,13 +38,13 @@ const CONFIG = {
   API_BASE: "https://api.hikiot.com/api-attendance/v1/statistics/v2/individual/single/daily",
 
   // 初始 Bearer Token，不要带 Bearer 前缀。钥匙串里已有新 Token 时优先用钥匙串
-  TOKEN: "1c1ae3b0-a900-45ba-b0da-234d5cb8f1c1",
+  TOKEN: "",
 
-  // 登录账号。打卡接口报 Token 失效时，用它重新登录
-  USERNAME: "19002664001",
+  // 登录账号。留空，由快捷指令写入钥匙串，避免更新脚本时被覆盖
+  USERNAME: "",
 
-  // 登录密码明文。提交前按网页登录页同一套 AES 加密
-  PASSWORD: "K1panguangke",
+  // 登录密码明文。留空，由快捷指令写入钥匙串。提交前按网页登录页同一套 AES 加密
+  PASSWORD: "",
 
   // 密码登录接口。成功时 data.token 是新的 Bearer Token
   LOGIN_URL: "https://api.hikiot.com/api-saas/open/v1/pwdLogin",
@@ -53,8 +55,17 @@ const CONFIG = {
   // 钥匙串键名。登录成功后把新 Token 存在这里，小组件下次直接用
   TOKEN_KEYCHAIN: "attendance-helper-token",
 
-  // 已登记的 deviceid。换成本机没登记过的值会要求安全验证，拿不到 Token
-  DEVICE_ID: "050309CD-F3D6-4F9E-AE03-729615B05E8A-73263-00002858645B11BC",
+  // 账号在钥匙串里的键名。更新脚本不会清掉
+  USERNAME_KEYCHAIN: "attendance-helper-username",
+
+  // 密码在钥匙串里的键名
+  PASSWORD_KEYCHAIN: "attendance-helper-password",
+
+  // 设备 ID 在钥匙串里的键名
+  DEVICE_KEYCHAIN: "attendance-helper-device-id",
+
+  // 已登记的 deviceid。留空，由快捷指令写入钥匙串。换成本机没登记过的值会要求安全验证
+  DEVICE_ID: "",
 
   // 公司名称，用于通知文案
   COMPANY_NAME: "iGroup",
@@ -69,8 +80,14 @@ const CONFIG = {
   // 提前多少分钟提醒快满 9 小时
   NEAR_MINUTES: 5,
 
-  // 小组件建议刷新间隔。倒计时中会缩短到 1 分钟。iOS 不保证一定按时刷新
-  WIDGET_REFRESH_MINUTES: 5,
+  // 工作日早上开始拉上班卡。未到这个时间，下次刷新就定在这里
+  MORNING_REFRESH_START: "08:00",
+
+  // 过了这个时间还没有上班卡，当天不再轮询
+  MORNING_REFRESH_END: "11:00",
+
+  // 早上还没打到上班卡时的间隔。系统不一定按时执行
+  MORNING_REFRESH_MINUTES: 10,
 
   // 最近一次成功获取的标准化考勤快照。锁屏和桌面组件只读这份快照
   ATTENDANCE_CACHE_KEY: "attendance-summary-snapshot-v1",
@@ -146,11 +163,23 @@ const AES_RCON = [0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x
 
 const now = new Date()
 
-const mode = String(
-    args.widgetParameter ||
-    args.shortcutParameter ||
-    "widget"
-).trim().toLowerCase()
+/** 本次启动解析出的模式，以及快捷指令带来的账号 */
+const launch = readLaunchRequest()
+
+loadAccountFromKeychain()
+
+/** 快捷指令写入账号失败时的说明。空字符串表示没有失败 */
+let accountSaveError = ""
+
+if (launch.account) {
+  try {
+    saveAccountToKeychain(launch.account)
+  } catch (e) {
+    accountSaveError = String(e && e.message ? e.message : e)
+  }
+}
+
+const mode = launch.mode
 
 
 // ==================== 主入口 ====================
@@ -167,6 +196,12 @@ if (config.runsInWidget) {
   }
   const widget = await createWidget(data)
   Script.setWidget(widget)
+  Script.complete()
+} else if (accountSaveError) {
+  await presentMessage("设置账号", accountSaveError)
+  Script.complete()
+} else if (mode === "account") {
+  await presentMessage("设置账号", "已记在钥匙串。之后更新脚本不会覆盖账号、密码和设备 ID。")
   Script.complete()
 } else {
   const fromShortcut = isLaunchedFromShortcut()
@@ -214,6 +249,233 @@ function isLaunchedFromShortcut() {
 }
 
 /**
+ * 解析小组件参数或快捷指令参数
+ *
+ * 快捷指令可以传词典，或传四行文本。带账号时记入钥匙串。
+ *
+ * @return 模式和账号。没有账号时 account 为 null
+ * @author Kai
+ * @date 2026/11/23 18:25
+ */
+function readLaunchRequest() {
+  const raw = config.runsInWidget
+      ? (args.widgetParameter || "widget")
+      : (args.shortcutParameter || args.widgetParameter || "widget")
+
+  return parseLaunchParameter(raw)
+}
+
+/**
+ * 把快捷指令参数拆成运行模式和账号
+ *
+ * @param raw 小组件参数、快捷指令文本或词典
+ * @return 模式和账号
+ * @author Kai
+ * @date 2026/11/23 18:25
+ */
+function parseLaunchParameter(raw) {
+  let data = raw
+
+  if (typeof raw === "string") {
+    const text = raw.trim()
+
+    if (text.startsWith("{")) {
+      try {
+        data = JSON.parse(text)
+      } catch (e) {
+        return { mode: text.toLowerCase(), account: null }
+      }
+    } else if (/^account(\s|$)/i.test(text)) {
+      const lines = text.split(/\r?\n/)
+      if (lines.length >= 4) {
+        data = {
+          mode: "account",
+          username: lines[1].trim(),
+          password: lines[2],
+          deviceId: lines.slice(3).join("\n").trim()
+        }
+      } else {
+        return { mode: "account", account: null }
+      }
+    } else {
+      return { mode: text.toLowerCase(), account: null }
+    }
+  }
+
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return {
+      mode: String(data || "widget").trim().toLowerCase() || "widget",
+      account: null
+    }
+  }
+
+  const username = String(data.username || data.userName || data.user || "").trim()
+  const password = data.password == null ? "" : String(data.password)
+  const deviceId = String(data.deviceId || data.deviceid || data.deviceID || "").trim()
+  const modeText = String(data.mode || data.action || "").trim().toLowerCase()
+  const hasAccount = !!(username || password || deviceId)
+  const account = hasAccount
+      ? { username: username, password: password, deviceId: deviceId }
+      : null
+
+  return {
+    mode: modeText || (hasAccount ? "account" : "widget"),
+    account: account
+  }
+}
+
+/**
+ * 从钥匙串恢复账号、密码和设备 ID
+ *
+ * 脚本文件会被更新覆盖，这三项只认钥匙串。
+ *
+ * @author Kai
+ * @date 2026/11/23 18:25
+ */
+function loadAccountFromKeychain() {
+  const username = readKeychainValue(CONFIG.USERNAME_KEYCHAIN).trim()
+  const password = readKeychainValue(CONFIG.PASSWORD_KEYCHAIN)
+  const deviceId = readKeychainValue(CONFIG.DEVICE_KEYCHAIN).trim()
+
+  if (username) {
+    CONFIG.USERNAME = username
+  }
+  if (password) {
+    CONFIG.PASSWORD = password
+  }
+  if (deviceId) {
+    CONFIG.DEVICE_ID = deviceId
+  }
+}
+
+/**
+ * 把快捷指令传来的账号写入钥匙串
+ *
+ * 账号、密码或设备 ID 有变化时，清掉旧登录 Token 和打卡快照。
+ *
+ * @param account 账号、密码、设备 ID
+ * @author Kai
+ * @date 2026/11/23 18:25
+ */
+function saveAccountToKeychain(account) {
+  const username = String(account && account.username || "").trim()
+  const password = account && account.password != null ? String(account.password) : ""
+  const deviceId = String(account && account.deviceId || "").trim()
+
+  if (!username || !password || !deviceId) {
+    throw new Error("账号、密码、设备 ID 都要填")
+  }
+
+  const previousUser = readKeychainValue(CONFIG.USERNAME_KEYCHAIN)
+  const previousPassword = readKeychainValue(CONFIG.PASSWORD_KEYCHAIN)
+  const previousDevice = readKeychainValue(CONFIG.DEVICE_KEYCHAIN)
+  const changed = previousUser !== username
+      || previousPassword !== password
+      || previousDevice !== deviceId
+
+  Keychain.set(CONFIG.USERNAME_KEYCHAIN, username)
+  Keychain.set(CONFIG.PASSWORD_KEYCHAIN, password)
+  Keychain.set(CONFIG.DEVICE_KEYCHAIN, deviceId)
+  CONFIG.USERNAME = username
+  CONFIG.PASSWORD = password
+  CONFIG.DEVICE_ID = deviceId
+
+  if (changed) {
+    clearStoredSession()
+  }
+}
+
+/**
+ * 清掉上一账号的登录 Token 和打卡快照
+ *
+ * @author Kai
+ * @date 2026/11/23 18:25
+ */
+function clearStoredSession() {
+  try {
+    Keychain.remove(CONFIG.TOKEN_KEYCHAIN)
+  } catch (e) {
+    // 没有旧 Token 时忽略
+  }
+
+  try {
+    Keychain.remove(CONFIG.ATTENDANCE_CACHE_KEY)
+  } catch (e) {
+    // 没有旧快照时忽略
+  }
+
+  CONFIG.TOKEN = ""
+}
+
+/**
+ * 读取钥匙串中的一项
+ *
+ * @param key 钥匙串键名
+ * @return 已保存的文本；没有或读失败时返回空字符串
+ * @author Kai
+ * @date 2026/11/23 18:25
+ */
+function readKeychainValue(key) {
+  try {
+    if (Keychain.contains(key)) {
+      return String(Keychain.get(key) || "")
+    }
+  } catch (e) {
+    // 锁屏时钥匙串可能读不到
+  }
+
+  return ""
+}
+
+/**
+ * 在 Scriptable 里填写账号并写入钥匙串
+ *
+ * @author Kai
+ * @date 2026/11/23 18:25
+ */
+async function promptAndSaveAccount() {
+  const alert = new Alert()
+  alert.title = "设置账号"
+  alert.message = "记在钥匙串里。更新脚本不会覆盖。"
+  alert.addTextField("账号", CONFIG.USERNAME || "")
+  alert.addSecureTextField("密码", "")
+  alert.addTextField("设备 ID", CONFIG.DEVICE_ID || "")
+  alert.addAction("保存")
+  alert.addCancelAction("取消")
+
+  if (await alert.presentAlert() !== 0) {
+    return
+  }
+
+  try {
+    saveAccountToKeychain({
+      username: alert.textFieldValue(0),
+      password: alert.textFieldValue(1) || CONFIG.PASSWORD,
+      deviceId: alert.textFieldValue(2)
+    })
+    await presentMessage("设置账号", "已记在钥匙串。换过账号后，下次刷新会重新登录。")
+  } catch (e) {
+    await presentMessage("设置账号", String(e && e.message ? e.message : e))
+  }
+}
+
+/**
+ * 弹出一句说明
+ *
+ * @param title 标题
+ * @param message 说明
+ * @author Kai
+ * @date 2026/11/23 18:25
+ */
+async function presentMessage(title, message) {
+  const alert = new Alert()
+  alert.title = title
+  alert.message = message
+  alert.addAction("好")
+  await alert.present()
+}
+
+/**
  * 拉取打卡数据、写入快照并生成小组件
  *
  * @param options 展示选项。presentPreview 为 true 时弹出中号预览
@@ -244,6 +506,7 @@ async function showMainMenu() {
   alert.addAction("预约 9 小时提醒")
   alert.addAction("检查是否快满 9 小时")
   alert.addAction("更新脚本")
+  alert.addAction("设置账号")
   alert.addCancelAction("取消")
 
   const index = await alert.presentSheet()
@@ -260,6 +523,8 @@ async function showMainMenu() {
     await handleNearNineHours()
   } else if (index === 5) {
     await handleUpdateScript()
+  } else if (index === 6) {
+    await promptAndSaveAccount()
   }
 }
 
@@ -1348,6 +1613,9 @@ function normalizeAttendanceData(raw) {
   let latestOutWorkMs = 0
   let targetTime = null
 
+  // 没打下班卡时不累计工时。倒计时只算到应走时间，到点后剩余为 0。
+  let remainingMs = 0
+
   if (hasClockIn) {
     targetTime = new Date(inTime.getTime() + targetMs)
 
@@ -1358,35 +1626,29 @@ function normalizeAttendanceData(raw) {
           latestOutTime.getTime() - inTime.getTime()
       )
       currentWorkMs = latestOutWorkMs
-    } else {
-      currentWorkMs = Math.max(0, now.getTime() - inTime.getTime())
+      if (currentWorkMs < targetMs) {
+        remainingMs = targetMs - currentWorkMs
+      }
+    } else if (now.getTime() < targetTime.getTime()) {
+      remainingMs = targetTime.getTime() - now.getTime()
     }
   }
 
-  const targetReached = hasClockIn && currentWorkMs >= targetMs
+  const targetReached = hasClockIn && remainingMs <= 0 && (
+      hasOutRecord
+          ? currentWorkMs >= targetMs
+          : !!(targetTime && now.getTime() >= targetTime.getTime())
+  )
 
-  let remainingMinutes = 0
-  if (hasClockIn && !targetReached) {
-    if (hasOutRecord) {
-      remainingMinutes = Math.max(
-          0,
-          Math.ceil((targetMs - currentWorkMs) / 1000 / 60)
-      )
-    } else {
-      remainingMinutes = Math.max(
-          0,
-          Math.ceil((targetTime.getTime() - now.getTime()) / 1000 / 60)
-      )
-    }
-  }
+  const remainingMinutes = remainingMs > 0
+      ? Math.ceil(remainingMs / 1000 / 60)
+      : 0
 
   const countdownText = !hasClockIn
       ? "--"
-      : targetReached
-          ? "已达标"
-          : hasOutRecord
-              ? formatCountdown(targetMs - currentWorkMs)
-              : formatCountdown(targetTime.getTime() - now.getTime())
+      : remainingMs > 0
+          ? formatCountdown(remainingMs)
+          : "已达标"
 
   return {
     ok: true,
@@ -1560,7 +1822,7 @@ async function createWidget(data) {
 
   // 休息日隐藏全部组件内容。工作日包含调休补班。
   if (!(await isChinaWorkday(now))) {
-    widget.refreshAfterDate = getNextWidgetRefreshDate()
+    widget.refreshAfterDate = morningRefreshOn(addDays(now, 1))
     return widget
   }
 
@@ -1654,30 +1916,64 @@ function getLockScreenShortText(data) {
 }
 
 /**
- * 还在上班且未到可下班时间时，用系统倒计时；否则用文字状态
+ * 未到应走时间时，用系统倒计时显示当前时间到应走时间
+ *
+ * 到点或已有下班卡后改成文字，避免系统倒计时过点后继续往上加。
  *
  * @param widget 锁屏组件
  * @param data 打卡摘要
  * @param fallbackText 不倒计时时显示的文字
  * @return 日期元素或文字元素
  * @author Kai
- * @date 2026/11/19 20:50
+ * @date 2026/11/23 18:28
  */
 function addLockScreenCountdown(widget, data, fallbackText) {
-  if (
+  if (showsLiveCountdown(data)) {
+    return addLiveCountdown(widget, data, Font.boldSystemFont(13), "#FFFFFF")
+  }
+
+  return widget.addText(fallbackText)
+}
+
+/**
+ * 还没打下班卡，并且当前时间还没到应走时间
+ *
+ * @param data 打卡摘要
+ * @return 需要跟着当前时间倒计时时返回 true
+ * @author Kai
+ * @date 2026/11/23 18:29
+ */
+function showsLiveCountdown(data) {
+  return !!(
       data &&
       data.ok &&
       data.hasClockIn &&
       !data.hasOutRecord &&
+      !data.targetReached &&
       data.targetTime &&
-      data.targetTime.getTime() > now.getTime()
-  ) {
-    const timer = widget.addDate(data.targetTime)
-    timer.applyTimerStyle()
-    return timer
-  }
+      data.targetTime.getTime() > Date.now()
+  )
+}
 
-  return widget.addText(fallbackText)
+/**
+ * 画一个走到应走时间就停的系统倒计时
+ *
+ * @param parent 父级组件或堆栈
+ * @param data 打卡摘要
+ * @param font 字体
+ * @param color 颜色
+ * @return 倒计时元素
+ * @author Kai
+ * @date 2026/11/23 18:29
+ */
+function addLiveCountdown(parent, data, font, color) {
+  const timer = parent.addDate(data.targetTime)
+  timer.applyTimerStyle()
+  timer.font = font
+  timer.textColor = new Color(color || "#FFFFFF")
+  timer.lineLimit = 1
+  timer.minimumScaleFactor = 0.65
+  return timer
 }
 
 /**
@@ -1776,11 +2072,16 @@ async function renderSmallWidget(widget, data) {
 
   const meta = getStatusMeta(data)
 
-  const status = widget.addText(meta.shortText)
-  status.font = Font.boldSystemFont(18)
-  status.textColor = new Color(meta.color)
-  status.lineLimit = 1
-  status.minimumScaleFactor = 0.65
+  if (showsLiveCountdown(data)) {
+    const status = addLiveCountdown(widget, data, Font.boldSystemFont(18), meta.color)
+    status.minimumScaleFactor = 0.65
+  } else {
+    const status = widget.addText(meta.shortText)
+    status.font = Font.boldSystemFont(18)
+    status.textColor = new Color(meta.color)
+    status.lineLimit = 1
+    status.minimumScaleFactor = 0.65
+  }
 
   widget.addSpacer(4)
 
@@ -1837,7 +2138,7 @@ async function renderMediumWidget(widget, data) {
   statusRow.layoutHorizontally()
   statusRow.centerAlignContent()
 
-  const status = statusRow.addText(meta.mainText)
+  const status = statusRow.addText(showsLiveCountdown(data) ? "距应走" : meta.mainText)
   status.font = Font.boldSystemFont(16)
   status.textColor = new Color(meta.color)
   status.lineLimit = 1
@@ -1845,17 +2146,25 @@ async function renderMediumWidget(widget, data) {
 
   statusRow.addSpacer()
 
-  const workText = statusRow.addText(
-      data.hasClockIn ? formatShortDuration(data.currentWorkMs) : "--"
-  )
-  workText.font = Font.boldSystemFont(12)
-  workText.textColor = Color.white()
-  workText.lineLimit = 1
-  workText.minimumScaleFactor = 0.7
+  if (showsLiveCountdown(data)) {
+    addLiveCountdown(statusRow, data, Font.boldSystemFont(16), "#FFFFFF")
+  } else {
+    const workText = statusRow.addText(
+        data.hasOutRecord ? formatShortDuration(data.currentWorkMs) : "--"
+    )
+    workText.font = Font.boldSystemFont(12)
+    workText.textColor = Color.white()
+    workText.lineLimit = 1
+    workText.minimumScaleFactor = 0.7
+  }
 
   card.addSpacer(4)
 
-  addProgressBar(card, data, 240)
+  const contentWidth = mediumWidgetContentWidth()
+  const cellGap = 8
+  const cellWidth = Math.floor((contentWidth - cellGap) / 2)
+
+  addProgressBar(card, data, contentWidth - 16)
 
   widget.addSpacer(6)
 
@@ -1870,18 +2179,18 @@ async function renderMediumWidget(widget, data) {
       "上班",
       data.hasClockIn ? formatTime(data.inTime) : "--",
       "#60A5FA",
-      136,
+      cellWidth,
       32
   )
 
-  row1.addSpacer(8)
+  row1.addSpacer(cellGap)
 
   addInfoCell(
       row1,
       "可下班",
       data.hasClockIn ? formatTime(data.targetTime) : "--",
       "#34D399",
-      136,
+      cellWidth,
       32
   )
 
@@ -1895,18 +2204,18 @@ async function renderMediumWidget(widget, data) {
       "最近离场",
       data.hasOutRecord ? formatTime(data.latestOutTime) : "暂无",
       data.hasOutRecord ? "#F87171" : "#9CA3AF",
-      136,
+      cellWidth,
       32
   )
 
-  row2.addSpacer(8)
+  row2.addSpacer(cellGap)
 
   addInfoCell(
       row2,
       "更新",
       formatTime(now),
       "#9CA3AF",
-      136,
+      cellWidth,
       32
   )
 }
@@ -1932,11 +2241,16 @@ async function renderLargeWidget(widget, data) {
   statusCard.cornerRadius = 14
   statusCard.setPadding(12, 12, 12, 12)
 
-  const title = statusCard.addText(meta.mainText)
-  title.font = Font.boldSystemFont(22)
-  title.textColor = new Color(meta.color)
-  title.lineLimit = 1
-  title.minimumScaleFactor = 0.7
+  if (showsLiveCountdown(data)) {
+    const title = addLiveCountdown(statusCard, data, Font.boldSystemFont(22), meta.color)
+    title.minimumScaleFactor = 0.7
+  } else {
+    const title = statusCard.addText(meta.mainText)
+    title.font = Font.boldSystemFont(22)
+    title.textColor = new Color(meta.color)
+    title.lineLimit = 1
+    title.minimumScaleFactor = 0.7
+  }
 
   statusCard.addSpacer(4)
 
@@ -1971,7 +2285,7 @@ async function renderLargeWidget(widget, data) {
   addDetailRow(
       widget,
       "当前工时",
-      data.hasClockIn ? formatDuration(data.currentWorkMs) : "--"
+      data.hasOutRecord ? formatDuration(data.currentWorkMs) : "--"
   )
 
   addDetailRow(
@@ -2088,8 +2402,8 @@ function addDetailRow(widget, label, value) {
 }
 
 function addProgressBar(parent, data, width) {
-  // 下班卡已经覆盖可下班时间，进度条不再变化，直接不画
-  if (data.hasOutRecord && data.targetReached) {
+  // 没打下班卡时不画进度，避免把未结算工时画成一直在涨
+  if (!data.hasOutRecord || data.targetReached) {
     return
   }
 
@@ -2151,6 +2465,15 @@ function getStatusMeta(data) {
     }
   }
 
+  if (data.targetReached && !data.hasOutRecord) {
+    return {
+      mainText: "已到应走时间",
+      shortText: "可下班",
+      subText: `应走 ${formatTime(data.targetTime)}`,
+      color: "#34D399"
+    }
+  }
+
   if (data.targetReached) {
     return {
       mainText: "已满 9 小时",
@@ -2197,7 +2520,7 @@ async function handleDebug() {
         `日期：${data.date || "--"}\n\n` +
         `上班：${data.hasClockIn ? formatTime(data.inTime) : "未打卡"} ${data.inStatusDesc || ""}\n` +
         `最近离场：${data.hasOutRecord ? formatTime(data.latestOutTime) : "暂无"} ${data.outStatusDesc || ""}\n\n` +
-        `当前工时：${data.hasClockIn ? formatDuration(data.currentWorkMs) : "--"}\n` +
+        `当前工时：${data.hasOutRecord ? formatDuration(data.currentWorkMs) : "--"}\n` +
         `离场时工时：${data.hasOutRecord ? formatDuration(data.latestOutWorkMs) : "--"}\n` +
         `可下班：${data.hasClockIn ? formatTime(data.targetTime) : "--"}\n` +
         `是否已满：${data.targetReached ? "是" : "否"}\n` +
@@ -2565,21 +2888,137 @@ function getWidgetUrl() {
 /**
  * 下次建议刷新时间
  *
- * 还在倒计时时缩短到 1 分钟，方便点击后系统接受新快照。
+ * 早上没打卡时按间隔再拉。拉到上班时间后停到可下班时刻，倒计时由系统自己走。
+ * 过了早上窗口、已经下班，或可下班时间已过，就等到下一个早上。
  *
- * @param data 打卡摘要，休息日可以不传
+ * @param data 打卡摘要
  * @return 刷新时间
  * @author Kai
- * @date 2026/11/19 20:50
+ * @date 2026/11/23 18:24
  */
 function getNextWidgetRefreshDate(data) {
-  let minutes = CONFIG.WIDGET_REFRESH_MINUTES
+  const start = morningRefreshOn(now)
+  const end = clockOn(now, CONFIG.MORNING_REFRESH_END)
 
-  if (data && data.ok && data.hasClockIn && !data.hasOutRecord && !data.targetReached) {
-    minutes = Math.min(minutes, 1)
+  if (data && data.ok && data.hasClockIn) {
+    if (
+        !data.hasOutRecord &&
+        data.targetTime &&
+        data.targetTime.getTime() > Date.now() + 60 * 1000
+    ) {
+      return data.targetTime
+    }
+
+    return morningRefreshOn(addDays(now, 1))
   }
 
-  return new Date(Date.now() + minutes * 60 * 1000)
+  if (now.getTime() < start.getTime()) {
+    return start
+  }
+
+  if (now.getTime() < end.getTime()) {
+    return new Date(Date.now() + CONFIG.MORNING_REFRESH_MINUTES * 60 * 1000)
+  }
+
+  return morningRefreshOn(addDays(now, 1))
+}
+
+/**
+ * 中号小组件去掉内边距后的内容宽度
+ *
+ * 四个信息格按这个宽度平分，避免宽屏右侧留空。
+ *
+ * @return 内容宽度，单位是点
+ * @author Kai
+ * @date 2026/11/23 18:24
+ */
+function mediumWidgetContentWidth() {
+  return Math.max(280, homeScreenWidgetWidth("medium") - 20)
+}
+
+/**
+ * 按机型估算桌面小组件宽度
+ *
+ * @param family 小组件尺寸，目前使用 medium
+ * @return 小组件宽度，单位是点
+ * @author Kai
+ * @date 2026/11/23 18:24
+ */
+function homeScreenWidgetWidth(family) {
+  const screen = Device.screenSize()
+  const key = Math.round(screen.width) + "x" + Math.round(screen.height)
+  const mediumWidths = {
+    "320x568": 292,
+    "375x667": 329,
+    "375x812": 329,
+    "390x844": 338,
+    "393x852": 338,
+    "402x874": 364,
+    "414x736": 348,
+    "414x896": 360,
+    "428x926": 364,
+    "430x932": 364,
+    "440x956": 364
+  }
+
+  if (family === "medium" && mediumWidths[key]) {
+    return mediumWidths[key]
+  }
+
+  if (Device.isPad && Device.isPad()) {
+    return Math.round((screen.width - 90) / 2)
+  }
+
+  return mediumWidths["390x844"]
+}
+
+/**
+ * 某一天的早上刷新时刻
+ *
+ * @param day 目标日期
+ * @return 当天早上开始拉上班卡的时间
+ * @author Kai
+ * @date 2026/11/23 18:24
+ */
+function morningRefreshOn(day) {
+  return clockOn(day, CONFIG.MORNING_REFRESH_START)
+}
+
+/**
+ * 把日期定到当天的某个时分
+ *
+ * @param day 目标日期
+ * @param hhmm 时分，格式 HH:mm
+ * @return 当天的这个时刻
+ * @author Kai
+ * @date 2026/11/23 18:24
+ */
+function clockOn(day, hhmm) {
+  const parts = String(hhmm || "08:00").split(":")
+  return new Date(
+      day.getFullYear(),
+      day.getMonth(),
+      day.getDate(),
+      Number(parts[0]) || 0,
+      Number(parts[1]) || 0,
+      0,
+      0
+  )
+}
+
+/**
+ * 日期加减天数
+ *
+ * @param day 起始日期
+ * @param days 增加的天数，负数表示往前
+ * @return 新日期
+ * @author Kai
+ * @date 2026/11/23 18:24
+ */
+function addDays(day, days) {
+  const next = new Date(day.getTime())
+  next.setDate(next.getDate() + days)
+  return next
 }
 
 /**
