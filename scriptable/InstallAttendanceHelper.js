@@ -6,26 +6,24 @@
 /**
  * 打卡脚本安装器
  *
- * 从私有仓库下载 AttendanceHelper.js，写进 Scriptable。
- * 只需要把这一小段放进 Scriptable 并运行一次。
+ * 从公开仓库下载 AttendanceHelper.js，写进 Scriptable。
+ * 只需要把这一小段放进 Scriptable 并运行一次，不需要 GitHub Token。
  *
  * @author Kai
- * @date 2026/11/19 19:03
+ * @date 2026/11/24 15:37
  * @description 避免每次把整份打卡脚本复制进 Scriptable
  */
 
 /** 安装来源与脚本文件名 */
 const INSTALL = {
-    /** 私有仓库 */
+    /** 公开仓库 */
     repo: "biannian/attendance-helper-ios",
     /** 仓库里的脚本路径 */
     path: "scriptable/AttendanceHelper.js",
     /** 读取的分支 */
     ref: "main",
     /** 写进 Scriptable 后的文件名 */
-    scriptName: "AttendanceHelper.js",
-    /** GitHub Token 在钥匙串里的键名，和打卡脚本共用 */
-    tokenKey: "attendance-helper-github-token"
+    scriptName: "AttendanceHelper.js"
 }
 
 await installAttendanceScript()
@@ -35,14 +33,13 @@ Script.complete()
  * 下载并安装打卡脚本
  *
  * @author Kai
- * @date 2026/11/19 19:03
+ * @date 2026/11/24 15:37
  */
 async function installAttendanceScript() {
     let message = ""
 
     try {
-        const token = await askGitHubToken()
-        const code = await downloadAttendanceScript(token)
+        const code = await downloadAttendanceScript()
         const path = await writeAttendanceScript(code)
         message = "已安装到 " + path + "。小组件请选择 AttendanceHelper。以后再运行本安装器即可更新。"
     } catch (error) {
@@ -57,72 +54,25 @@ async function installAttendanceScript() {
 }
 
 /**
- * 读取或询问 GitHub 只读 Token
+ * 从公开仓库下载打卡脚本，请求头不带 Token
  *
- * @return Token 字符串
- * @author Kai
- * @date 2026/11/19 19:03
- */
-async function askGitHubToken() {
-    try {
-        if (Keychain.contains(INSTALL.tokenKey)) {
-            const saved = String(Keychain.get(INSTALL.tokenKey) || "").trim()
-            if (saved) {
-                return saved.replace(/^Bearer\s+/i, "")
-            }
-        }
-    } catch (error) {
-        // 钥匙串读不到时再问用户
-    }
-
-    const alert = new Alert()
-    alert.title = "安装打卡脚本"
-    alert.message = "仓库是私有的。填一次 GitHub 只读 Token，之后记在钥匙串。"
-    alert.addTextField("github_pat_ 或 ghp_")
-    alert.addAction("安装")
-    alert.addCancelAction("取消")
-
-    if (await alert.presentAlert() !== 0) {
-        throw new Error("已取消安装")
-    }
-
-    const token = String(alert.textFieldValue(0) || "").trim().replace(/^Bearer\s+/i, "")
-
-    if (!token) {
-        throw new Error("没有填写 GitHub Token")
-    }
-
-    try {
-        Keychain.set(INSTALL.tokenKey, token)
-    } catch (error) {
-        // 记不住也继续用这一次
-    }
-
-    return token
-}
-
-/**
- * 下载仓库中的打卡脚本
- *
- * @param token GitHub 只读 Token
  * @return 脚本源码
  * @author Kai
- * @date 2026/11/19 19:03
+ * @date 2026/11/24 15:37
  */
-async function downloadAttendanceScript(token) {
-    const url = "https://api.github.com/repos/" +
+async function downloadAttendanceScript() {
+    const url = "https://raw.githubusercontent.com/" +
         INSTALL.repo +
-        "/contents/" +
-        INSTALL.path +
-        "?ref=" + encodeURIComponent(INSTALL.ref)
+        "/" +
+        encodeURIComponent(INSTALL.ref) +
+        "/" +
+        INSTALL.path
     const request = new Request(url)
     request.method = "GET"
     request.timeoutInterval = 20
     request.headers = {
-        "Authorization": "Bearer " + token,
-        "Accept": "application/vnd.github.raw",
-        "User-Agent": "AttendanceHelper",
-        "X-GitHub-Api-Version": "2022-11-28"
+        "Accept": "text/plain",
+        "User-Agent": "AttendanceHelper"
     }
 
     let text = ""
@@ -136,13 +86,8 @@ async function downloadAttendanceScript(token) {
         text = ""
     }
 
-    if (status === 401 || status === 403) {
-        try {
-            Keychain.remove(INSTALL.tokenKey)
-        } catch (error) {
-            // 清不掉也无妨，下次会再问
-        }
-        throw new Error("GitHub Token 无效，或没有读取这个仓库的权限")
+    if (status === 404) {
+        throw new Error("下载失败：仓库还不是公开的，或脚本路径不对")
     }
 
     if (status && status !== 200) {

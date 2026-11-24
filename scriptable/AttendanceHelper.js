@@ -107,20 +107,14 @@ const CONFIG = {
   // 接口固定参数
   ID: "myStatic",
 
-  // 私有仓库。更新脚本时从这里下载，不用再整段复制
+  // 公开仓库。更新脚本时直接下载，不需要 GitHub Token
   GITHUB_REPO: "biannian/attendance-helper-ios",
 
   // 仓库里的脚本路径
   GITHUB_SCRIPT_PATH: "scriptable/AttendanceHelper.js",
 
-  // 更新时读取的分支
+  // 更新时读取的分支。手机拉到的就是这个分支上的文件
   GITHUB_REF: "main",
-
-  // 可留空。第一次更新时填写只读 Token，之后记在钥匙串
-  GITHUB_TOKEN: "",
-
-  // GitHub Token 在钥匙串里的键名
-  GITHUB_TOKEN_KEYCHAIN: "attendance-helper-github-token",
 
   // 登录后要进入的团队。留空则用账号里的当前团队，没有当前团队时用第一个
   TEAM_NO: "",
@@ -588,15 +582,14 @@ async function handleUpdateScript() {
 }
 
 /**
- * 从私有仓库拉取脚本并写回当前文件
+ * 从公开仓库拉取脚本并写回当前文件
  *
  * @return 文件内容有变化时返回 true
  * @author Kai
- * @date 2026/11/19 19:03
+ * @date 2026/11/24 15:37
  */
 async function updateScriptFromGit() {
-  const token = await getGitHubToken()
-  const latest = await downloadScriptSource(token)
+  const latest = await downloadScriptSource()
   const fm = scriptFileManager()
   const path = module.filename
 
@@ -619,79 +612,26 @@ async function updateScriptFromGit() {
 }
 
 /**
- * 读取 GitHub 只读 Token，没有时让用户填一次
+ * 从公开仓库下载打卡脚本，请求头不带 Token
  *
- * @return Token 字符串
- * @author Kai
- * @date 2026/11/19 19:03
- */
-async function getGitHubToken() {
-  try {
-    if (Keychain.contains(CONFIG.GITHUB_TOKEN_KEYCHAIN)) {
-      const saved = String(Keychain.get(CONFIG.GITHUB_TOKEN_KEYCHAIN) || "").trim()
-      if (saved) {
-        return saved.replace(/^Bearer\s+/i, "")
-      }
-    }
-  } catch (e) {
-    // 钥匙串读不到时再问用户
-  }
-
-  if (CONFIG.GITHUB_TOKEN) {
-    return String(CONFIG.GITHUB_TOKEN).trim().replace(/^Bearer\s+/i, "")
-  }
-
-  const alert = new Alert()
-  alert.title = "更新脚本"
-  alert.message = "仓库是私有的。填一次 GitHub 只读 Token，之后记在钥匙串，不用再复制整段代码。"
-  alert.addTextField("github_pat_ 或 ghp_")
-  alert.addAction("保存并更新")
-  alert.addCancelAction("取消")
-
-  const index = await alert.presentAlert()
-
-  if (index !== 0) {
-    throw new Error("已取消更新")
-  }
-
-  const token = String(alert.textFieldValue(0) || "").trim().replace(/^Bearer\s+/i, "")
-
-  if (!token) {
-    throw new Error("没有填写 GitHub Token")
-  }
-
-  try {
-    Keychain.set(CONFIG.GITHUB_TOKEN_KEYCHAIN, token)
-  } catch (e) {
-    // 记不住也继续用这一次
-  }
-
-  return token
-}
-
-/**
- * 下载仓库里的打卡脚本
- *
- * @param token GitHub 只读 Token
  * @return 脚本源码
  * @author Kai
- * @date 2026/11/19 19:03
+ * @date 2026/11/24 15:37
  */
-async function downloadScriptSource(token) {
+async function downloadScriptSource() {
   const url =
-      "https://api.github.com/repos/" +
+      "https://raw.githubusercontent.com/" +
       CONFIG.GITHUB_REPO +
-      "/contents/" +
-      CONFIG.GITHUB_SCRIPT_PATH +
-      "?ref=" + encodeURIComponent(CONFIG.GITHUB_REF)
+      "/" +
+      encodeURIComponent(CONFIG.GITHUB_REF) +
+      "/" +
+      CONFIG.GITHUB_SCRIPT_PATH
   const req = new Request(url)
   req.method = "GET"
   req.timeoutInterval = 20
   req.headers = {
-    "Authorization": "Bearer " + token,
-    "Accept": "application/vnd.github.raw",
-    "User-Agent": "AttendanceHelper",
-    "X-GitHub-Api-Version": "2022-11-28"
+    "Accept": "text/plain",
+    "User-Agent": "AttendanceHelper"
   }
 
   let text = ""
@@ -705,13 +645,8 @@ async function downloadScriptSource(token) {
     text = ""
   }
 
-  if (status === 401 || status === 403) {
-    try {
-      Keychain.remove(CONFIG.GITHUB_TOKEN_KEYCHAIN)
-    } catch (e) {
-      // 清不掉也无妨，下次会再问
-    }
-    throw new Error("GitHub Token 无效，或没有读取这个仓库的权限")
+  if (status === 404) {
+    throw new Error("下载失败：仓库还不是公开的，或脚本路径不对")
   }
 
   if (status && status !== 200) {
