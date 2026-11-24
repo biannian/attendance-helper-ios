@@ -2535,7 +2535,7 @@ async function updateAttendanceHistoryView(view, dates, holidays, checked, loadi
  *
  * @return 自包含的移动端页面
  * @author Kai
- * @date 2026/11/24 16:33
+ * @date 2026/11/24 16:47
  */
 function attendanceHistoryHTML() {
     return `<!doctype html>
@@ -2551,7 +2551,13 @@ function attendanceHistoryHTML() {
         }
         * { box-sizing:border-box; }
         body { margin:0; background:var(--bg); color:var(--ink); font:15px -apple-system,BlinkMacSystemFont,sans-serif; }
-        main { max-width:540px; margin:auto; padding:16px max(12px, env(safe-area-inset-right)) max(22px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); }
+        main {
+            max-width:540px;
+            margin:auto;
+            padding:72px max(12px, env(safe-area-inset-right)) max(22px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+            /* 全屏 WebView 的关闭栏可能覆盖网页顶部，安全区为零时也保留顶栏高度。 */
+            padding-top:max(72px, calc(env(safe-area-inset-top, 0px) + 40px));
+        }
         h1 { margin:0 0 12px; font-size:25px; }
         h2 { margin:0 0 9px; font-size:16px; }
         button { color:inherit; font:inherit; cursor:pointer; }
