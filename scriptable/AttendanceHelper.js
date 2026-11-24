@@ -2392,12 +2392,12 @@ async function loadHistoryHolidays(year, cached) {
 }
 
 /**
- * 生成可传给全屏日历的某天考勤和状态
+ * 生成原生历史列表使用的某天考勤和状态
  *
  * @param date 日历格对应的日期
  * @param holidays 已加载的年度节假日表
  * @param checked 本次页面打开期间已查询的日期
- * @return 日历格及当日明细展示数据
+ * @return 日期类型、打卡时间和工时状态
  * @author Kai
  * @date 2026/11/24 16:31
  */
@@ -2430,7 +2430,7 @@ function buildAttendanceHistoryDay(date, holidays, checked) {
     }
 
     return {
-        key, kind, label, workday, status, state, today, workedMs,
+        key, kind, label, workday, status, state, workedMs,
         weekday: (date.getDay() + 6) % 7,
         clockIn: clockIn ? formatTime(clockIn) : "—",
         clockOut: clockOut ? formatTime(clockOut) : "—",
@@ -2455,315 +2455,158 @@ function readAttendanceRecord(key) {
 }
 
 /**
- * 打开全屏历史页，先显示缓存，再更新当前范围内缺少的工作日
+ * 打开原生全屏考勤历史，显示本机记录并逐日补查缺失工作日
  *
  * @author Kai
- * @date 2026/11/24 16:51
+ * @date 2026/11/24 16:56
  */
 async function presentAttendanceHistory() {
-    const view = new WebView()
+    const table = new UITable()
+    table.showSeparators = true
     const dates = Array.from({ length: 30 }, (_, index) => addDays(now, -index))
     const checked = new Map()
     const knownYears = new Set()
-    const cached = {}
+    const holidayCache = {}
     const holidays = {}
     for (const year of new Set(dates.map(date => date.getFullYear()))) {
-        cached[year] = readAttendanceRecord("attendance-history-calendar-" + year)
-        holidays[year] = cached[year] && cached[year].holidays
+        holidayCache[year] = readAttendanceRecord("attendance-history-calendar-" + year)
+        holidays[year] = holidayCache[year] && holidayCache[year].holidays
     }
 
-    // 首屏数据随 HTML 一起加载，页面打开前无需等待 WebView 的脚本桥接。
-    const initialRows = dates.map(date => buildAttendanceHistoryDay(date, holidays, checked))
-    await view.loadHTML(attendanceHistoryHTML(initialRows))
+    // 范围和筛选在同一个原生页面内切换，补查任务共用一个队列。
+    let range = 14
+    let onlyWarnings = false
     let open = true
-    const closed = view.present(true).finally(() => { open = false })
-
-    // WebView 负责筛选和选中日期，Scriptable 负责鉴权、补查和缓存。
-    const sync = (async () => {
-        while (open) {
-            const range = await view.evaluateJavaScript("window.historyRange")
-            if (![7, 14, 30].includes(range)) {
-                throw new Error("考勤日历尚未初始化")
-            }
-            const selected = dates.slice(0, range)
-            const year = selected.map(day => day.getFullYear()).find(item => !knownYears.has(item))
-            if (year !== undefined) {
-                knownYears.add(year)
-                holidays[year] = await loadHistoryHolidays(year, cached[year])
-            } else {
-                const next = selected.find(day => historyDayKind(day, holidays).workday
-                    && !checked.has(formatDateKey(day)) && !readHistorySnapshot(day))
-                if (!next) {
-                    await updateAttendanceHistoryView(view, dates, holidays, checked, false)
-                    if (open) {
-                        await view.evaluateJavaScript("window.waitForHistoryRange(" + range + ", completion)", true)
-                    }
-                    continue
-                }
-
-                const data = await getAttendanceSummary(next)
-                // 文件写入不可用时，本次仍然展示接口返回的结果。
-                checked.set(formatDateKey(next), data.ok ? data : null)
-            }
-            if (open) {
-                await updateAttendanceHistoryView(view, dates, holidays, checked, true)
-            }
-        }
-    })()
-
-    try {
-        await Promise.race([closed, sync])
-    } catch (e) {
-        if (!open) {
-            throw e
-        }
-        // 即使日历脚本未加载，也让原生 HTML 提示能显示同步错误。
-        await view.evaluateJavaScript(`document.getElementById("progress").textContent =
-            "考勤数据未能更新，请关闭后重试。"; true`).catch(() => {})
-        await closed
-    }
-}
-
-/**
- * 把当前历史快照和补查状态更新到已经打开的页面
- *
- * @param view 全屏历史页
- * @param dates 历史页支持浏览的日期
- * @param holidays 年度节假日表
- * @param checked 本次已经补查的结果
- * @param loading 当前是否仍在补查
- * @author Kai
- * @date 2026/11/24 16:51
- */
-async function updateAttendanceHistoryView(view, dates, holidays, checked, loading) {
-    const rows = dates.map(date => buildAttendanceHistoryDay(date, holidays, checked))
-    await view.evaluateJavaScript("window.renderAttendance(" + JSON.stringify({ rows, loading }) + "); true")
-}
-
-/**
- * 构建适合竖屏操作的考勤日历，具体数据由 Scriptable 注入
- *
- * @param initialRows 首屏使用的本机考勤快照
- * @return 自包含的移动端页面
- * @author Kai
- * @date 2026/11/24 16:51
- */
-function attendanceHistoryHTML(initialRows) {
-    // 转义 HTML 标签起始符，防止节假日名称等数据打断 JSON 容器。
-    const initialData = JSON.stringify({ rows: initialRows, loading: true }).replace(/</g, "\\u003c")
-    return `<!doctype html>
-<html lang="zh-CN">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>考勤历史</title>
-    <style>
-        :root { color-scheme: light dark; --bg:#f3f5f9; --panel:#fff; --ink:#172033; --muted:#526078; --line:#d9e0ec; --accent:#205fcc; --soft:#e5eeff; --normal:#087352; --warning:#a7500a; --holiday:#a33257; }
-        @media (prefers-color-scheme:dark) {
-            :root { --bg:#111827; --panel:#1f2937; --ink:#f3f4f6; --muted:#b4c2d6; --line:#3b485b; --accent:#93c5fd; --soft:#293d60; --normal:#6ee7b7; --warning:#fbbf24; --holiday:#fda4af; }
-        }
-        * { box-sizing:border-box; }
-        body { margin:0; background:var(--bg); color:var(--ink); font:15px -apple-system,BlinkMacSystemFont,sans-serif; }
-        main {
-            max-width:540px;
-            margin:auto;
-            padding:72px max(12px, env(safe-area-inset-right)) max(22px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
-            /* 全屏 WebView 的关闭栏可能覆盖网页顶部，安全区为零时也保留顶栏高度。 */
-            padding-top:max(72px, calc(env(safe-area-inset-top, 0px) + 40px));
-        }
-        h1 { margin:0 0 12px; font-size:25px; }
-        h2 { margin:0 0 9px; font-size:16px; }
-        button { color:inherit; font:inherit; cursor:pointer; }
-        .ranges { display:grid; grid-template-columns:repeat(3,1fr); gap:4px; border-radius:12px; background:var(--panel); padding:4px; }
-        .ranges button { border:0; border-radius:8px; background:none; min-height:44px; padding:4px; }
-        .ranges [aria-pressed="true"] { background:var(--soft); color:var(--accent); font-weight:650; }
-        .toolbar { display:flex; align-items:center; justify-content:space-between; gap:6px; min-height:48px; font-size:12px; color:var(--muted); }
-        .toolbar label { display:flex; align-items:center; min-height:44px; gap:5px; white-space:nowrap; }
-        input { accent-color:var(--accent); }
-        .summary,.detail { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:12px; }
-        .summary,.facts { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; text-align:center; }
-        .summary span,.facts span { display:block; color:var(--muted); font-size:12px; margin-bottom:5px; }
-        .summary strong,.facts strong { display:block; font-size:14px; font-variant-numeric:tabular-nums; }
-        .note { min-height:17px; margin:9px 0; color:var(--muted); font-size:12px; }
-        .calendar { display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:3px; margin-bottom:12px; }
-        .weekday { text-align:center; color:var(--muted); font-size:11px; padding:2px 0 5px; }
-        .day { display:flex; flex-direction:column; align-items:center; justify-content:center; min-width:0; width:100%; min-height:51px; border:1px solid var(--line); border-radius:8px; background:var(--panel); padding:1px; line-height:1.15; }
-        .day strong { font-size:12px; font-variant-numeric:tabular-nums; }
-        .day small { display:block; font-size:10px; margin-top:3px; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-        .day[data-kind="weekend"] { color:var(--muted); background:var(--bg); }
-        .day[data-kind="holiday"] { color:var(--holiday); }
-        .day[data-kind="makeup"],.day[data-today="true"] strong { color:var(--accent); }
-        .day[data-state="normal"] small { color:var(--normal); }
-        .day[data-state="warning"] small,.detail [data-state="warning"] { color:var(--warning); }
-        .day[aria-pressed="true"] { border-color:var(--accent); background:var(--soft); }
-        .detail p { margin:0 0 11px; color:var(--muted); font-size:13px; }
-    </style>
-</head>
-<body>
-<main>
-    <h1>考勤历史</h1>
-    <div class="ranges" aria-label="日期范围">
-        <button type="button" data-range="7" aria-pressed="false">最近 7 天</button>
-        <button type="button" data-range="14" aria-pressed="true">最近 14 天</button>
-        <button type="button" data-range="30" aria-pressed="false">最近 30 天</button>
-    </div>
-    <div class="toolbar"><span id="period"></span><label><input id="only" type="checkbox">仅看异常</label></div>
-    <section class="summary" aria-label="范围汇总">
-        <div><span>工作日</span><strong id="workdays">—</strong></div>
-        <div><span>待核对</span><strong id="warnings">—</strong></div>
-        <div><span>平均工时</span><strong id="average">—</strong></div>
-    </section>
-    <p class="note" id="progress" role="status">正在打开考勤历史…</p>
-    <section id="calendar" class="calendar" aria-label="考勤日历"></section>
-    <section class="detail" id="detail" aria-label="单日考勤" hidden>
-        <h2 id="detail-date"></h2>
-        <p><span id="detail-kind"></span> · <span id="detail-status"></span></p>
-        <div class="facts">
-            <div><span>上班卡</span><strong id="clock-in">—</strong></div>
-            <div><span>下班卡</span><strong id="clock-out">—</strong></div>
-            <div><span>实际工时</span><strong id="worked">—</strong></div>
-        </div>
-    </section>
-</main>
-<script id="initial-data" type="application/json">${initialData}</script>
-<script>
-    // 日期范围和选中日留在页面端，补查刷新数据时保留当前选择。
-    window.historyRange = 14;
-    let snapshot = { rows: [], loading: true };
-    let selected = "";
-    let rangeChanged;
-    const byId = id => document.getElementById(id);
+    let presented = false
+    let loading = true
+    let syncFailed = false
+    let syncTask = null
 
     /**
-     * 等待下一次范围操作，避免数据补齐后持续轮询
-     * @param previous Native 已处理的天数
-     * @param done 返回新范围的回调
+     * 根据当前范围、缓存和筛选状态重绘手机端历史列表
+     *
      * @author Kai
-     * @date 2026/11/24 16:33
-     */
-    window.waitForHistoryRange = function (previous, done) {
-        if (previous !== window.historyRange) {
-            done(window.historyRange);
-        } else {
-            rangeChanged = done;
-        }
-    };
-
-    /**
-     * 根据当前范围、异常筛选和选中日期重绘日历
-     * @author Kai
-     * @date 2026/11/24 16:33
+     * @date 2026/11/24 16:56
      */
     function draw() {
-        const rows = snapshot.rows.slice(0, window.historyRange).reverse();
-        if (!rows.length) return;
-        const warnings = rows.filter(day => day.state === "warning");
-        const workdays = rows.filter(day => day.workday);
-        const completed = workdays.filter(day => day.workedMs !== null);
-        const meanHours = completed.length && completed.reduce((sum, day) => sum + day.workedMs, 0) / completed.length / 3600000;
-        const only = byId("only").checked;
-        const shown = only ? warnings : rows;
-        const active = shown.find(day => day.key === selected) || shown[shown.length - 1];
+        const days = dates.slice(0, range).map(date => buildAttendanceHistoryDay(date, holidays, checked))
+        const workdays = days.filter(day => day.workday)
+        const warnings = days.filter(day => day.state === "warning")
+        const completed = workdays.filter(day => day.workedMs !== null)
+        const average = completed.length
+            ? (completed.reduce((sum, day) => sum + day.workedMs, 0) / completed.length / 3600000).toFixed(1) + " 小时"
+            : "—"
 
-        byId("period").textContent = rows[0].key.slice(5) + " 至 " + rows[rows.length - 1].key.slice(5);
-        byId("workdays").textContent = workdays.length + " 天";
-        byId("warnings").textContent = warnings.length + " 天";
-        byId("average").textContent = completed.length ? meanHours.toFixed(1) + " 小时" : "—";
-        byId("progress").textContent = snapshot.loading
-            ? "正在补查缺少的日期…" : only && !warnings.length ? "所选范围暂无异常" : "";
+        table.removeAllRows()
+        const heading = new UITableRow()
+        heading.isHeader = true
+        heading.height = 62
+        heading.addText("考勤历史", days[days.length - 1].key + " 至 " + days[0].key)
+        table.addRow(heading)
 
-        const calendar = byId("calendar");
-        calendar.textContent = "";
-        for (const name of "一二三四五六日") {
-            const heading = document.createElement("span");
-            heading.className = "weekday";
-            heading.textContent = name;
-            calendar.append(heading);
-        }
-        for (let i = 0; i < rows[0].weekday; i++) calendar.append(document.createElement("span"));
-        for (const day of rows) {
-            if (only && day.state !== "warning") {
-                calendar.append(document.createElement("span"));
-                continue;
+        // 范围按钮保持在同一行，切换时只刷新当前列表。
+        const ranges = new UITableRow()
+        ranges.height = 46
+        for (const days of [7, 14, 30]) {
+            const cell = ranges.addButton(days === range ? "✓ " + days + " 天" : "最近 " + days + " 天")
+            cell.centerAligned()
+            cell.dismissOnTap = false
+            cell.onTap = () => {
+                if (days === range) return
+                range = days
+                loading = true
+                syncFailed = false
+                draw()
+                startSync()
             }
-            const button = document.createElement("button");
-            button.type = "button";
-            button.className = "day";
-            button.dataset.kind = day.kind;
-            button.dataset.state = day.state;
-            button.dataset.today = day.today;
-            button.setAttribute("aria-pressed", String(active && active.key === day.key));
-            button.setAttribute("aria-label", day.key + " " + day.label + " " + day.status);
-            const number = document.createElement("strong");
-            number.textContent = day.key.slice(5).replace("-", "/");
-            const status = document.createElement("small");
-            status.textContent = day.kind === "holiday" || day.kind === "weekend" ? day.label
-                : day.kind === "makeup" ? "补班" : day.state === "warning" ? "待核对"
-                : day.state === "normal" ? day.worked : day.today ? "今天" : "…";
-            button.append(number, status);
-            button.addEventListener("click", () => {
-                selected = day.key;
-                draw();
-                // 长范围在小屏上可能把当日明细推到首屏之外。
-                const detail = byId("detail");
-                if (detail.getBoundingClientRect().bottom > window.innerHeight) {
-                    detail.scrollIntoView({ block: "end", behavior: "smooth" });
-                }
-            });
-            calendar.append(button);
+        }
+        table.addRow(ranges)
+
+        const filters = new UITableRow()
+        filters.height = 48
+        const summary = filters.addText("工作日 " + workdays.length + " 天 · 待核对 " + warnings.length + " 天", "平均工时 " + average)
+        summary.widthWeight = 3
+        const filter = filters.addButton(onlyWarnings ? "显示全部" : "仅看异常")
+        filter.rightAligned()
+        filter.dismissOnTap = false
+        filter.onTap = () => {
+            onlyWarnings = !onlyWarnings
+            draw()
+        }
+        table.addRow(filters)
+
+        if (loading || syncFailed || (onlyWarnings && !warnings.length)) {
+            const note = new UITableRow()
+            note.height = 36
+            const message = loading ? "正在补查缺少的日期…"
+                : syncFailed ? "补查中断，请重新打开重试" : "所选范围暂无异常"
+            note.addText(message)
+            table.addRow(note)
         }
 
-        byId("detail").hidden = !active;
-        if (!active) return;
-        selected = active.key;
-        byId("detail-date").textContent = active.key + " · 周" + "一二三四五六日"[active.weekday];
-        byId("detail-kind").textContent = active.label;
-        byId("detail-status").textContent = active.workday ? active.status
-            : active.workedMs !== null ? "有打卡" : "休息";
-        byId("detail-status").dataset.state = active.state;
-        byId("clock-in").textContent = active.clockIn;
-        byId("clock-out").textContent = active.clockOut;
-        byId("worked").textContent = active.worked;
+        // 单日信息分两栏显示，窄屏上也能直接看到打卡和日期类型。
+        for (const day of onlyWarnings ? warnings : days) {
+            const row = new UITableRow()
+            row.height = 60
+            const date = row.addText(day.key.slice(5) + " 周" + "一二三四五六日"[day.weekday] + " · " + day.label,
+                "上 " + day.clockIn + "  /  下 " + day.clockOut)
+            date.widthWeight = 3
+            if (day.kind === "holiday" || day.kind === "makeup") {
+                date.titleColor = new Color(day.kind === "holiday" ? "#BE456B" : "#4279CF")
+            }
+            const detail = row.addText(day.workday ? day.status : "休息", "工时 " + day.worked)
+            detail.widthWeight = 2
+            detail.rightAligned()
+            if (day.state === "warning") detail.titleColor = new Color("#D97706")
+            if (day.state === "normal") detail.titleColor = new Color("#059669")
+            table.addRow(row)
+        }
+        if (presented) table.reload()
     }
 
     /**
-     * 接收 Scriptable 补查后推送的页面数据
-     * @param next 历史行和加载状态
+     * 补查当前范围的缺失日期，范围变化后从最新选择继续
+     *
      * @author Kai
-     * @date 2026/11/24 16:33
+     * @date 2026/11/24 16:56
      */
-    window.renderAttendance = function (next) {
-        snapshot = next;
-        draw();
-    };
-
-    // 范围切换即时重绘，唤醒 Scriptable 请求扩大后的缺失日期。
-    for (const button of document.querySelectorAll("[data-range]")) {
-        button.addEventListener("click", () => {
-            const range = Number(button.dataset.range);
-            if (window.historyRange === range) return;
-            const previous = window.historyRange;
-            window.historyRange = range;
-            document.querySelector('[data-range="' + previous + '"]').setAttribute("aria-pressed", "false");
-            button.setAttribute("aria-pressed", "true");
-            draw();
-            if (rangeChanged) {
-                const done = rangeChanged;
-                rangeChanged = null;
-                done(range);
+    function startSync() {
+        if (syncTask) return
+        syncTask = (async () => {
+            while (open) {
+                const selected = dates.slice(0, range)
+                const year = selected.map(day => day.getFullYear()).find(item => !knownYears.has(item))
+                if (year !== undefined) {
+                    knownYears.add(year)
+                    holidays[year] = await loadHistoryHolidays(year, holidayCache[year])
+                } else {
+                    const next = selected.find(day => historyDayKind(day, holidays).workday
+                        && !checked.has(formatDateKey(day)) && !readHistorySnapshot(day))
+                    if (!next) break
+                    const data = await getAttendanceSummary(next)
+                    checked.set(formatDateKey(next), data.ok ? data : null)
+                }
+                if (open) draw()
             }
-        });
+        })().catch(error => {
+            syncFailed = true
+            console.log("考勤历史补查失败：" + String(error))
+        }).finally(() => {
+            syncTask = null
+            loading = false
+            if (open) draw()
+        })
     }
-    byId("only").addEventListener("change", draw);
-    // 先渲染内嵌快照，再接收 Scriptable 的逐日更新。
+
+    draw()
+    const closed = table.present(true)
+    presented = true
+    startSync()
     try {
-        window.renderAttendance(JSON.parse(byId("initial-data").textContent));
-    } catch (e) {
-        byId("progress").textContent = "考勤页面初始化失败，请关闭后重试。";
+        await closed
+    } finally {
+        open = false
     }
-</script>
-</body>
-</html>`
 }
 
 /**
