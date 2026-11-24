@@ -4,14 +4,31 @@ Scriptable 今日打卡小组件 + 快捷指令提醒（`scriptable/AttendanceHe
 
 ## 更新到手机
 
-仓库是私有的，Scriptable 不能直接打开 GitHub 页面。不用再复制整份 `AttendanceHelper.js`。
+仓库是公开的。Scriptable 直接下载原始文件，不需要 GitHub Token。
 
-1. 在 GitHub 建一个只读 Token：只授权这个仓库，权限勾选 Contents 的 Read。
-2. 把 `scriptable/InstallAttendanceHelper.js` 新建到 Scriptable 里，运行一次，粘贴 Token。
-3. 安装器会把最新脚本写成 `AttendanceHelper`。小组件选这个脚本。
-4. 以后要更新：再运行安装器，或在打卡脚本菜单里点「更新脚本」，参数也可以填 `update`。
+公开地址：
 
-钥匙串里的打卡 Token、GitHub Token、账号、密码和设备 ID 不会被覆盖清掉。脚本文件会按仓库里的版本整份替换。
+```text
+https://raw.githubusercontent.com/biannian/attendance-helper-ios/main/scriptable/AttendanceHelper.js
+```
+
+浏览器打开这个地址，应看到脚本源码。如果是 404，仓库还没设成 Public，或 `main` 上还没有这个文件。
+
+第一次装到手机：
+
+1. 打开仓库里的 `scriptable/InstallAttendanceHelper.js`，全选复制。
+2. 在 Scriptable 新建脚本，粘贴后运行一次。不要填 Token。
+3. 安装器会把 `main` 上的最新 `AttendanceHelper.js` 写进 Scriptable。小组件选这个脚本。
+
+手机上如果还是旧脚本，菜单里的「更新脚本」仍会要 Token。先用上面的安装器替换一次。替换之后：
+
+- 再运行安装器，或
+- 在打卡脚本菜单里点「更新脚本」，或
+- 快捷指令参数第一行填 `update`
+
+这三种都会匿名下载，不再询问、也不再发送 GitHub Token。
+
+钥匙串里的打卡 Token、账号、密码和设备 ID 不会被覆盖清掉。脚本文件会按仓库 `main` 上的版本整份替换。账号和密码不要写进仓库。
 
 ## 账号、密码、设备 ID
 
@@ -40,7 +57,7 @@ refresh
 | `schedule9` | 中国工作日预约快满 9 小时提醒 |
 | `near9` | 定时检查快满 / 已满，已满时同步判定下班卡 |
 | `debug` | 查看解析结果与考勤判定 |
-| `update` | 从 GitHub 下载最新脚本 |
+| `update` | 从公开仓库下载最新脚本，不需要 GitHub Token |
 | `account` | 快捷指令写入账号、密码、设备 ID |
 
 ## 点击小组件刷新
