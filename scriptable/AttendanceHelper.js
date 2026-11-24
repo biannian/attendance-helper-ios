@@ -1967,7 +1967,90 @@ async function handleLeaveCompany() {
 
 // ==================== 功能 2：预约快满 9 小时提醒 ====================
 
+/**
+ * 读取本机的主题、提醒提前量与历史默认范围
+ *
+ * @return 经校验的考勤偏好设置
+ * @author Kai
+ * @date 2026/11/24 17:55
+ */
+function readAttendancePreferences() {
+    const saved = readAttendanceRecord("attendance-helper-preferences-v1") || {}
+    return {
+        theme: ["navy", "teal", "slate"].includes(saved.theme) ? saved.theme : "navy",
+        remindMinutes: [0, 5, 15, 30, 45, 60].includes(saved.remindMinutes)
+            ? saved.remindMinutes : CONFIG.NEAR_MINUTES,
+        historyDays: [7, 14, 30].includes(saved.historyDays) ? saved.historyDays : 14
+    }
+}
+
+/**
+ * 打开考勤配置，修改后保存到本机并重新预约当天提醒
+ *
+ * @author Kai
+ * @date 2026/11/24 17:55
+ */
+async function presentAttendancePreferences() {
+    const themeValues = ["navy", "teal", "slate"]
+    const themeLabels = ["深海蓝", "松石绿", "岩灰"]
+    const minuteValues = [30, 15, 5, 45, 60, 0]
+    const rangeValues = [7, 14, 30]
+
+    while (true) {
+        const preferences = readAttendancePreferences()
+        const menu = new Alert()
+        menu.title = "考勤配置"
+        menu.message = "每日目标 " + CONFIG.TARGET_HOURS + " 小时。提醒使用 iOS 通知。"
+        menu.addAction("组件主题 · " + themeLabels[themeValues.indexOf(preferences.theme)])
+        menu.addAction("提前提醒 · " + (preferences.remindMinutes ? preferences.remindMinutes + " 分钟" : "关闭"))
+        menu.addAction("历史默认范围 · " + preferences.historyDays + " 天")
+        menu.addCancelAction("完成")
+        const section = await menu.presentSheet()
+        if (section < 0) return
+
+        const choice = new Alert()
+        const labels = [
+            themeLabels,
+            minuteValues.map(minutes => minutes ? "提前 " + minutes + " 分钟" : "关闭提前提醒"),
+            rangeValues.map(days => "最近 " + days + " 天")
+        ][section]
+        choice.title = ["组件主题", "提前提醒", "历史默认范围"][section]
+        for (const label of labels) choice.addAction(label)
+        choice.addCancelAction("返回")
+        const selected = await choice.presentSheet()
+        if (selected < 0) continue
+
+        const next = { ...preferences }
+        if (section === 0) next.theme = themeValues[selected]
+        if (section === 1) next.remindMinutes = minuteValues[selected]
+        if (section === 2) next.historyDays = rangeValues[selected]
+        Keychain.set("attendance-helper-preferences-v1", JSON.stringify(next))
+
+        if (next.remindMinutes !== preferences.remindMinutes) {
+            // 只取消本脚本使用固定标识预约的提前通知。
+            try {
+                await Notification.removePending(["attendance-helper-upcoming-work"])
+                const key = "schedule9-" + formatDateKey(now)
+                if (Keychain.contains(key)) Keychain.remove(key)
+                if (next.remindMinutes) {
+                    await handleScheduleNineHours()
+                }
+            } catch (error) {
+                await presentMessage("提前提醒", "设置已保存，今日提醒预约失败：" + String(error.message || error))
+            }
+        }
+    }
+}
+
+/**
+ * 为今日尚在工作的用户预约达到目标工时前的通知
+ *
+ * @author Kai
+ * @date 2026/11/24 17:55
+ */
 async function handleScheduleNineHours() {
+    const minutes = readAttendancePreferences().remindMinutes
+    if (!minutes) return
   if (!(await isChinaWorkday(now))) {
     return
   }
@@ -1984,13 +2067,13 @@ async function handleScheduleNineHours() {
     return
   }
 
-  if (data.targetReached) {
+  if (data.targetReached || data.hasOutRecord) {
     return
   }
 
   const remindTime = new Date(
       data.inTime.getTime() +
-      (CONFIG.TARGET_HOURS * 60 - CONFIG.NEAR_MINUTES) * 60 * 1000
+      (CONFIG.TARGET_HOURS * 60 - minutes) * 60 * 1000
   )
 
   const key = "schedule9-" + formatDateKey(now)
@@ -1999,14 +2082,15 @@ async function handleScheduleNineHours() {
     return
   }
 
-  if (remindTime <= now) {
+  if (remindTime <= new Date()) {
     await notifyBrief(
         formatRemainTitle(data.remainingMinutes),
         formatNotifyTimes(data)
     )
   } else {
     const n = new Notification()
-    n.title = formatRemainTitle(CONFIG.NEAR_MINUTES)
+    n.identifier = "attendance-helper-upcoming-work"
+    n.title = formatRemainTitle(minutes)
     n.subtitle = formatNotifyTimes(data)
     n.sound = "default"
     n.setTriggerDate(remindTime)
@@ -2019,6 +2103,12 @@ async function handleScheduleNineHours() {
 
 // ==================== 功能 3：定时检查是否快满 9 小时 ====================
 
+/**
+ * 在定时检查中补发提前通知或到点通知
+ *
+ * @author Kai
+ * @date 2026/11/24 17:55
+ */
 async function handleNearNineHours() {
   if (!(await isChinaWorkday(now))) {
     return
@@ -2049,8 +2139,11 @@ async function handleNearNineHours() {
     return
   }
 
+  // 已成功预约提前通知时，让 iOS 投递，避免定时检查重复提醒。
   if (
-      data.remainingMinutes <= CONFIG.NEAR_MINUTES &&
+      !Keychain.contains("schedule9-" + formatDateKey(now)) &&
+      !data.hasOutRecord &&
+      data.remainingMinutes <= readAttendancePreferences().remindMinutes &&
       data.remainingMinutes > 0
   ) {
     const key = "near9-" + formatDateKey(now)
@@ -2095,7 +2188,13 @@ async function createWidget(data) {
         background.startPoint = new Point(0, 0)
         background.endPoint = new Point(1, 1)
         background.locations = [0, 0.5, 1]
-        background.colors = [new Color("#24364A"), new Color("#172536"), new Color("#0E1724")]
+        const theme = readAttendancePreferences().theme
+        const colors = {
+            navy: ["#2F4F76", "#20344E", "#101B2B"],
+            teal: ["#25595A", "#183D41", "#102628"],
+            slate: ["#414854", "#2B3039", "#1A1E25"]
+        }
+        background.colors = colors[theme].map(hex => new Color(hex))
         widget.backgroundGradient = background
   }
 
@@ -2706,7 +2805,7 @@ async function presentAttendanceHistory() {
     }
 
     // 范围和筛选在同一个原生页面内切换，补查任务共用一个队列。
-    let range = 14
+    let range = readAttendancePreferences().historyDays
     let onlyWarnings = false
     let open = true
     let presented = false
@@ -2733,7 +2832,18 @@ async function presentAttendanceHistory() {
         const heading = new UITableRow()
         heading.isHeader = true
         heading.height = 62
-        heading.addText("考勤历史", days[days.length - 1].key + " 至 " + days[0].key)
+        const headingText = heading.addText("考勤历史", days[days.length - 1].key + " 至 " + days[0].key)
+        headingText.widthWeight = 4
+        const settings = heading.addButton("配置")
+        settings.rightAligned()
+        settings.dismissOnTap = false
+        settings.onTap = async () => {
+            try {
+                await presentAttendancePreferences()
+            } catch (error) {
+                await presentMessage("考勤配置", String(error.message || error))
+            }
+        }
         table.addRow(heading)
 
         // 范围按钮保持在同一行，切换时只刷新当前列表。
