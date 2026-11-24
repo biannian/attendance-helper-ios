@@ -650,7 +650,7 @@ async function updateScriptFromGit() {
  *
  * @return 脚本源码
  * @author Kai
- * @date 2026/11/24 15:37
+ * @date 2026/11/24 17:02
  */
 async function downloadScriptSource() {
   const url =
@@ -659,12 +659,14 @@ async function downloadScriptSource() {
       "/" +
       encodeURIComponent(CONFIG.GITHUB_REF) +
       "/" +
-      CONFIG.GITHUB_SCRIPT_PATH
+      CONFIG.GITHUB_SCRIPT_PATH +
+      "?_update=" + Date.now()
   const req = new Request(url)
   req.method = "GET"
   req.timeoutInterval = 20
   req.headers = {
     "Accept": "text/plain",
+    "Cache-Control": "no-cache",
     "User-Agent": "AttendanceHelper"
   }
 
@@ -676,7 +678,9 @@ async function downloadScriptSource() {
     status = req.response ? req.response.statusCode : 0
   } catch (e) {
     status = req.response ? req.response.statusCode : 0
-    text = ""
+    if (!status || status === 200) {
+      throw new Error("下载连接失败：" + String(e.message || e))
+    }
   }
 
   if (status === 404) {
@@ -695,25 +699,22 @@ async function downloadScriptSource() {
 }
 
 /**
- * 确认下载下来的是打卡脚本，避免把错误页写进文件
+ * 用源码文件头和必要声明识别打卡脚本，正文可以包含页面模板
  *
  * @param code 下载到的文本
  * @return 可以写回时返回 true
  * @author Kai
- * @date 2026/11/19 19:03
+ * @date 2026/11/24 17:02
  */
 function isAttendanceScript(code) {
   if (!code || code.length < 500) {
     return false
   }
 
-  if (code.indexOf("<html") !== -1 || code.indexOf("<!DOCTYPE") !== -1) {
-    return false
-  }
-
-  return code.indexOf("AttendanceHelper") !== -1 &&
-      code.indexOf("fetchAttendance") !== -1 &&
-      code.indexOf("API_BASE") !== -1
+    return /^\s*\/\*\s*\* Copyright \(c\) iGroup(?: China)?\./.test(code) &&
+        /^const CONFIG = \{/m.test(code) &&
+        /^async function fetchAttendance\(/m.test(code) &&
+        /^async function getAttendanceSummary\(/m.test(code)
 }
 
 /**

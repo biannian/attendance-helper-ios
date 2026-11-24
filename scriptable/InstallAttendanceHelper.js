@@ -1,5 +1,5 @@
 /*
- * Copyright (c) iGroup China.
+ * Copyright (c) iGroup.
  * All rights reserved.
  */
 
@@ -10,7 +10,7 @@
  * 只需要把这一小段放进 Scriptable 并运行一次，不需要 GitHub Token。
  *
  * @author Kai
- * @date 2026/11/24 15:37
+ * @date 2026/11/24 17:02
  * @description 避免每次把整份打卡脚本复制进 Scriptable
  */
 
@@ -58,7 +58,7 @@ async function installAttendanceScript() {
  *
  * @return 脚本源码
  * @author Kai
- * @date 2026/11/24 15:37
+ * @date 2026/11/24 17:02
  */
 async function downloadAttendanceScript() {
     const url = "https://raw.githubusercontent.com/" +
@@ -66,12 +66,14 @@ async function downloadAttendanceScript() {
         "/" +
         encodeURIComponent(INSTALL.ref) +
         "/" +
-        INSTALL.path
+        INSTALL.path +
+        "?_update=" + Date.now()
     const request = new Request(url)
     request.method = "GET"
     request.timeoutInterval = 20
     request.headers = {
         "Accept": "text/plain",
+        "Cache-Control": "no-cache",
         "User-Agent": "AttendanceHelper"
     }
 
@@ -83,7 +85,9 @@ async function downloadAttendanceScript() {
         status = request.response ? request.response.statusCode : 0
     } catch (error) {
         status = request.response ? request.response.statusCode : 0
-        text = ""
+        if (!status || status === 200) {
+            throw new Error("下载连接失败：" + String(error.message || error))
+        }
     }
 
     if (status === 404) {
@@ -94,7 +98,12 @@ async function downloadAttendanceScript() {
         throw new Error("下载失败：" + status)
     }
 
-    if (!text || text.length < 500 || text.indexOf("fetchAttendance") === -1) {
+    // 校验源码头和必要声明，通过后才覆盖手机上的脚本。
+    if (!text || text.length < 500
+        || !/^\s*\/\*\s*\* Copyright \(c\) iGroup(?: China)?\./.test(text)
+        || !/^const CONFIG = \{/m.test(text)
+        || !/^async function fetchAttendance\(/m.test(text)
+        || !/^async function getAttendanceSummary\(/m.test(text)) {
         throw new Error("下载内容不是打卡脚本")
     }
 

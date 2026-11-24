@@ -28,6 +28,8 @@ https://raw.githubusercontent.com/biannian/attendance-helper-ios/main/scriptable
 
 这三种都会匿名下载，不再询问、也不再发送 GitHub Token。
 
+如果旧脚本提示「下载内容不是打卡脚本」，可重试一次。若仍出现提示，复制本仓库最新版的安装器到 Scriptable 并运行一次。安装器会替换脚本源码，保留钥匙串里的账号设置。
+
 钥匙串里的打卡 Token、账号、密码和设备 ID 不会被覆盖清掉。脚本文件会按仓库 `main` 上的版本整份替换。账号和密码不要写进仓库。
 
 ## 账号、密码、设备 ID
