@@ -2105,23 +2105,17 @@ function addLockScreenCountdown(widget, data, fallbackText) {
 }
 
 /**
- * 还没打下班卡，并且当前时间还没到应走时间
+ * 根据有效上班卡和当前时刻判断是否显示距可下班倒计时
  *
  * @param data 打卡摘要
  * @return 需要跟着当前时间倒计时时返回 true
  * @author Kai
- * @date 2026/11/23 18:29
+ * @date 2026/11/24 17:59
  */
 function showsLiveCountdown(data) {
-  return !!(
-      data &&
-      data.ok &&
-      data.hasClockIn &&
-      !data.hasOutRecord &&
-      !data.targetReached &&
-      data.targetTime &&
-      data.targetTime.getTime() > Date.now()
-  )
+    // 倒计时以当前时间为准，下班卡只用于结算工时。
+    return !!(data && data.ok && data.hasClockIn
+        && data.targetTime && data.targetTime.getTime() > Date.now())
 }
 
 /**
@@ -3524,26 +3518,23 @@ function getWidgetUrl() {
  * 下次建议刷新时间
  *
  * 早上没打卡时按间隔再拉。拉到上班时间后停到可下班时刻，倒计时由系统自己走。
- * 过了早上窗口、已经下班，或可下班时间已过，就等到下一个早上。
+ * 已到可下班时间或未打卡且过了早上窗口，就等到下一个早上。
  *
  * @param data 打卡摘要
  * @return 刷新时间
  * @author Kai
- * @date 2026/11/23 18:24
+ * @date 2026/11/24 17:59
  */
 function getNextWidgetRefreshDate(data) {
   const start = morningRefreshOn(now)
   const end = clockOn(now, CONFIG.MORNING_REFRESH_END)
 
-  if (data && data.ok && data.hasClockIn) {
-    if (
-        !data.hasOutRecord &&
-        data.targetTime &&
-        data.targetTime.getTime() > Date.now() + 60 * 1000
-    ) {
-      return data.targetTime
+    // 即使已打下班卡，也在倒计时结束时请求刷新并切换为结算状态。
+    if (showsLiveCountdown(data)) {
+        return data.targetTime
     }
 
+  if (data && data.ok && data.hasClockIn) {
     return morningRefreshOn(addDays(now, 1))
   }
 
