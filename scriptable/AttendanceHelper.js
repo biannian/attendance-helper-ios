@@ -1,8 +1,15 @@
 /*
- * Copyright (c) iGroup China.
+ * Copyright (c) iGroup.
  * All rights reserved.
  */
 
+/**
+ * 考勤助手
+ *
+ * @author Kai
+ * @date 2026/11/24 16:12
+ * @description 展示今日打卡、本周明细并执行考勤提醒
+ */
 // ==================================================
 // AttendanceHelper
 // Scriptable 今日打卡小组件 + 快捷指令提醒
@@ -17,6 +24,7 @@
 // leave      离开公司时检查工时是否满 9 小时
 // schedule9  工作日根据上班时间预约“快满 9 小时”提醒
 // near9      工作日下午定时检查是否快满 / 已满 9 小时
+// week       打开本周逐日考勤明细
 // debug      查看接口解析结果
 // update     从 GitHub 下载最新脚本并覆盖当前文件
 //
@@ -222,6 +230,9 @@ if (config.runsInWidget) {
     await handleNearNineHours()
   } else if (mode === "debug") {
     await handleDebug()
+  } else if (mode === "week") {
+    // 点击中号组件后直接打开本周列表。
+    await presentWeeklyAttendance()
   } else if (mode === "update") {
     await handleUpdateScript()
   } else {
@@ -264,6 +275,11 @@ function isLaunchedFromShortcut() {
  * @date 2026/11/23 18:25
  */
 function readLaunchRequest() {
+    // 仅接受小组件链接指定的周明细动作。
+    if (!config.runsInWidget && args.queryParameters && args.queryParameters.mode === "week") {
+        return { mode: "week", account: null }
+    }
+
   const raw = config.runsInWidget
       ? (args.widgetParameter || "widget")
       : (args.shortcutParameter || args.widgetParameter || "widget")
@@ -350,6 +366,7 @@ function isLaunchMode(mode) {
     "leave",
     "schedule9",
     "near9",
+    "week",
     "debug",
     "update",
     "account"
@@ -437,6 +454,14 @@ function clearStoredSession() {
   }
 
   CONFIG.TOKEN = ""
+
+    // 切换账号时清掉上一账号整周的打卡数据。
+    for (let day = 0; day < 7; day++) {
+        const key = weeklySnapshotKey(day)
+        if (Keychain.contains(key)) {
+            Keychain.remove(key)
+        }
+    }
 }
 
 /**
@@ -1617,6 +1642,8 @@ function saveAttendanceSnapshot(data) {
 
   try {
     Keychain.set(CONFIG.ATTENDANCE_CACHE_KEY, JSON.stringify(snapshot))
+    // 每天独立写入，保留其他日期已成功抓取的记录。
+    Keychain.set(weeklySnapshotKey(now.getDay()), JSON.stringify(snapshot))
   } catch (e) {
     // 缓存失败不影响这次真实查询
   }
@@ -2024,7 +2051,8 @@ async function createWidget(data) {
     await renderMediumWidget(widget, data)
   }
 
-  widget.url = getWidgetUrl()
+  // 中号组件整卡打开周明细，其他尺寸沿用刷新链接。
+  widget.url = family === "medium" ? getWeeklyAttendanceUrl() : getWidgetUrl()
   widget.refreshAfterDate = getNextWidgetRefreshDate(data)
 
   return widget
@@ -2397,6 +2425,133 @@ async function renderMediumWidget(widget, data) {
   )
 }
 
+
+/**
+ * 按星期槽位隔离每天的快照，日期校验避免读取到上周记录
+ *
+ * @param dayOfWeek 星期序号
+ * @return 本机钥匙串键名
+ * @author Kai
+ * @date 2026/11/24 16:12
+ */
+function weeklySnapshotKey(dayOfWeek) {
+    return "attendance-weekly-snapshot-v1-" + dayOfWeek
+}
+
+/**
+ * 读取本周截至今天的考勤，按打卡记录标注状态
+ *
+ * @return 按日期排序的每日考勤及状态
+ * @author Kai
+ * @date 2026/11/24 16:12
+ */
+function getWeeklyAttendance() {
+    const monday = addDays(now, -((now.getDay() + 6) % 7))
+    const rows = []
+
+    for (let date = monday; formatDateKey(date) <= formatDateKey(now); date = addDays(date, 1)) {
+        const dateKey = formatDateKey(date)
+        const today = dateKey === formatDateKey(now)
+        // 优先沿用已缓存的节假日历，离线缺少日历时按普通星期判断。
+        const calendar = readAttendanceRecord("china-workday-" + dateKey)
+        const workday = calendar && typeof calendar.isWorkday === "boolean"
+            ? calendar.isWorkday : isNormalWeekday(date)
+        const stored = readAttendanceRecord(weeklySnapshotKey(date.getDay()))
+        const legacy = stored && stored.date === dateKey
+            ? stored : readAttendanceRecord(CONFIG.ATTENDANCE_CACHE_KEY)
+        const record = legacy && legacy.date === dateKey ? legacy : null
+        const clockIn = record && record.inTime ? new Date(record.inTime) : null
+        const clockOut = record && record.latestOutTime ? new Date(record.latestOutTime) : null
+        let status = workday ? "无记录 · 待核对" : "休息日"
+        let color = workday ? "#D97706" : "#6B7280"
+        let worked = ""
+
+        if (workday && record) {
+            if (!clockIn) {
+                status = today ? "待打上班卡" : "上班卡待核对"
+            } else if (!clockOut) {
+                status = today ? "进行中" : "下班卡待核对"
+                color = today ? "#2563EB" : "#DC2626"
+            } else {
+                // 工时仅在上下班卡齐全时结算，口径与今日打卡一致。
+                const workMs = Math.max(0, clockOut.getTime() - clockIn.getTime())
+                const deficit = Math.ceil((CONFIG.TARGET_HOURS * 3600000 - workMs) / 60000)
+                worked = formatShortDuration(workMs)
+                const pending = deficit > 0
+                status = pending ? "工时差 " + formatRemainText(deficit) : "正常"
+                color = pending ? "#D97706" : "#059669"
+            }
+        }
+
+        rows.push({ date, clockIn, clockOut, worked, status, color })
+    }
+
+    return rows
+}
+
+/**
+ * 容错读取本机保存的考勤或工作日记录
+ *
+ * @param key 本机钥匙串键名
+ * @return 记录对象，缺失或损坏时返回 null
+ * @author Kai
+ * @date 2026/11/24 16:12
+ */
+function readAttendanceRecord(key) {
+    try {
+        return JSON.parse(readKeychainValue(key) || "null")
+    } catch (e) {
+        return null
+    }
+}
+
+/**
+ * 在 Scriptable 内展示本周逐日打卡明细
+ *
+ * @author Kai
+ * @date 2026/11/24 16:12
+ */
+async function presentWeeklyAttendance() {
+    const days = getWeeklyAttendance()
+    const weekStart = days[0].date
+    const weekEnd = addDays(weekStart, 6)
+    const table = new UITable()
+    table.showSeparators = true
+
+    const header = new UITableRow()
+    header.isHeader = true
+    header.height = 58
+    header.addText("本周考勤", formatDateKey(weekStart) + " 至 " + formatDateKey(weekEnd))
+    table.addRow(header)
+
+    // 每行同时保留原始打卡时间和判断结果，方便定位补卡日期。
+    for (const day of days) {
+        const row = new UITableRow()
+        row.height = 56
+        const weekday = "日一二三四五六"[day.date.getDay()]
+        const punches = (day.clockIn ? formatTime(day.clockIn) : "—")
+            + " / " + (day.clockOut ? formatTime(day.clockOut) : "—")
+        row.addText("周" + weekday + " " + formatDateKey(day.date).slice(5), punches)
+        const status = row.addText(day.status, day.worked || undefined)
+        status.titleColor = new Color(day.color)
+        status.rightAligned()
+        table.addRow(row)
+    }
+
+    await table.present()
+}
+
+/**
+ * 生成点击中号组件时打开本周明细的链接
+ *
+ * @return 含周明细模式的 Scriptable 链接
+ * @author Kai
+ * @date 2026/11/24 16:14
+ */
+function getWeeklyAttendanceUrl() {
+    const runUrl = URLScheme.forRunningScript()
+    return runUrl + (runUrl.includes("?") ? "&" : "?") + "mode=week"
+}
 
 // ==================== 大号组件 ====================
 
