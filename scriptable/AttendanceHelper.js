@@ -67,8 +67,17 @@ const CONFIG = {
   // 设备 ID 在钥匙串里的键名
   DEVICE_KEYCHAIN: "attendance-helper-device-id",
 
-  // 已登记的 deviceid。留空，由快捷指令写入钥匙串。换成本机没登记过的值会要求安全验证
+  // 已登记的 deviceid。留空，由快捷指令写入钥匙串。未登记时走短信安全验证
   DEVICE_ID: "",
+
+  // 密码登录返回这个业务码时，表示当前 deviceid 还没登记
+  NEW_DEVICE_CODE: 104004,
+
+  // 新设备发短信。请求体是手机号和滑块参数
+  SEND_MESSAGE_URL: "https://api.hikiot.com/api-saas/open/v3/sendMessage",
+
+  // 短信验证码登录。通过后 data.token 是新的 Bearer Token
+  CODE_LOGIN_URL: "https://api.hikiot.com/api-saas/open/v1/codeLogin",
 
   // 公司名称，用于通知文案
   COMPANY_NAME: "iGroup",
@@ -873,6 +882,200 @@ async function requestAttendance(token) {
 }
 
 /**
+ * 登录、发短信、验证码登录共用的请求头
+ *
+ * @param extra 额外请求头
+ * @return 请求头
+ * @author Kai
+ * @date 2026/11/24 14:50
+ */
+function openLoginHeaders(extra) {
+  return Object.assign({
+    "Accept": "application/json, text/plain, */*",
+    "Content-Type": "application/json",
+    "Authorization": CONFIG.LOGIN_BASIC,
+    "deviceid": CONFIG.DEVICE_ID,
+    "STN-PhoneType": "Iphone",
+    "devicename": "unknow 0",
+    "terminal": "2",
+    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Html5Plus/1.0 (Immersed/47) uni-app"
+  }, extra || {})
+}
+
+/**
+ * 弹出与网页相同的滑块，取出发短信用的参数
+ *
+ * @return captchaVerifyParam
+ * @author Kai
+ * @date 2026/11/24 14:50
+ */
+async function collectCaptchaParam() {
+  if (config.runsInWidget) {
+    throw new Error("新设备需要安全验证，请在 Scriptable 里打开脚本运行一次")
+  }
+
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>
+window.AliyunCaptchaConfig={region:"cn",prefix:"1jgloq"};
+</script>
+<script src="https://o.alicdn.com/captcha-frontend/aliyunCaptcha/AliyunCaptcha.js"></script>
+</head>
+<body style="font-family:-apple-system,sans-serif;padding:16px;">
+<p>请完成下方验证。通过后关闭此页，脚本会发送短信验证码。</p>
+<div id="captcha-element"></div>
+<button id="captcha-button" style="display:none"></button>
+<p id="done"></p>
+<script>
+window.__captchaParam="";
+function boot(){
+  if(!window.initAliyunCaptcha){setTimeout(boot,200);return;}
+  initAliyunCaptcha({
+    SceneId:"1w0ysb3s",
+    mode:"embed",
+    element:"#captcha-element",
+    button:"#captcha-button",
+    success:function(value){
+      window.__captchaParam=String(value||"");
+      var done=document.getElementById("done");
+      if(done){done.textContent="验证通过，请关闭此页";}
+    },
+    fail:function(){},
+    getInstance:function(){
+      var timer=setInterval(function(){
+        var body=document.getElementById("aliyunCaptcha-captcha-body");
+        if(!body){return;}
+        body.dispatchEvent(new Event("click"));
+        clearInterval(timer);
+      },200);
+    }
+  });
+}
+boot();
+</script>
+</body>
+</html>`
+
+  const view = new WebView()
+  await view.loadHTML(html, "https://www.hikiot.com/")
+  await view.present()
+  const value = await view.evaluateJavaScript("window.__captchaParam")
+  return String(value || "").trim()
+}
+
+/**
+ * 向登录手机发送新设备验证码
+ *
+ * @param captchaParam 滑块返回的 captchaVerifyParam
+ * @author Kai
+ * @date 2026/11/24 14:50
+ */
+async function sendLoginSms(captchaParam) {
+  const req = new Request(CONFIG.SEND_MESSAGE_URL)
+  req.method = "POST"
+  req.timeoutInterval = 15
+  req.body = JSON.stringify({
+    phone: CONFIG.USERNAME,
+    captchaVerifyParam: captchaParam
+  })
+  req.headers = openLoginHeaders()
+  const json = await readLoginJson(req)
+  if (!json || Number(json.code) !== 0) {
+    throw new Error((json && (json.msg || json.message)) || "发送验证码失败")
+  }
+}
+
+/**
+ * 让用户填写短信验证码
+ *
+ * @return 6 位数字验证码
+ * @author Kai
+ * @date 2026/11/24 14:50
+ */
+async function askSmsCode() {
+  const alert = new Alert()
+  alert.title = "新设备安全验证"
+  alert.message = "验证码已发送到登录手机，请输入 6 位短信验证码"
+  alert.addTextField("6 位验证码")
+  alert.addAction("验证")
+  alert.addCancelAction("取消")
+  if (await alert.presentAlert() !== 0) {
+    throw new Error("已取消新设备验证")
+  }
+  const code = String(alert.textFieldValue(0) || "").replace(/\D/g, "")
+  if (code.length !== 6) {
+    throw new Error("没有填写 6 位短信验证码")
+  }
+  return code
+}
+
+/**
+ * 提交短信验证码，换取新设备的登录 Token
+ *
+ * @param smsCode 6 位短信验证码
+ * @return Bearer Token
+ * @author Kai
+ * @date 2026/11/24 14:50
+ */
+async function codeLogin(smsCode) {
+  const req = new Request(CONFIG.CODE_LOGIN_URL)
+  req.method = "POST"
+  req.timeoutInterval = 15
+  req.body = JSON.stringify({
+    phone: CONFIG.USERNAME,
+    code: smsCode,
+    isAuto: false
+  })
+  req.headers = openLoginHeaders({"login-source": "link-web"})
+  const json = await readLoginJson(req)
+  const token = json && json.data ? json.data.token : ""
+  if (!json || Number(json.code) !== 0 || !token) {
+    throw new Error((json && (json.msg || json.message)) || "设备验证失败")
+  }
+  return token
+}
+
+/**
+ * 读取登录相关接口的 JSON
+ *
+ * @param req 已填好地址和请求头的 Request
+ * @return 接口 JSON；解析失败时返回 null
+ * @author Kai
+ * @date 2026/11/24 14:50
+ */
+async function readLoginJson(req) {
+  const text = await req.loadString()
+  try {
+    return JSON.parse(text)
+  } catch (e) {
+    return null
+  }
+}
+
+/**
+ * 未登记设备时完成滑块、发短信和验证码登录
+ *
+ * @return 新的 Bearer Token
+ * @author Kai
+ * @date 2026/11/24 14:50
+ */
+async function verifyNewDevice() {
+  if (!CONFIG.USERNAME) {
+    throw new Error("新设备需要短信验证，但没有登录手机号")
+  }
+  const captchaParam = await collectCaptchaParam()
+  if (!captchaParam) {
+    throw new Error("已取消新设备验证")
+  }
+  await sendLoginSms(captchaParam)
+  const smsCode = await askSmsCode()
+  return codeLogin(smsCode)
+}
+
+/**
  * 用账号密码登录并保存新 Token
  *
  * @return 新的 Bearer Token
@@ -892,17 +1095,7 @@ async function refreshAccessToken() {
     password: encryptLoginPassword(CONFIG.PASSWORD),
     isAuto: false
   })
-  req.headers = {
-    "Accept": "application/json, text/plain, */*",
-    "Content-Type": "application/json",
-    "Authorization": CONFIG.LOGIN_BASIC,
-    "login-source": "link-web",
-    "deviceid": CONFIG.DEVICE_ID,
-    "STN-PhoneType": "Iphone",
-    "devicename": "unknow 0",
-    "terminal": "2",
-    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Html5Plus/1.0 (Immersed/47) uni-app"
-  }
+  req.headers = openLoginHeaders({"login-source": "link-web"})
 
   const text = await req.loadString()
   let json = null
@@ -910,6 +1103,13 @@ async function refreshAccessToken() {
     json = JSON.parse(text)
   } catch (e) {
     json = null
+  }
+
+  if (json && Number(json.code) === CONFIG.NEW_DEVICE_CODE) {
+    const verified = await verifyNewDevice()
+    writeStoredToken(verified)
+    await selectCurrentTeam(verified)
+    return verified
   }
 
   const token = json && json.data ? json.data.token : ""
