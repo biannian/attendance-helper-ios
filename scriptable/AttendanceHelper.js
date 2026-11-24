@@ -8,7 +8,7 @@
  *
  * @author Kai
  * @date 2026/11/24 16:12
- * @description 展示今日打卡、本周明细并执行考勤提醒
+ * @description 展示今日打卡、多日历史并执行考勤提醒
  */
 // ==================================================
 // AttendanceHelper
@@ -24,7 +24,7 @@
 // leave      离开公司时检查工时是否满 9 小时
 // schedule9  工作日根据上班时间预约“快满 9 小时”提醒
 // near9      工作日下午定时检查是否快满 / 已满 9 小时
-// week       打开本周逐日考勤明细
+// week       打开多日考勤历史，沿用已有小组件链接
 // debug      查看接口解析结果
 // update     从 GitHub 下载最新脚本并覆盖当前文件
 //
@@ -222,8 +222,8 @@ if (config.runsInWidget) {
   } else if (mode === "debug") {
     await handleDebug()
   } else if (mode === "week") {
-    // 点击中号组件后直接打开本周列表。
-    await presentWeeklyAttendance()
+    // 点击中号组件后直接打开全屏考勤历史。
+    await presentAttendanceHistory()
   } else if (mode === "update") {
     await handleUpdateScript()
   } else {
@@ -266,7 +266,7 @@ function isLaunchedFromShortcut() {
  * @date 2026/11/23 18:25
  */
 function readLaunchRequest() {
-    // 仅接受小组件链接指定的周明细动作。
+    // 识别旧版中号组件链接携带的历史查询动作。
     if (!config.runsInWidget && args.queryParameters && args.queryParameters.mode === "week") {
         return { mode: "week", account: null }
     }
@@ -426,10 +426,10 @@ function saveAccountToKeychain(account) {
 }
 
 /**
- * 清掉上一账号的登录 Token 和打卡快照
+ * 清掉上一账号的登录 Token、打卡快照和考勤历史
  *
  * @author Kai
- * @date 2026/11/23 18:25
+ * @date 2026/11/24 16:29
  */
 function clearStoredSession() {
   try {
@@ -446,7 +446,12 @@ function clearStoredSession() {
 
   CONFIG.TOKEN = ""
 
-    // 切换账号时清掉上一账号整周的打卡数据。
+    // 兼容旧版本按星期存放的数据，同时清除按日保存的历史。
+    const { files, directory } = attendanceHistoryStorage()
+    if (files.fileExists(directory)) {
+        files.remove(directory)
+    }
+
     for (let day = 0; day < 7; day++) {
         const key = weeklySnapshotKey(day)
         if (Keychain.contains(key)) {
@@ -820,20 +825,20 @@ function makeAuthError(json, message, statusCode) {
  * 调用方会因此跳过账号登录。
  *
  * @param token Bearer Token，不要带 Bearer 前缀
+ * @param dateKey 要查询的考勤业务日期，格式为 yyyy-MM-dd
  * @return 打卡接口 JSON
  * @author Kai
- * @date 2026/11/23 18:56
+ * @date 2026/11/24 16:26
  */
-async function requestAttendance(token) {
+async function requestAttendance(token, dateKey) {
   const accessToken = String(token || "").trim()
   if (!accessToken) {
     throw makeAuthError(null, "还没有登录", 401)
   }
 
-  const date = formatDateKey(new Date())
   // 时间戳避免系统把 GET 打卡结果缓存成旧的下班卡
   const url =
-      `${CONFIG.API_BASE}?date=${encodeURIComponent(date)}` +
+      `${CONFIG.API_BASE}?date=${encodeURIComponent(dateKey)}` +
       `&ID=${encodeURIComponent(CONFIG.ID)}` +
       `&_cb=${Date.now()}`
 
@@ -1043,15 +1048,16 @@ async function selectCurrentTeam(token) {
  *
  * 快捷指令写入新账号会清掉旧 Token。这时要先登录，不能先打卡。
  *
+ * @param dateKey 要查询的考勤业务日期，格式为 yyyy-MM-dd
  * @return 打卡接口 JSON
  * @author Kai
- * @date 2026/11/23 18:56
+ * @date 2026/11/24 16:26
  */
-async function fetchAttendance() {
+async function fetchAttendance(dateKey) {
   let token = readStoredToken()
 
   try {
-    return await requestAttendance(token)
+    return await requestAttendance(token, dateKey)
   } catch (e) {
     if (!e || !e.authFailure) {
       throw e
@@ -1061,7 +1067,7 @@ async function fetchAttendance() {
     if (Number(e.authCode) === 999999 && token) {
       try {
         await selectCurrentTeam(token)
-        return await requestAttendance(token)
+        return await requestAttendance(token, dateKey)
       } catch (teamError) {
         if (!teamError || !teamError.authFailure) {
           throw teamError
@@ -1071,7 +1077,7 @@ async function fetchAttendance() {
   }
 
   token = await refreshAccessToken()
-  return await requestAttendance(token)
+  return await requestAttendance(token, dateKey)
 }
 
 
@@ -1397,14 +1403,29 @@ function aesCbcEncrypt(data, key, iv) {
 
 // ==================== 获取打卡摘要 ====================
 
-async function getAttendanceSummary() {
+/**
+ * 查询并保存指定业务日期的考勤摘要，默认查询今天
+ *
+ * @param day 查询日，按手机本地日期处理
+ * @return 考勤摘要或查询失败原因
+ * @author Kai
+ * @date 2026/11/24 16:26
+ */
+async function getAttendanceSummary(day = now) {
+  const dateKey = formatDateKey(day)
   try {
-    const raw = await fetchAttendance()
-    const data = normalizeAttendanceData(raw)
+    const raw = await fetchAttendance(dateKey)
+    const data = normalizeAttendanceData(raw, dateKey)
+
+    // 历史接口若明确返回其他业务日期，不能把那天的考勤保存到查询日。
+    if (dateKey !== formatDateKey(now)
+        && String(data.date).replace(/\//g, "-").slice(0, 10) !== dateKey) {
+      throw new Error("考勤返回日期与查询日期不一致")
+    }
 
     if (data.ok) {
       data.snapshotUpdatedAt = new Date().toISOString()
-      saveAttendanceSnapshot(data)
+      saveAttendanceSnapshot(data, day)
     }
 
     return data
@@ -1420,17 +1441,18 @@ async function getAttendanceSummary() {
  * 保存小组件展示所需字段，不保存完整原始响应
  *
  * @param data 标准化打卡摘要
+ * @param day 快照对应的考勤业务日期
  * @author Kai
- * @date 2026/11/19 20:50
+ * @date 2026/11/24 16:29
  */
-function saveAttendanceSnapshot(data) {
+function saveAttendanceSnapshot(data, day) {
   if (!data || !data.ok) {
     return
   }
 
   const snapshot = {
     savedAt: data.snapshotUpdatedAt || new Date().toISOString(),
-    date: formatDateKey(now),
+    date: formatDateKey(day),
     personName: data.personName || "",
     orgName: data.orgName || "",
     shiftName: data.shiftName || "",
@@ -1441,12 +1463,27 @@ function saveAttendanceSnapshot(data) {
   }
 
   try {
-    Keychain.set(CONFIG.ATTENDANCE_CACHE_KEY, JSON.stringify(snapshot))
-    // 每天独立写入，保留其他日期已成功抓取的记录。
-    Keychain.set(weeklySnapshotKey(now.getDay()), JSON.stringify(snapshot))
+    // 历史补查不覆盖当天小组件的离线快照。
+    if (snapshot.date === formatDateKey(now)) {
+      Keychain.set(CONFIG.ATTENDANCE_CACHE_KEY, JSON.stringify(snapshot))
+    }
   } catch (e) {
     // 缓存失败不影响这次真实查询
   }
+
+    try {
+        // 完整日期作为文件名，跨周仍可复用同一天的记录。
+        const { files, directory } = attendanceHistoryStorage()
+        if (!files.fileExists(directory)) {
+            files.createDirectory(directory, true)
+        }
+        files.writeString(files.joinPath(directory, snapshot.date + ".json"), JSON.stringify({
+            ...snapshot,
+            owner: CONFIG.USERNAME
+        }))
+    } catch (e) {
+        // 锁屏或文件暂不可用时仍返回接口结果。
+    }
 }
 
 /**
@@ -1530,7 +1567,16 @@ function getSnapshotUpdatedText(data) {
 
 // ==================== 解析接口数据 ====================
 
-function normalizeAttendanceData(raw) {
+/**
+ * 解析考勤响应，使用查询日补全只含时分秒的打卡时间
+ *
+ * @param raw 考勤接口响应或缓存还原的数据
+ * @param dateHint 响应没有业务日期时使用的日期，格式为 yyyy-MM-dd
+ * @return 标准化考勤摘要
+ * @author Kai
+ * @date 2026/11/24 16:26
+ */
+function normalizeAttendanceData(raw, dateHint = formatDateKey(now)) {
   const payload = unwrapPayload(raw)
   const root = payload || raw || {}
 
@@ -1562,7 +1608,7 @@ function normalizeAttendanceData(raw) {
     "recordDate",
     "day",
     "statisticsDate"
-  ]) || formatDateKey(now)
+  ]) || dateHint
 
   const clockInRaw = deepPick(root, [
     "clockInTime",
@@ -1851,7 +1897,7 @@ async function createWidget(data) {
     await renderMediumWidget(widget, data)
   }
 
-  // 中号组件整卡打开周明细，其他尺寸沿用刷新链接。
+  // 中号组件整卡打开考勤历史，其他尺寸沿用刷新链接。
   widget.url = family === "medium" ? getWeeklyAttendanceUrl() : getWidgetUrl()
   widget.refreshAfterDate = getNextWidgetRefreshDate(data)
 
@@ -2239,63 +2285,162 @@ function weeklySnapshotKey(dayOfWeek) {
 }
 
 /**
- * 读取本周截至今天的考勤，按打卡记录标注状态
+ * 定位仅保存在本机的逐日考勤快照
  *
- * @return 按日期排序的每日考勤及状态
+ * @return 文件管理器与快照目录
  * @author Kai
- * @date 2026/11/24 16:12
+ * @date 2026/11/24 16:31
  */
-function getWeeklyAttendance() {
-    const monday = addDays(now, -((now.getDay() + 6) % 7))
-    const rows = []
-
-    for (let date = monday; formatDateKey(date) <= formatDateKey(now); date = addDays(date, 1)) {
-        const dateKey = formatDateKey(date)
-        const today = dateKey === formatDateKey(now)
-        // 优先沿用已缓存的节假日历，离线缺少日历时按普通星期判断。
-        const calendar = readAttendanceRecord("china-workday-" + dateKey)
-        const workday = calendar && typeof calendar.isWorkday === "boolean"
-            ? calendar.isWorkday : isNormalWeekday(date)
-        const stored = readAttendanceRecord(weeklySnapshotKey(date.getDay()))
-        const legacy = stored && stored.date === dateKey
-            ? stored : readAttendanceRecord(CONFIG.ATTENDANCE_CACHE_KEY)
-        const record = legacy && legacy.date === dateKey ? legacy : null
-        const clockIn = record && record.inTime ? new Date(record.inTime) : null
-        const clockOut = record && record.latestOutTime ? new Date(record.latestOutTime) : null
-        let status = workday ? "无记录 · 待核对" : "休息日"
-        let color = workday ? "#D97706" : "#6B7280"
-        let worked = ""
-
-        if (workday && record) {
-            if (!clockIn) {
-                status = today ? "待打上班卡" : "上班卡待核对"
-            } else if (!clockOut) {
-                status = today ? "进行中" : "下班卡待核对"
-                color = today ? "#2563EB" : "#DC2626"
-            } else {
-                // 工时仅在上下班卡齐全时结算，口径与今日打卡一致。
-                const workMs = Math.max(0, clockOut.getTime() - clockIn.getTime())
-                const deficit = Math.ceil((CONFIG.TARGET_HOURS * 3600000 - workMs) / 60000)
-                worked = formatShortDuration(workMs)
-                const pending = deficit > 0
-                status = pending ? "工时差 " + formatRemainText(deficit) : "正常"
-                color = pending ? "#D97706" : "#059669"
-            }
-        }
-
-        rows.push({ date, clockIn, clockOut, worked, status, color })
-    }
-
-    return rows
+function attendanceHistoryStorage() {
+    const files = FileManager.local()
+    return { files, directory: files.joinPath(files.documentsDirectory(), "AttendanceHistoryV1") }
 }
 
 /**
- * 容错读取本机保存的考勤或工作日记录
+ * 读取业务日期快照，兼容旧版星期槽位和单日缓存
  *
- * @param key 本机钥匙串键名
- * @return 记录对象，缺失或损坏时返回 null
+ * @param date 要读取的考勤日期
+ * @return 对应日期的快照，缺失时为空
  * @author Kai
- * @date 2026/11/24 16:12
+ * @date 2026/11/24 16:31
+ */
+function readHistorySnapshot(date) {
+    const dateKey = formatDateKey(date)
+    try {
+        const { files, directory } = attendanceHistoryStorage()
+        const path = files.joinPath(directory, dateKey + ".json")
+        if (files.fileExists(path)) {
+            const record = JSON.parse(files.readString(path))
+            if (record.date === dateKey && record.owner === CONFIG.USERNAME) {
+                return record
+            }
+        }
+    } catch (e) {
+        // 日文件暂不可读时，仍可使用旧版快照。
+    }
+
+    const weekly = readAttendanceRecord(weeklySnapshotKey(date.getDay()))
+    const legacy = weekly && weekly.date === dateKey
+        ? weekly : readAttendanceRecord(CONFIG.ATTENDANCE_CACHE_KEY)
+    return legacy && legacy.date === dateKey ? legacy : null
+}
+
+/**
+ * 按日期解读年度节假日表，缺少年度表时沿用单日缓存和星期规则
+ *
+ * @param date 考勤日期
+ * @param holidays 按年份索引的节假日表
+ * @return 日期类型、显示名称和是否应出勤
+ * @author Kai
+ * @date 2026/11/24 16:31
+ */
+function historyDayKind(date, holidays) {
+    const dateKey = formatDateKey(date)
+    const year = holidays[date.getFullYear()]
+    const entry = year && year[dateKey.slice(5)]
+    const cached = year ? null : readAttendanceRecord("china-workday-" + dateKey)
+
+    if ((entry && entry.holiday === true) || (cached && cached.type === 2)) {
+        return { kind: "holiday", label: (entry || cached).name || "节假日", workday: false }
+    }
+    if ((entry && entry.holiday === false) || (cached && cached.type === 3)) {
+        return { kind: "makeup", label: "调休补班", workday: true }
+    }
+
+    const workday = cached && typeof cached.isWorkday === "boolean"
+        ? cached.isWorkday : isNormalWeekday(date)
+    return workday
+        ? { kind: "work", label: "工作日", workday }
+        : { kind: "weekend", label: "休息日", workday }
+}
+
+/**
+ * 获取并缓存年度节假日表，沿用桌面端的年度接口
+ *
+ * @param year 日历年份
+ * @param cached 本地年度表缓存
+ * @return 按月日索引的节假日表，离线时可退回旧表
+ * @author Kai
+ * @date 2026/11/24 16:31
+ */
+async function loadHistoryHolidays(year, cached) {
+    if (cached && Date.now() - cached.savedAt < CONFIG.HOLIDAY_CACHE_HOURS * 3600000) {
+        return cached.holidays
+    }
+
+    let holidays = cached ? cached.holidays : null
+    try {
+        const request = new Request("https://timor.tech/api/holiday/year/" + year)
+        request.timeoutInterval = 8
+        const result = await request.loadJSON()
+        if (result && result.code === 0 && result.holiday
+            && typeof result.holiday === "object" && !Array.isArray(result.holiday)) {
+            holidays = result.holiday
+            Keychain.set("attendance-history-calendar-" + year, JSON.stringify({
+                savedAt: Date.now(),
+                holidays
+            }))
+        }
+    } catch (e) {
+        // 保留已缓存的日历，避免离线时节假日和补班标记消失。
+    }
+    return holidays
+}
+
+/**
+ * 生成可传给全屏日历的某天考勤和状态
+ *
+ * @param date 日历格对应的日期
+ * @param holidays 已加载的年度节假日表
+ * @param checked 本次页面打开期间已查询的日期
+ * @return 日历格及当日明细展示数据
+ * @author Kai
+ * @date 2026/11/24 16:31
+ */
+function buildAttendanceHistoryDay(date, holidays, checked) {
+    const key = formatDateKey(date)
+    const today = key === formatDateKey(now)
+    const { kind, label, workday } = historyDayKind(date, holidays)
+    const record = readHistorySnapshot(date) || checked.get(key)
+    const clockIn = record && record.inTime ? new Date(record.inTime) : null
+    const clockOut = record && record.latestOutTime ? new Date(record.latestOutTime) : null
+    const workedMs = clockIn && clockOut ? Math.max(0, clockOut - clockIn) : null
+    const deficit = workedMs === null ? 0 : Math.ceil((CONFIG.TARGET_HOURS * 3600000 - workedMs) / 60000)
+    let status = label
+    let state = "neutral"
+
+    if (workday) {
+        if (!record) {
+            status = checked.has(key) ? "查询失败 · 待核对" : "等待补查"
+            state = checked.has(key) ? "warning" : "neutral"
+        } else if (!clockIn) {
+            status = today ? "待打上班卡" : "上班卡待核对"
+            state = today ? "neutral" : "warning"
+        } else if (!clockOut) {
+            status = today ? "进行中" : "下班卡待核对"
+            state = today ? "active" : "warning"
+        } else {
+            status = deficit > 0 ? "工时差 " + formatRemainText(deficit) : "正常"
+            state = deficit > 0 ? "warning" : "normal"
+        }
+    }
+
+    return {
+        key, kind, label, workday, status, state, today, workedMs,
+        weekday: (date.getDay() + 6) % 7,
+        clockIn: clockIn ? formatTime(clockIn) : "—",
+        clockOut: clockOut ? formatTime(clockOut) : "—",
+        worked: workedMs === null ? "—" : formatShortDuration(workedMs)
+    }
+}
+
+/**
+ * 容错读取钥匙串内的考勤或节假日缓存
+ *
+ * @param key 钥匙串缓存键
+ * @return 缓存对象，缺失或损坏时为空
+ * @author Kai
+ * @date 2026/11/24 16:31
  */
 function readAttendanceRecord(key) {
     try {
@@ -2306,47 +2451,301 @@ function readAttendanceRecord(key) {
 }
 
 /**
- * 在 Scriptable 内展示本周逐日打卡明细
+ * 打开全屏历史页，先显示缓存，再更新当前范围内缺少的工作日
  *
  * @author Kai
- * @date 2026/11/24 16:12
+ * @date 2026/11/24 16:31
  */
-async function presentWeeklyAttendance() {
-    const days = getWeeklyAttendance()
-    const weekStart = days[0].date
-    const weekEnd = addDays(weekStart, 6)
-    const table = new UITable()
-    table.showSeparators = true
-
-    const header = new UITableRow()
-    header.isHeader = true
-    header.height = 58
-    header.addText("本周考勤", formatDateKey(weekStart) + " 至 " + formatDateKey(weekEnd))
-    table.addRow(header)
-
-    // 每行同时保留原始打卡时间和判断结果，方便定位补卡日期。
-    for (const day of days) {
-        const row = new UITableRow()
-        row.height = 56
-        const weekday = "日一二三四五六"[day.date.getDay()]
-        const punches = (day.clockIn ? formatTime(day.clockIn) : "—")
-            + " / " + (day.clockOut ? formatTime(day.clockOut) : "—")
-        row.addText("周" + weekday + " " + formatDateKey(day.date).slice(5), punches)
-        const status = row.addText(day.status, day.worked || undefined)
-        status.titleColor = new Color(day.color)
-        status.rightAligned()
-        table.addRow(row)
+async function presentAttendanceHistory() {
+    const view = new WebView()
+    const dates = Array.from({ length: 30 }, (_, index) => addDays(now, -index))
+    const checked = new Map()
+    const knownYears = new Set()
+    const cached = {}
+    const holidays = {}
+    for (const year of new Set(dates.map(date => date.getFullYear()))) {
+        cached[year] = readAttendanceRecord("attendance-history-calendar-" + year)
+        holidays[year] = cached[year] && cached[year].holidays
     }
 
-    await table.present()
+    await view.loadHTML(attendanceHistoryHTML())
+    await updateAttendanceHistoryView(view, dates, holidays, checked, true)
+    let open = true
+    const closed = view.present(true).finally(() => { open = false })
+
+    // WebView 负责筛选和选中日期，Scriptable 负责鉴权、补查和缓存。
+    const sync = (async () => {
+        while (open) {
+            const range = await view.evaluateJavaScript("window.historyRange")
+            const selected = dates.slice(0, range)
+            const year = selected.map(day => day.getFullYear()).find(item => !knownYears.has(item))
+            if (year !== undefined) {
+                knownYears.add(year)
+                holidays[year] = await loadHistoryHolidays(year, cached[year])
+            } else {
+                const next = selected.find(day => historyDayKind(day, holidays).workday
+                    && !checked.has(formatDateKey(day)) && !readHistorySnapshot(day))
+                if (!next) {
+                    await updateAttendanceHistoryView(view, dates, holidays, checked, false)
+                    if (open) {
+                        await view.evaluateJavaScript("window.waitForHistoryRange(" + range + ", completion)", true)
+                    }
+                    continue
+                }
+
+                const data = await getAttendanceSummary(next)
+                // 文件写入不可用时，本次仍然展示接口返回的结果。
+                checked.set(formatDateKey(next), data.ok ? data : null)
+            }
+            if (open) {
+                await updateAttendanceHistoryView(view, dates, holidays, checked, true)
+            }
+        }
+    })()
+
+    try {
+        await Promise.race([closed, sync])
+    } catch (e) {
+        if (open) {
+            await updateAttendanceHistoryView(view, dates, holidays, checked, false, true).catch(() => {})
+            await closed
+        }
+    }
 }
 
 /**
- * 生成点击中号组件时打开本周明细的链接
+ * 把当前历史快照和补查状态更新到已经打开的页面
  *
- * @return 含周明细模式的 Scriptable 链接
+ * @param view 全屏历史页
+ * @param dates 历史页支持浏览的日期
+ * @param holidays 年度节假日表
+ * @param checked 本次已经补查的结果
+ * @param loading 当前是否仍在补查
+ * @param failed 页面更新过程是否失败
  * @author Kai
- * @date 2026/11/24 16:14
+ * @date 2026/11/24 16:31
+ */
+async function updateAttendanceHistoryView(view, dates, holidays, checked, loading, failed = false) {
+    const rows = dates.map(date => buildAttendanceHistoryDay(date, holidays, checked))
+    await view.evaluateJavaScript("window.renderAttendance(" + JSON.stringify({ rows, loading, failed }) + ")")
+}
+
+/**
+ * 构建适合竖屏操作的考勤日历，具体数据由 Scriptable 注入
+ *
+ * @return 自包含的移动端页面
+ * @author Kai
+ * @date 2026/11/24 16:33
+ */
+function attendanceHistoryHTML() {
+    return `<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>考勤历史</title>
+    <style>
+        :root { color-scheme: light dark; --bg:#f3f5f9; --panel:#fff; --ink:#172033; --muted:#526078; --line:#d9e0ec; --accent:#205fcc; --soft:#e5eeff; --normal:#087352; --warning:#a7500a; --holiday:#a33257; }
+        @media (prefers-color-scheme:dark) {
+            :root { --bg:#111827; --panel:#1f2937; --ink:#f3f4f6; --muted:#b4c2d6; --line:#3b485b; --accent:#93c5fd; --soft:#293d60; --normal:#6ee7b7; --warning:#fbbf24; --holiday:#fda4af; }
+        }
+        * { box-sizing:border-box; }
+        body { margin:0; background:var(--bg); color:var(--ink); font:15px -apple-system,BlinkMacSystemFont,sans-serif; }
+        main { max-width:540px; margin:auto; padding:16px max(12px, env(safe-area-inset-right)) max(22px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); }
+        h1 { margin:0 0 12px; font-size:25px; }
+        h2 { margin:0 0 9px; font-size:16px; }
+        button { color:inherit; font:inherit; cursor:pointer; }
+        .ranges { display:grid; grid-template-columns:repeat(3,1fr); gap:4px; border-radius:12px; background:var(--panel); padding:4px; }
+        .ranges button { border:0; border-radius:8px; background:none; min-height:44px; padding:4px; }
+        .ranges [aria-pressed="true"] { background:var(--soft); color:var(--accent); font-weight:650; }
+        .toolbar { display:flex; align-items:center; justify-content:space-between; gap:6px; min-height:48px; font-size:12px; color:var(--muted); }
+        .toolbar label { display:flex; align-items:center; min-height:44px; gap:5px; white-space:nowrap; }
+        input { accent-color:var(--accent); }
+        .summary,.detail { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:12px; }
+        .summary,.facts { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; text-align:center; }
+        .summary span,.facts span { display:block; color:var(--muted); font-size:12px; margin-bottom:5px; }
+        .summary strong,.facts strong { display:block; font-size:14px; font-variant-numeric:tabular-nums; }
+        .note { min-height:17px; margin:9px 0; color:var(--muted); font-size:12px; }
+        .calendar { display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:3px; margin-bottom:12px; }
+        .weekday { text-align:center; color:var(--muted); font-size:11px; padding:2px 0 5px; }
+        .day { display:flex; flex-direction:column; align-items:center; justify-content:center; min-width:0; width:100%; min-height:51px; border:1px solid var(--line); border-radius:8px; background:var(--panel); padding:1px; line-height:1.15; }
+        .day strong { font-size:12px; font-variant-numeric:tabular-nums; }
+        .day small { display:block; font-size:10px; margin-top:3px; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .day[data-kind="weekend"] { color:var(--muted); background:var(--bg); }
+        .day[data-kind="holiday"] { color:var(--holiday); }
+        .day[data-kind="makeup"],.day[data-today="true"] strong { color:var(--accent); }
+        .day[data-state="normal"] small { color:var(--normal); }
+        .day[data-state="warning"] small,.detail [data-state="warning"] { color:var(--warning); }
+        .day[aria-pressed="true"] { border-color:var(--accent); background:var(--soft); }
+        .detail p { margin:0 0 11px; color:var(--muted); font-size:13px; }
+    </style>
+</head>
+<body>
+<main>
+    <h1>考勤历史</h1>
+    <div class="ranges" aria-label="日期范围">
+        <button type="button" data-range="7" aria-pressed="false">最近 7 天</button>
+        <button type="button" data-range="14" aria-pressed="true">最近 14 天</button>
+        <button type="button" data-range="30" aria-pressed="false">最近 30 天</button>
+    </div>
+    <div class="toolbar"><span id="period"></span><label><input id="only" type="checkbox">仅看异常</label></div>
+    <section class="summary" aria-label="范围汇总">
+        <div><span>工作日</span><strong id="workdays">—</strong></div>
+        <div><span>待核对</span><strong id="warnings">—</strong></div>
+        <div><span>平均工时</span><strong id="average">—</strong></div>
+    </section>
+    <p class="note" id="progress" role="status"></p>
+    <section id="calendar" class="calendar" aria-label="考勤日历"></section>
+    <section class="detail" id="detail" aria-label="单日考勤">
+        <h2 id="detail-date"></h2>
+        <p><span id="detail-kind"></span> · <span id="detail-status"></span></p>
+        <div class="facts">
+            <div><span>上班卡</span><strong id="clock-in">—</strong></div>
+            <div><span>下班卡</span><strong id="clock-out">—</strong></div>
+            <div><span>实际工时</span><strong id="worked">—</strong></div>
+        </div>
+    </section>
+</main>
+<script>
+    // 日期范围和选中日留在页面端，补查刷新数据时保留当前选择。
+    window.historyRange = 14;
+    let snapshot = { rows: [], loading: true };
+    let selected = "";
+    let rangeChanged;
+    const byId = id => document.getElementById(id);
+
+    /**
+     * 等待下一次范围操作，避免数据补齐后持续轮询
+     * @param previous Native 已处理的天数
+     * @param done 返回新范围的回调
+     * @author Kai
+     * @date 2026/11/24 16:33
+     */
+    window.waitForHistoryRange = function (previous, done) {
+        if (previous !== window.historyRange) {
+            done(window.historyRange);
+        } else {
+            rangeChanged = done;
+        }
+    };
+
+    /**
+     * 根据当前范围、异常筛选和选中日期重绘日历
+     * @author Kai
+     * @date 2026/11/24 16:33
+     */
+    function draw() {
+        const rows = snapshot.rows.slice(0, window.historyRange).reverse();
+        if (!rows.length) return;
+        const warnings = rows.filter(day => day.state === "warning");
+        const workdays = rows.filter(day => day.workday);
+        const completed = workdays.filter(day => day.workedMs !== null);
+        const meanHours = completed.length && completed.reduce((sum, day) => sum + day.workedMs, 0) / completed.length / 3600000;
+        const only = byId("only").checked;
+        const shown = only ? warnings : rows;
+        const active = shown.find(day => day.key === selected) || shown[shown.length - 1];
+
+        byId("period").textContent = rows[0].key.slice(5) + " 至 " + rows[rows.length - 1].key.slice(5);
+        byId("workdays").textContent = workdays.length + " 天";
+        byId("warnings").textContent = warnings.length + " 天";
+        byId("average").textContent = completed.length ? meanHours.toFixed(1) + " 小时" : "—";
+        byId("progress").textContent = snapshot.failed ? "补查中断，重新打开后重试" : snapshot.loading
+            ? "正在补查缺少的日期…" : only && !warnings.length ? "所选范围暂无异常" : "";
+
+        const calendar = byId("calendar");
+        calendar.replaceChildren();
+        for (const name of "一二三四五六日") {
+            const heading = document.createElement("span");
+            heading.className = "weekday";
+            heading.textContent = name;
+            calendar.append(heading);
+        }
+        for (let i = 0; i < rows[0].weekday; i++) calendar.append(document.createElement("span"));
+        for (const day of rows) {
+            if (only && day.state !== "warning") {
+                calendar.append(document.createElement("span"));
+                continue;
+            }
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "day";
+            button.dataset.kind = day.kind;
+            button.dataset.state = day.state;
+            button.dataset.today = day.today;
+            button.setAttribute("aria-pressed", String(active && active.key === day.key));
+            button.setAttribute("aria-label", day.key + " " + day.label + " " + day.status);
+            const number = document.createElement("strong");
+            number.textContent = day.key.slice(5).replace("-", "/");
+            const status = document.createElement("small");
+            status.textContent = day.kind === "holiday" || day.kind === "weekend" ? day.label
+                : day.kind === "makeup" ? "补班" : day.state === "warning" ? "待核对"
+                : day.state === "normal" ? day.worked : day.today ? "今天" : "…";
+            button.append(number, status);
+            button.addEventListener("click", () => {
+                selected = day.key;
+                draw();
+                // 长范围在小屏上可能把当日明细推到首屏之外。
+                const detail = byId("detail");
+                if (detail.getBoundingClientRect().bottom > window.innerHeight) {
+                    detail.scrollIntoView({ block: "end", behavior: "smooth" });
+                }
+            });
+            calendar.append(button);
+        }
+
+        byId("detail").hidden = !active;
+        if (!active) return;
+        selected = active.key;
+        byId("detail-date").textContent = active.key + " · 周" + "一二三四五六日"[active.weekday];
+        byId("detail-kind").textContent = active.label;
+        byId("detail-status").textContent = active.workday ? active.status
+            : active.workedMs !== null ? "有打卡" : "休息";
+        byId("detail-status").dataset.state = active.state;
+        byId("clock-in").textContent = active.clockIn;
+        byId("clock-out").textContent = active.clockOut;
+        byId("worked").textContent = active.worked;
+    }
+
+    /**
+     * 接收 Scriptable 补查后推送的页面数据
+     * @param next 历史行和加载状态
+     * @author Kai
+     * @date 2026/11/24 16:33
+     */
+    window.renderAttendance = function (next) {
+        snapshot = next;
+        draw();
+    };
+
+    // 范围切换即时重绘，唤醒 Scriptable 请求扩大后的缺失日期。
+    for (const button of document.querySelectorAll("[data-range]")) {
+        button.addEventListener("click", () => {
+            const range = Number(button.dataset.range);
+            if (window.historyRange === range) return;
+            const previous = window.historyRange;
+            window.historyRange = range;
+            document.querySelector('[data-range="' + previous + '"]').setAttribute("aria-pressed", "false");
+            button.setAttribute("aria-pressed", "true");
+            draw();
+            if (rangeChanged) {
+                const done = rangeChanged;
+                rangeChanged = null;
+                done(range);
+            }
+        });
+    }
+    byId("only").addEventListener("change", draw);
+</script>
+</body>
+</html>`
+}
+
+/**
+ * 生成点击中号组件时打开考勤历史的链接
+ *
+ * @return 打开历史模式的 Scriptable 链接
+ * @author Kai
+ * @date 2026/11/24 16:34
  */
 function getWeeklyAttendanceUrl() {
     const runUrl = URLScheme.forRunningScript()
