@@ -2069,6 +2069,14 @@ async function handleNearNineHours() {
 
 // ==================== 功能 4：桌面小组件 ====================
 
+/**
+ * 创建今日打卡组件，按桌面或锁屏尺寸渲染
+ *
+ * @param data 今日打卡摘要
+ * @return 已配置外观、点击链接和刷新时间的小组件
+ * @author Kai
+ * @date 2026/11/24 17:45
+ */
 async function createWidget(data) {
   const family = config.widgetFamily || "medium"
   const isAccessory = family.indexOf("accessory") === 0
@@ -2082,7 +2090,13 @@ async function createWidget(data) {
   }
 
   if (!isAccessory) {
-    widget.backgroundColor = new Color("#111827")
+        // 左上保留低饱和蓝灰高光，右下压暗，让内容在各尺寸都保持对比。
+        const background = new LinearGradient()
+        background.startPoint = new Point(0, 0)
+        background.endPoint = new Point(1, 1)
+        background.locations = [0, 0.5, 1]
+        background.colors = [new Color("#24364A"), new Color("#172536"), new Color("#0E1724")]
+        widget.backgroundGradient = background
   }
 
   if (family === "accessoryRectangular") {
@@ -2304,10 +2318,18 @@ function renderAccessoryInline(widget, data) {
 
 // ==================== 小号组件 ====================
 
+/**
+ * 在小号组件中纵向显示当前状态与两张打卡记录
+ *
+ * @param widget 小号桌面组件
+ * @param data 今日打卡摘要
+ * @author Kai
+ * @date 2026/11/24 17:47
+ */
 async function renderSmallWidget(widget, data) {
   addCompactHeader(widget, "打卡")
 
-  widget.addSpacer(7)
+  widget.addSpacer(5)
 
   if (!data.ok) {
     const t = widget.addText(data.cacheMiss ? "需要更新" : "加载失败")
@@ -2347,7 +2369,8 @@ async function renderSmallWidget(widget, data) {
   sub.lineLimit = 1
   sub.minimumScaleFactor = 0.65
 
-  widget.addSpacer(7)
+    // 把剩余高度留给状态和打卡记录之间，避免底部堆积空白。
+    widget.addSpacer()
 
   addMiniLine(
       widget,
@@ -2361,21 +2384,25 @@ async function renderSmallWidget(widget, data) {
       data.hasOutRecord ? formatTime(data.latestOutTime) : "未打"
   )
 
-  widget.addSpacer()
-
-  const footer = widget.addText(formatTime(now))
-  footer.font = Font.systemFont(9)
-  footer.textColor = new Color("#6B7280")
-  footer.lineLimit = 1
 }
 
 
 // ==================== 中号组件，推荐使用 ====================
 
+/**
+ * 将当日状态和四项打卡信息排在横向中号组件上
+ *
+ * @param widget 中号桌面组件
+ * @param data 今日打卡摘要
+ * @author Kai
+ * @date 2026/11/24 17:45
+ */
 async function renderMediumWidget(widget, data) {
   addCompactHeader(widget, "今日打卡")
 
-  widget.addSpacer(6)
+    // 不同 iPhone 中号高度略有差异，将剩余空间分配到卡片之间。
+    widget.addSpacer(4)
+    widget.addSpacer()
 
   if (!data.ok) {
     renderErrorBlock(widget, data)
@@ -2386,8 +2413,11 @@ async function renderMediumWidget(widget, data) {
 
   const card = widget.addStack()
   card.layoutVertically()
-  card.backgroundColor = new Color("#1F2937")
-  card.cornerRadius = 10
+    // 主状态卡略亮，细描边把状态提示和下方数据区区分开。
+    card.backgroundColor = new Color("#91ABC8", 0.14)
+    card.borderColor = new Color("#B0C8E1", 0.22)
+    card.borderWidth = 0.5
+    card.cornerRadius = 10
   card.setPadding(6, 8, 6, 8)
 
   const statusRow = card.addStack()
@@ -2422,7 +2452,8 @@ async function renderMediumWidget(widget, data) {
 
   addProgressBar(card, data, contentWidth - 16)
 
-  widget.addSpacer(6)
+    widget.addSpacer(4)
+    widget.addSpacer()
 
   const grid = widget.addStack()
   grid.layoutVertically()
@@ -2434,7 +2465,7 @@ async function renderMediumWidget(widget, data) {
       row1,
       "上班卡",
       data.hasClockIn ? formatTime(data.inTime) : "--",
-      "#60A5FA",
+      "#EAF1F9",
       cellWidth,
       32
   )
@@ -2445,7 +2476,7 @@ async function renderMediumWidget(widget, data) {
       row1,
       "可下班",
       data.hasClockIn ? formatTime(data.targetTime) : "--",
-      "#34D399",
+      "#A9DCCF",
       cellWidth,
       32
   )
@@ -2459,7 +2490,7 @@ async function renderMediumWidget(widget, data) {
       row2,
       "下班卡",
       data.hasOutRecord ? formatTime(data.latestOutTime) : "未打",
-      data.hasOutRecord ? "#F87171" : "#9CA3AF",
+      data.hasOutRecord ? "#EAF1F9" : "#B2C0D0",
       cellWidth,
       32
   )
@@ -2824,6 +2855,14 @@ function getWeeklyAttendanceUrl() {
 
 // ==================== 大号组件 ====================
 
+/**
+ * 在大号组件中用完整打卡明细填充纵向空间
+ *
+ * @param widget 大号桌面组件
+ * @param data 今日打卡摘要
+ * @author Kai
+ * @date 2026/11/24 17:47
+ */
 async function renderLargeWidget(widget, data) {
   addCompactHeader(widget, "今日打卡")
 
@@ -2838,7 +2877,10 @@ async function renderLargeWidget(widget, data) {
 
   const statusCard = widget.addStack()
   statusCard.layoutVertically()
-  statusCard.backgroundColor = new Color("#1F2937")
+    // 大号沿用中号的状态层级，并留出两行说明的空间。
+    statusCard.backgroundColor = new Color("#91ABC8", 0.14)
+    statusCard.borderColor = new Color("#B0C8E1", 0.22)
+    statusCard.borderWidth = 0.5
   statusCard.cornerRadius = 14
   statusCard.setPadding(12, 12, 12, 12)
 
@@ -2863,9 +2905,11 @@ async function renderLargeWidget(widget, data) {
 
   statusCard.addSpacer(8)
 
-  addProgressBar(statusCard, data, 300)
+    // 进度条宽度跟随大号组件，给外层和状态卡内边距留空间。
+    addProgressBar(statusCard, data, homeScreenWidgetWidth("large") - 52)
 
-  widget.addSpacer(12)
+    widget.addSpacer(8)
+    widget.addSpacer()
 
   addDetailRow(
       widget,
@@ -2895,11 +2939,6 @@ async function renderLargeWidget(widget, data) {
       data.hasClockIn ? formatTime(data.targetTime) : "--"
   )
 
-  widget.addSpacer()
-
-  const footer = widget.addText("更新：" + formatTime(now))
-  footer.font = Font.systemFont(10)
-  footer.textColor = new Color("#6B7280")
 }
 
 
@@ -2919,7 +2958,7 @@ function addCompactHeader(widget, titleText) {
 
   const time = row.addText(formatTime(now))
   time.font = Font.systemFont(10)
-  time.textColor = new Color("#6B7280")
+  time.textColor = new Color("#B2C0D0")
   time.lineLimit = 1
 }
 
@@ -2959,17 +2998,30 @@ function addMiniLine(widget, label, value) {
   widget.addSpacer(3)
 }
 
+/**
+ * 绘制中号和大号组件的打卡数据格
+ *
+ * @param parent 数据格所在的横排
+ * @param label 字段名称
+ * @param value 显示值
+ * @param color 显示值的文字颜色
+ * @param width 数据格宽度
+ * @param height 数据格高度
+ * @author Kai
+ * @date 2026/11/24 17:45
+ */
 function addInfoCell(parent, label, value, color, width, height) {
   const cell = parent.addStack()
   cell.layoutVertically()
-  cell.backgroundColor = new Color("#1F2937")
+    // 用半透明蓝灰保留底色层次，标签维持足够的可读对比度。
+    cell.backgroundColor = new Color("#B0C8E1", 0.09)
   cell.cornerRadius = 8
   cell.setPadding(4, 7, 4, 7)
   cell.size = new Size(width || 130, height || 34)
 
   const l = cell.addText(label)
   l.font = Font.systemFont(9)
-  l.textColor = new Color("#9CA3AF")
+    l.textColor = new Color("#B8C6D8")
   l.lineLimit = 1
 
   cell.addSpacer(1)
@@ -2981,10 +3033,24 @@ function addInfoCell(parent, label, value, color, width, height) {
   v.minimumScaleFactor = 0.65
 }
 
+/**
+ * 在大号组件中渲染一行横向考勤明细
+ *
+ * @param widget 大号桌面组件
+ * @param label 明细字段名称
+ * @param value 明细字段值
+ * @author Kai
+ * @date 2026/11/24 17:47
+ */
 function addDetailRow(widget, label, value) {
+    // 将可用高度分散到明细行之间，在大屏上保持均衡。
+    widget.addSpacer()
   const row = widget.addStack()
   row.layoutHorizontally()
   row.centerAlignContent()
+    row.setPadding(10, 11, 10, 11)
+    row.cornerRadius = 9
+    row.backgroundColor = new Color("#B0C8E1", 0.09)
 
   const l = row.addText(label)
   l.font = Font.systemFont(12)
@@ -2999,7 +3065,7 @@ function addDetailRow(widget, label, value) {
   v.lineLimit = 1
   v.minimumScaleFactor = 0.75
 
-  widget.addSpacer(7)
+    widget.addSpacer(4)
 }
 
 function addProgressBar(parent, data, width) {
@@ -3598,10 +3664,10 @@ function mediumWidgetContentWidth() {
 /**
  * 按机型估算桌面小组件宽度
  *
- * @param family 小组件尺寸，目前使用 medium
+ * @param family 小组件尺寸，中号和大号在 iPhone 上使用相同的横向跨度
  * @return 小组件宽度，单位是点
  * @author Kai
- * @date 2026/11/23 18:24
+ * @date 2026/11/24 17:47
  */
 function homeScreenWidgetWidth(family) {
   const screen = Device.screenSize()
@@ -3620,7 +3686,7 @@ function homeScreenWidgetWidth(family) {
     "440x956": 364
   }
 
-  if (family === "medium" && mediumWidths[key]) {
+  if ((family === "medium" || family === "large") && mediumWidths[key]) {
     return mediumWidths[key]
   }
 
