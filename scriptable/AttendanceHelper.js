@@ -232,7 +232,11 @@ if (config.runsInWidget) {
     await handleDebug()
   } else if (mode === "week") {
     // 点击中号组件后直接打开全屏考勤历史。
-    await presentAttendanceHistory()
+    try {
+      await presentAttendanceHistory()
+    } catch (e) {
+      await presentMessage("考勤历史", "页面无法打开，请重试。\n" + String(e.message || e))
+    }
   } else if (mode === "update") {
     await handleUpdateScript()
   } else {
@@ -2654,7 +2658,7 @@ function readAttendanceRecord(key) {
  * 打开全屏历史页，先显示缓存，再更新当前范围内缺少的工作日
  *
  * @author Kai
- * @date 2026/11/24 16:31
+ * @date 2026/11/24 16:51
  */
 async function presentAttendanceHistory() {
     const view = new WebView()
@@ -2668,8 +2672,9 @@ async function presentAttendanceHistory() {
         holidays[year] = cached[year] && cached[year].holidays
     }
 
-    await view.loadHTML(attendanceHistoryHTML())
-    await updateAttendanceHistoryView(view, dates, holidays, checked, true)
+    // 首屏数据随 HTML 一起加载，页面打开前无需等待 WebView 的脚本桥接。
+    const initialRows = dates.map(date => buildAttendanceHistoryDay(date, holidays, checked))
+    await view.loadHTML(attendanceHistoryHTML(initialRows))
     let open = true
     const closed = view.present(true).finally(() => { open = false })
 
@@ -2677,6 +2682,9 @@ async function presentAttendanceHistory() {
     const sync = (async () => {
         while (open) {
             const range = await view.evaluateJavaScript("window.historyRange")
+            if (![7, 14, 30].includes(range)) {
+                throw new Error("考勤日历尚未初始化")
+            }
             const selected = dates.slice(0, range)
             const year = selected.map(day => day.getFullYear()).find(item => !knownYears.has(item))
             if (year !== undefined) {
@@ -2706,10 +2714,13 @@ async function presentAttendanceHistory() {
     try {
         await Promise.race([closed, sync])
     } catch (e) {
-        if (open) {
-            await updateAttendanceHistoryView(view, dates, holidays, checked, false, true).catch(() => {})
-            await closed
+        if (!open) {
+            throw e
         }
+        // 即使日历脚本未加载，也让原生 HTML 提示能显示同步错误。
+        await view.evaluateJavaScript(`document.getElementById("progress").textContent =
+            "考勤数据未能更新，请关闭后重试。"; true`).catch(() => {})
+        await closed
     }
 }
 
@@ -2721,28 +2732,30 @@ async function presentAttendanceHistory() {
  * @param holidays 年度节假日表
  * @param checked 本次已经补查的结果
  * @param loading 当前是否仍在补查
- * @param failed 页面更新过程是否失败
  * @author Kai
- * @date 2026/11/24 16:31
+ * @date 2026/11/24 16:51
  */
-async function updateAttendanceHistoryView(view, dates, holidays, checked, loading, failed = false) {
+async function updateAttendanceHistoryView(view, dates, holidays, checked, loading) {
     const rows = dates.map(date => buildAttendanceHistoryDay(date, holidays, checked))
-    await view.evaluateJavaScript("window.renderAttendance(" + JSON.stringify({ rows, loading, failed }) + ")")
+    await view.evaluateJavaScript("window.renderAttendance(" + JSON.stringify({ rows, loading }) + "); true")
 }
 
 /**
  * 构建适合竖屏操作的考勤日历，具体数据由 Scriptable 注入
  *
+ * @param initialRows 首屏使用的本机考勤快照
  * @return 自包含的移动端页面
  * @author Kai
- * @date 2026/11/24 16:47
+ * @date 2026/11/24 16:51
  */
-function attendanceHistoryHTML() {
+function attendanceHistoryHTML(initialRows) {
+    // 转义 HTML 标签起始符，防止节假日名称等数据打断 JSON 容器。
+    const initialData = JSON.stringify({ rows: initialRows, loading: true }).replace(/</g, "\\u003c")
     return `<!doctype html>
 <html lang="zh-CN">
 <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>考勤历史</title>
     <style>
         :root { color-scheme: light dark; --bg:#f3f5f9; --panel:#fff; --ink:#172033; --muted:#526078; --line:#d9e0ec; --accent:#205fcc; --soft:#e5eeff; --normal:#087352; --warning:#a7500a; --holiday:#a33257; }
@@ -2800,9 +2813,9 @@ function attendanceHistoryHTML() {
         <div><span>待核对</span><strong id="warnings">—</strong></div>
         <div><span>平均工时</span><strong id="average">—</strong></div>
     </section>
-    <p class="note" id="progress" role="status"></p>
+    <p class="note" id="progress" role="status">正在打开考勤历史…</p>
     <section id="calendar" class="calendar" aria-label="考勤日历"></section>
-    <section class="detail" id="detail" aria-label="单日考勤">
+    <section class="detail" id="detail" aria-label="单日考勤" hidden>
         <h2 id="detail-date"></h2>
         <p><span id="detail-kind"></span> · <span id="detail-status"></span></p>
         <div class="facts">
@@ -2812,6 +2825,7 @@ function attendanceHistoryHTML() {
         </div>
     </section>
 </main>
+<script id="initial-data" type="application/json">${initialData}</script>
 <script>
     // 日期范围和选中日留在页面端，补查刷新数据时保留当前选择。
     window.historyRange = 14;
@@ -2855,11 +2869,11 @@ function attendanceHistoryHTML() {
         byId("workdays").textContent = workdays.length + " 天";
         byId("warnings").textContent = warnings.length + " 天";
         byId("average").textContent = completed.length ? meanHours.toFixed(1) + " 小时" : "—";
-        byId("progress").textContent = snapshot.failed ? "补查中断，重新打开后重试" : snapshot.loading
+        byId("progress").textContent = snapshot.loading
             ? "正在补查缺少的日期…" : only && !warnings.length ? "所选范围暂无异常" : "";
 
         const calendar = byId("calendar");
-        calendar.replaceChildren();
+        calendar.textContent = "";
         for (const name of "一二三四五六日") {
             const heading = document.createElement("span");
             heading.className = "weekday";
@@ -2941,6 +2955,12 @@ function attendanceHistoryHTML() {
         });
     }
     byId("only").addEventListener("change", draw);
+    // 先渲染内嵌快照，再接收 Scriptable 的逐日更新。
+    try {
+        window.renderAttendance(JSON.parse(byId("initial-data").textContent));
+    } catch (e) {
+        byId("progress").textContent = "考勤页面初始化失败，请关闭后重试。";
+    }
 </script>
 </body>
 </html>`
