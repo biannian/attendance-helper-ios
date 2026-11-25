@@ -8,7 +8,7 @@
  *
  * @author Kai
  * @date 2026/11/25 11:47
- * @description 展示今日打卡、多日历史并执行考勤提醒
+ * @description 展示今日打卡和月历核查，并执行考勤提醒
  */
 // ==================================================
 // AttendanceHelper
@@ -551,35 +551,43 @@ async function presentMessage(title, message) {
 /**
  * 拉取打卡数据、写入快照并生成小组件
  *
- * @param options 展示选项。presentPreview 为 true 时弹出中号预览
+ * @param options 展示选项，family 指定预览尺寸，presentPreview 控制是否弹出预览
  * @author Kai
- * @date 2026/11/19 20:50
+ * @date 2026/11/25 12:18
  */
 async function runWidgetUpdate(options) {
   const presentPreview = !!(options && options.presentPreview)
   const data = await getAttendanceSummary()
-  const widget = await createWidget(data)
+  const widget = await createWidget(data, options?.family)
   Script.setWidget(widget)
 
   if (presentPreview) {
-    await widget.presentMedium()
+    if (options?.family === "large") await widget.presentLarge()
+    else await widget.presentMedium()
   }
 }
 
 
 // ==================== 手动运行菜单 ====================
 
+/**
+ * 展示考勤工具和中号、大号预览入口。
+ *
+ * @author Kai
+ * @date 2026/11/25 12:18
+ */
 async function showMainMenu() {
   const alert = new Alert()
   alert.title = "打卡助手"
   alert.message = "请选择要执行的操作"
-  alert.addAction("查看小组件预览")
+  alert.addAction("预览中号小组件")
   alert.addAction("查看 Debug 信息")
   alert.addAction("离开公司检查")
   alert.addAction("预约 9 小时提醒")
   alert.addAction("检查是否快满 9 小时")
   alert.addAction("更新脚本")
   alert.addAction("设置账号")
+  alert.addAction("预览大号月历组件")
   alert.addCancelAction("取消")
 
   const index = await alert.presentSheet()
@@ -598,6 +606,8 @@ async function showMainMenu() {
     await handleUpdateScript()
   } else if (index === 6) {
     await promptAndSaveAccount()
+  } else if (index === 7) {
+    await runWidgetUpdate({ presentPreview: true, family: "large" })
   }
 }
 
@@ -2019,6 +2029,22 @@ function readAttendancePreferences() {
 }
 
 /**
+ * 读取考勤核查页与桌面状态格共用的主题颜色。
+ *
+ * @return 标题底色、强调色与日历浅底色
+ * @author Kai
+ * @date 2026/11/25 12:14
+ */
+function attendancePalette() {
+    const palettes = {
+        navy: { ink: "#213C62", accent: "#528AD9", paper: "#EEF4FC" },
+        teal: { ink: "#184C49", accent: "#3A9D90", paper: "#E9F6F3" },
+        slate: { ink: "#414450", accent: "#868A9F", paper: "#F0F0F5" }
+    }
+    return palettes[readAttendancePreferences().theme]
+}
+
+/**
  * 打开考勤配置，修改后保存到本机并重新预约当天提醒
  *
  * @author Kai
@@ -2196,12 +2222,13 @@ async function handleNearNineHours() {
  * 创建今日打卡组件，按桌面或锁屏尺寸渲染
  *
  * @param data 今日打卡摘要
+ * @param previewFamily 手动预览的组件尺寸
  * @return 已配置外观、点击链接和刷新时间的小组件
  * @author Kai
- * @date 2026/11/25 12:06
+ * @date 2026/11/25 12:18
  */
-async function createWidget(data) {
-  const family = config.widgetFamily || "medium"
+async function createWidget(data, previewFamily) {
+  const family = config.widgetFamily || previewFamily || "medium"
   const isAccessory = family.indexOf("accessory") === 0
     // 小号和锁屏按系统分配的尺寸渲染，统计仅用于有足够空间的桌面组件。
     const layout = config.runsInWidget ? readWidgetLayout(args.widgetParameter) : null
@@ -2714,7 +2741,7 @@ async function loadHistoryHolidays(year, cached) {
  * @param checked 本次页面打开期间已查询的日期
  * @return 日期类型、打卡时间和工时状态
  * @author Kai
- * @date 2026/11/25 11:47
+ * @date 2026/11/25 12:18
  */
 function buildAttendanceHistoryDay(date, holidays, checked) {
     const key = formatDateKey(date)
@@ -2758,7 +2785,7 @@ function buildAttendanceHistoryDay(date, holidays, checked) {
         workedMs = outSwipe - clockIn
     }
     if (review?.confirmed) {
-        status = "已确认正常"
+        status = leaveHours > 0 ? "请假已核实 · 正常" : "已确认正常"
         state = "normal"
     } else if (leaveHours > 0 && (requiredMs === 0 || (workedMs !== null && workedMs >= requiredMs))) {
         status = "请假后达标"
@@ -2850,7 +2877,7 @@ function attendanceMonthWeeks(month) {
  * @param day 含原始工卡、工时及核查结果的日历记录
  * @return 是否更新了本机核查记录
  * @author Kai
- * @date 2026/11/25 11:47
+ * @date 2026/11/25 12:18
  */
 async function reviewAttendanceDay(day) {
     const detail = new Alert()
@@ -2886,9 +2913,11 @@ async function reviewAttendanceDay(day) {
         ? "输入已批准的请假时长。填 " + CONFIG.TARGET_HOURS + " 表示全天请假。"
         : "请记录你确认这天正常的原因。"
     input.addTextField(action === 0 ? "例如 2.5" : "例如 已查到请假审批", action === 0 && day.leaveHours ? String(day.leaveHours) : "")
-    input.addAction("保存")
+    input.addAction(action === 0 ? "请假已核实，确认正常" : "保存")
+    if (action === 0) input.addAction("仅记录时长，按工时判断")
     input.addCancelAction("取消")
-    if (await input.presentAlert() !== 0) return false
+    const saveMode = await input.presentAlert()
+    if (saveMode < 0) return false
 
     // 人工确认必须留说明，请假只扣减应出勤时长。
     const value = input.textFieldValue(0).trim()
@@ -2898,7 +2927,8 @@ async function reviewAttendanceDay(day) {
         return false
     }
     const review = action === 0
-        ? { leaveHours: hours }
+        ? { leaveHours: hours, confirmed: hours > 0 && saveMode === 0,
+            note: hours > 0 && saveMode === 0 ? "已核实请假" : "" }
         : { leaveHours: day.leaveHours, confirmed: true, note: value }
     Keychain.set(key, JSON.stringify(review))
     return true
@@ -2942,12 +2972,17 @@ async function presentAttendanceHistory(initialMonth) {
         const normal = days.filter(day => day.state === "normal").length
         const pending = days.filter(day => day.workday && day.state === "neutral").length
         table.removeAllRows()
+        // 统一页首、汇总和日期区配色，配置返回时重新读取主题。
+        const palette = attendancePalette()
+        table.showSeparators = false
 
         const heading = new UITableRow()
-        heading.height = 56
-        heading.isHeader = true
-        const title = heading.addText(formatDateKey(month).slice(0, 7) + " 考勤核查",
-            "正常 " + normal + "　异常 " + warnings.length + "　待查 " + pending)
+        heading.height = 70
+        heading.backgroundColor = new Color(palette.ink)
+        const title = heading.addText(month.getFullYear() + " 年 " + (month.getMonth() + 1) + " 月", "考勤核查")
+        title.titleFont = Font.boldSystemFont(23)
+        title.titleColor = Color.white()
+        title.subtitleColor = new Color("#E0E7EF")
         title.widthWeight = 4
         const settings = heading.addButton("配置")
         settings.dismissOnTap = false
@@ -2956,6 +2991,21 @@ async function presentAttendanceHistory(initialMonth) {
             draw()
         }
         table.addRow(heading)
+
+        const metrics = new UITableRow()
+        metrics.height = 55
+        metrics.cellSpacing = 0
+        metrics.backgroundColor = new Color(palette.paper)
+        for (const [count, label, tint] of [
+            [normal, "正常", "#146A56"], [warnings.length, "异常", "#9C4B21"], [pending, "待查", palette.ink]
+        ]) {
+            const metric = metrics.addText(String(count), label)
+            metric.centerAligned()
+            metric.titleFont = Font.boldSystemFont(19)
+            metric.titleColor = new Color(tint)
+            metric.subtitleColor = new Color("#495465")
+        }
+        table.addRow(metrics)
 
         const controls = new UITableRow()
         controls.height = 40
@@ -2980,6 +3030,7 @@ async function presentAttendanceHistory(initialMonth) {
         table.addRow(controls)
 
         const weekdays = new UITableRow()
+        weekdays.cellSpacing = 0
         weekdays.height = 30
         for (const weekday of "一二三四五六日") weekdays.addText(weekday).centerAligned()
         table.addRow(weekdays)
@@ -2989,6 +3040,7 @@ async function presentAttendanceHistory(initialMonth) {
         for (const week of weeks) {
             const row = new UITableRow()
             row.height = 39
+            row.cellSpacing = 0
             for (const day of week) {
                 if (!day || !day.key) {
                     row.addText(day ? String(day.getDate()) : "").centerAligned()
@@ -3007,10 +3059,13 @@ async function presentAttendanceHistory(initialMonth) {
 
         const notice = new UITableRow()
         notice.height = 49
-        notice.addText("异常待核查", syncing ? "正在补查本月考勤"
+        notice.backgroundColor = new Color(palette.paper)
+        const noticeText = notice.addText("异常待核查", syncing ? "正在补查本月考勤"
             : syncFailed ? "补查中断，重新打开可重试"
                 : warnings.length ? "点日期查看原判、登记请假或确认正常"
                     : pending ? "仍有日期等待补查" : "本月暂无待核查异常")
+        noticeText.titleColor = new Color(palette.ink)
+        noticeText.subtitleColor = new Color("#495465")
         table.addRow(notice)
 
         for (const day of warnings) {
@@ -3104,7 +3159,7 @@ function getWeeklyAttendanceUrl(month) {
  * @param count 展示的自然日数
  * @param standalone 是否单独展示统计
  * @author Kai
- * @date 2026/11/25 11:29
+ * @date 2026/11/25 12:18
  */
 function renderWidgetAttendanceStats(widget, data, count, standalone) {
     const dates = Array.from({ length: count }, (_, index) => addDays(now, index - count + 1))
@@ -3117,7 +3172,6 @@ function renderWidgetAttendanceStats(widget, data, count, standalone) {
     const days = dates.map(date => buildAttendanceHistoryDay(date, holidays, checked))
     const normal = days.filter(day => day.state === "normal").length
     const warnings = days.filter(day => day.state === "warning").length
-    const pending = days.filter(day => day.workday && day.state === "neutral").length
     const settled = days.filter(day => day.workday && day.workedMs !== null)
     const average = settled.length
         ? formatShortDuration(settled.reduce((sum, day) => sum + day.workedMs, 0) / settled.length)
@@ -3180,9 +3234,10 @@ function saveWidgetCalendarAction(actionId) {
  * @param widget 承载月历的组件容器
  * @param data 本次刷新取得的今日考勤摘要
  * @author Kai
- * @date 2026/11/25 11:47
+ * @date 2026/11/25 12:18
  */
 function renderWidgetMonthCalendar(widget, data) {
+    const palette = attendancePalette()
     const todayKey = formatDateKey(now)
     const current = attendanceMonth()
     const savedMonth = attendanceMonth(readKeychainValue("attendance-widget-month:" + CONFIG.USERNAME))
@@ -3203,6 +3258,8 @@ function renderWidgetMonthCalendar(widget, data) {
     const normal = days.filter(day => day.state === "normal").length
     const warnings = days.filter(day => day.state === "warning").length
 
+    // 月历标题的待查数来自当前月份，避免大号时间线因未定义变量而刷新失败。
+    const pending = days.filter(day => day.workday && day.state === "neutral").length
     const header = widget.addStack()
     header.centerAlignContent()
     header.spacing = 8
@@ -3221,7 +3278,7 @@ function renderWidgetMonthCalendar(widget, data) {
         button.setPadding(0, 6, 0, 6)
         const symbol = button.addText(label)
         symbol.font = Font.boldSystemFont(18)
-        symbol.textColor = new Color("#A4CAFF")
+        symbol.textColor = new Color(palette.accent)
         // 新版 Scriptable 直接在组件内翻页，旧版进入该月核查页。
         if (typeof button.setAction === "function" && Number.parseInt(Device.systemVersion(), 10) >= 17) {
             button.setAction(offset < 0 ? "上个月" : "下个月", { id: "attendance-month:" + key })
@@ -3242,7 +3299,7 @@ function renderWidgetMonthCalendar(widget, data) {
     }
 
     // 未来日期和月外空格只作占位，工作日按核查结果着色。
-    const colors = { normal: "#26715E", warning: "#A16530", active: "#2869B4", neutral: "#42556F" }
+    const colors = { normal: "#26715E", warning: "#A16530", active: palette.accent, neutral: palette.ink }
     for (const week of weeks) {
         widget.addSpacer(2)
         const row = widget.addStack()
@@ -3348,13 +3405,14 @@ function addMiniLine(widget, label, value) {
  * @param state 打卡格的视觉状态
  * @param width 打卡格宽度
  * @author Kai
- * @date 2026/11/25 11:14
+ * @date 2026/11/25 12:18
  */
 function addInfoCell(parent, label, value, state, width) {
+    const palette = attendancePalette()
     // 用边框和亮度辅助区分当前阶段。
     const colors = {
         done: ["#164640", "#348677", "#C5F7DF"],
-        active: ["#174384", "#419DFF", "#FFFFFF"],
+        active: [palette.ink, palette.accent, "#FFFFFF"],
         warning: ["#493822", "#A87D3F", "#FFD896"],
         idle: ["#243347", "#536881", "#B8C6D8"]
     }
@@ -3388,7 +3446,7 @@ function addInfoCell(parent, label, value, state, width) {
  * @param data 今日考勤摘要
  * @param width 进度条宽度
  * @author Kai
- * @date 2026/11/25 11:29
+ * @date 2026/11/25 12:18
  */
 function addProgressBar(parent, data, width) {
     if (!data.hasClockIn) return
@@ -3404,7 +3462,7 @@ function addProgressBar(parent, data, width) {
     const filled = Math.round(width * ratio)
     if (filled > 0) {
         const fill = track.addStack()
-        fill.backgroundColor = new Color(ratio >= 1 ? "#34D399" : "#419DFF")
+        fill.backgroundColor = new Color(ratio >= 1 ? "#34D399" : attendancePalette().accent)
         fill.cornerRadius = 2
         fill.size = new Size(filled, 4)
     }
@@ -3955,10 +4013,11 @@ function getNextWidgetRefreshDate(data, refreshProgress = false) {
  *
  * @return 内容宽度，单位是点
  * @author Kai
- * @date 2026/11/25 11:30
+ * @date 2026/11/25 12:18
  */
 function mediumWidgetContentWidth() {
-  return Math.max(280, homeScreenWidgetWidth("medium") - 20)
+    // 留出左右边距和系统缩放余量，跨设备避免固定列宽撑破卡片。
+    return Math.min(336, homeScreenWidgetWidth("medium") - 36)
 }
 
 /**
