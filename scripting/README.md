@@ -113,6 +113,12 @@ scripting://run/AttendanceHelper?action=refresh
 
 自动化仍由 iOS 快捷指令触发。建议沿用早上刷新、工作日定时检查等已有节奏；iOS 不保证精确到分钟执行自动化。
 
+### 快捷指令识别与启动诊断
+
+首次导入或更新后，请打开脚本编辑器，点击顶部项目名称，进入 Intent Settings，确认 Text（文本）已勾选。回到快捷指令，添加 Scripting 的 Run Script（运行脚本）动作，再选择 AttendanceHelper / 考勤助手。若列表仍未刷新，重新打开两个 App。不要删除已有脚本或清空钥匙串。
+
+如果运行白屏，可通过 Safari 或快捷指令的打开 URL 动作调用 `scripting://run/AttendanceHelper?diagnostic=ui`，测试基础界面。若仍白屏，请从编辑器运行并查看报错；分享前移除账号、密码、Token 等信息。
+
 ### 快捷指令原参数兼容
 
 使用 Scripting 的「运行脚本」动作选择 AttendanceHelper，传入文本 `refresh`、`leave`、`schedule9` 或 `near9`。首次配置建议在 App 内完成；兼容旧四行文本（动作、账号、密码、设备 ID），但不建议将密码长期保存在快捷指令。后台新设备验证须回到 App 前台完成。
