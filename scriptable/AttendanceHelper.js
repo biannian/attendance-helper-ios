@@ -2493,24 +2493,35 @@ function renderLargeWeekSummary(widget, model, width, p, rowHeight = 17, weekCou
         row.layoutHorizontally()
         row.centerAlignContent()
         row.size = new Size(width, rowHeight)
-        const date = row.addText(day.key.slice(5).replace("-", "/") + " 周" + weekdays[day.weekday])
-        date.font = Font.systemFont(8)
+        const dateCol = row.addStack()
+        dateCol.layoutHorizontally()
+        dateCol.centerAlignContent()
+        dateCol.size = new Size(Math.floor(width * 0.26), rowHeight)
+        const date = dateCol.addText(day.key.slice(5).replace("-", "/") + " 周" + (weekdays[day.weekday] || ""))
+        date.font = Font.systemFont(rowHeight >= 20 ? 10 : 8)
         date.textColor = new Color(p.muted)
-        date.size = new Size(64, rowHeight)
+        date.lineLimit = 1
+        dateCol.addSpacer(null)
+        row.addSpacer(null)
         const times = row.addText(day.clockIn + "  —  " + day.clockOut)
-        times.font = Font.mediumSystemFont(8)
+        times.font = Font.mediumSystemFont(rowHeight >= 20 ? 10 : 8)
         times.textColor = new Color(p.text)
         times.lineLimit = 1
         times.minimumScaleFactor = 0.62
-        row.addSpacer(4)
+        row.addSpacer(null)
         const status = day.state === "normal" ? "达标"
             : day.state === "warning" ? "待核查"
             : day.state === "active" ? "进行中" : "待查"
-        const badge = row.addText(status)
-        badge.font = Font.boldSystemFont(8)
+        const statusCol = row.addStack()
+        statusCol.layoutHorizontally()
+        statusCol.centerAlignContent()
+        statusCol.size = new Size(Math.floor(width * 0.19), rowHeight)
+        statusCol.addSpacer(null)
+        const badge = statusCol.addText(status)
+        badge.font = Font.boldSystemFont(rowHeight >= 20 ? 10 : 8)
         badge.textColor = new Color(day.state === "normal" ? p.good : day.state === "warning" ? p.warning : p.accent)
         badge.lineLimit = 1
-        badge.size = new Size(42, rowHeight)
+        badge.minimumScaleFactor = 0.75
     }
 }
 
@@ -2604,7 +2615,7 @@ function renderCyberWeekStrip(widget, data, width, p) {
     row.spacing = 4
     const cellWidth = Math.max(18, Math.floor((width - 24) / 7))
     const weekdays = ["一", "二", "三", "四", "五", "六", "日"]
-    const barHeight = Math.round(25 * largeWidgetScale())
+    const barHeight = Math.round((width >= 320 ? 32 : 25) * largeWidgetScale())
     for (const day of days) {
         const cell = row.addStack()
         cell.layoutVertically()
@@ -2747,14 +2758,17 @@ function renderCyberLargeWidget(widget, data, width, p, showToday = true) {
     if (showToday) {
         renderLargeTodayPanel(widget, data, width, p)
         widget.addSpacer(6)
+    widget.addSpacer(null)
     }
 
     renderCyberWeekStrip(widget, data, width, p)
     widget.addSpacer(5)
+    widget.addSpacer(null)
     addWidgetMonthNavigation(widget, model, width, p, "本月概览")
-    renderLargeMonthStats(widget, model, width, p, Math.round(36 * scale))
+    renderLargeMonthStats(widget, model, width, p, Math.round((width >= 320 ? 40 : 36) * scale))
     widget.addSpacer(5)
-    renderLargeRecentLogs(widget, model, width, p, 3, Math.round(17 * scale))
+    widget.addSpacer(null)
+    renderLargeRecentLogs(widget, model, width, p, width >= 320 ? 4 : 3, Math.round((width >= 320 ? 21 : 17) * scale))
 }
 
 function renderFitnessWeekBars(widget, data, width, p, barHeightOverride = 72) {
@@ -2805,6 +2819,7 @@ function renderFitnessWeekBars(widget, data, width, p, barHeightOverride = 72) {
     if (showToday) {
         renderLargeTodayPanel(widget, data, width, p)
         widget.addSpacer(6)
+    widget.addSpacer(null)
     }
 
     const summary = widget.addStack()
@@ -2831,8 +2846,10 @@ function renderFitnessWeekBars(widget, data, width, p, barHeightOverride = 72) {
     review.textColor = new Color(p.muted)
 
     widget.addSpacer(5)
+    widget.addSpacer(null)
     renderFitnessWeekBars(widget, data, width, p, 42)
     widget.addSpacer(5)
+    widget.addSpacer(null)
     renderLargeMonthStats(widget, model, width, p, Math.round(34 * scale))
 }
 
@@ -2842,6 +2859,7 @@ function renderMinimalLargeWidget(widget, data, width, p, showToday = true) {
     if (showToday) {
         renderLargeTodayPanel(widget, data, width, p)
         widget.addSpacer(6)
+    widget.addSpacer(null)
     }
 
     addWidgetMonthNavigation(widget, model, width, p, "本月概览")
@@ -2871,8 +2889,10 @@ function renderMinimalLargeWidget(widget, data, width, p, showToday = true) {
     pending.textColor = new Color(p.muted)
 
     widget.addSpacer(5)
+    widget.addSpacer(null)
     renderLargeRecentLogs(widget, model, width, p, 3, Math.round(17 * scale))
     widget.addSpacer(5)
+    widget.addSpacer(null)
     renderLargeWeekSummary(widget, model, width, p, Math.round(13 * scale), 4)
 }
 
@@ -2910,13 +2930,15 @@ function renderHeatmapLargeWidget(widget, data, width, p, showToday = true) {
     if (showToday) {
         renderLargeTodayPanel(widget, data, width, p)
         widget.addSpacer(6)
+        widget.addSpacer(null)
     }
 
     // 热力图保留整月矩阵；工作日顶部显示今天的打卡与实时倒计时。
     renderWidgetMonthCalendar(widget, data, width, "heatmap", {
-        height: Math.round(145 * scale),
+        height: Math.round((showToday ? (width >= 320 ? 170 : 145) : (width >= 320 ? 240 : 195)) * scale),
         fontSize: 9,
-        gap: 3
+        gap: 3,
+        stretchRows: true
     })
 }
 
@@ -3179,6 +3201,7 @@ function renderHeatmapWidget(widget, data, family, width, showToday = true) {
     if (showHeader) addStyledHeader(widget, title, p)
     else addWidgetSectionTitle(widget, title, p)
     widget.addSpacer(large ? 8 : 6)
+    if (large) widget.addSpacer(null)
     if (style === "fitness") {
         const row = widget.addStack()
         row.layoutHorizontally()
@@ -3207,6 +3230,7 @@ function renderHeatmapWidget(widget, data, family, width, showToday = true) {
         detail.lineLimit = 1
     }
     widget.addSpacer(large ? 9 : 7)
+    if (large) widget.addSpacer(null)
     const rowCount = large ? 2 : 1
     for (let rowIndex = 0; rowIndex < rowCount; rowIndex++) {
         const rowDays = days.slice(rowIndex * 7, rowIndex * 7 + 7)
@@ -3230,7 +3254,10 @@ function renderHeatmapWidget(widget, data, family, width, showToday = true) {
             mark.font = Font.boldSystemFont(8)
             mark.textColor = new Color(p.text)
         }
-        if (rowIndex < rowCount - 1) widget.addSpacer(4)
+        if (rowIndex < rowCount - 1) {
+            widget.addSpacer(4)
+            if (large) widget.addSpacer(null)
+        }
     }
 }
 
@@ -3248,6 +3275,7 @@ async function renderStyledWidget(widget, data, family, style, width, layout, ca
                 renderErrorBlock(widget, data || { error: "暂无考勤数据" })
             }
             widget.addSpacer(6)
+            widget.addSpacer(null)
             renderStyledStatsWidget(widget, data, family, style, contentWidth, false)
         } else {
             renderStyledStatsWidget(widget, data, family, style, contentWidth, true)
@@ -4918,7 +4946,9 @@ function renderWidgetMonthCalendar(widget, data, contentWidth, style = "heatmap"
     const fontSize = Number.isFinite(options.fontSize) ? options.fontSize : 10
     for (let weekIndex = 0; weekIndex < weeks.length; weekIndex++) {
         const week = weeks[weekIndex]
-        widget.addSpacer(weekIndex === 0 ? 3 : 3)
+        widget.addSpacer(3)
+        // 将剩余高度分配到行间，而不是留在组件上下两端。
+        if (options.stretchRows && weekIndex > 0) widget.addSpacer(null)
         const row = widget.addStack()
         row.layoutHorizontally()
         row.spacing = gap
