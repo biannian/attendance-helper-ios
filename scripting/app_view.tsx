@@ -89,7 +89,7 @@ function TodayTab({ data, palette, loading, onRefresh, statusMessage, isWorkday 
   const status = !data?.ok ? "等待同步" :
     !data.hasClockIn ? "等待上班卡" :
     data.hasOutRecord ? (data.targetReached ? "考勤正常" : "工时不足") :
-    data.targetReached ? "已到下班时间" : "正在工作";
+    data.targetReached ? "未打下班卡" : "正在工作";
 
   return <VStack spacing={14} alignment="leading">
     <Card>
@@ -101,16 +101,16 @@ function TodayTab({ data, palette, loading, onRefresh, statusMessage, isWorkday 
         </VStack>
         <Spacer />
         <VStack spacing={3} alignment="trailing">
-          <StatusBadge text={status} color={data?.hasOutRecord ? palette.normal : palette.accent} />
+          <StatusBadge text={status} color={data?.targetReached && !data.hasOutRecord || data?.hasOutRecord && !data.targetReached ? "systemRed" : data?.hasOutRecord ? palette.normal : palette.accent} />
           <Button title={loading ? "同步中…" : "刷新"} buttonStyle="bordered" action={onRefresh} disabled={loading} />
         </VStack>
       </HStack>
-      <ProgressView value={progress} total={1} tint={palette.accent} />
+      <ProgressView value={progress} total={1} tint={data?.targetReached && !data.hasOutRecord ? "systemRed" : palette.accent} />
       {data?.hasClockIn && !data.hasOutRecord && data.targetTime
         ? <VStack spacing={3} alignment="leading">
             <Text font="caption" foregroundStyle="secondaryLabel">距离可下班</Text>
             {data.targetReached
-              ? <Text font="title2" foregroundStyle={palette.normal}>已到下班时间，请打卡</Text>
+              ? <Text font="title2" foregroundStyle="systemRed">⚠ 未打下班卡，请立即打卡</Text>
               : <TimerIntervalLabel from={data.inTime.getTime()} to={data.targetTime.getTime()} countsDown={true} showsHours={true} />}
           </VStack>
         : null}
@@ -128,7 +128,7 @@ function TodayTab({ data, palette, loading, onRefresh, statusMessage, isWorkday 
         <Spacer />
         <VStack spacing={3} alignment="leading">
           <Text font="caption2" foregroundStyle="secondaryLabel">下班卡</Text>
-          <Text font="headline">{data?.hasOutRecord ? formatTime(data.latestOutTime) : "未打"}</Text>
+          <Text font="headline" foregroundStyle={data?.targetReached && !data.hasOutRecord ? "systemRed" : "primaryLabel"}>{data?.hasOutRecord ? formatTime(data.latestOutTime) : "未打"}</Text>
         </VStack>
       </HStack>
       {data?.refreshError
