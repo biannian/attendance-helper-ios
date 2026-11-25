@@ -1644,8 +1644,11 @@ async function getAttendanceSummary(day = now) {
     if (data.ok) {
       data.snapshotUpdatedAt = new Date().toISOString()
       saveAttendanceSnapshot(data, day)
-      if (dateKey === formatDateKey(now) && data.hasOutRecord) {
-        try { Keychain.remove(missedCheckoutKey(dateKey)); await Notification.removePending(["attendance-helper-checkout-due", "attendance-helper-upcoming-work"]) } catch (_) {}
+      if (data.hasOutRecord) {
+        try {
+          if (data.targetReached) Keychain.remove(missedCheckoutKey(dateKey))
+          if (dateKey === formatDateKey(now)) await Notification.removePending(["attendance-helper-checkout-due", "attendance-helper-upcoming-work"])
+        } catch (_) {}
       }
     }
 
@@ -1945,7 +1948,7 @@ function normalizeAttendanceData(raw, dateHint = formatDateKey(now)) {
       ? "--"
       : remainingMs > 0
           ? formatCountdown(remainingMs)
-          : "已达标"
+          : hasOutRecord ? "考勤正常" : "未打下班卡"
 
   return {
     ok: true,
@@ -4044,8 +4047,10 @@ function buildAttendanceHistoryDay(date, holidays, checked) {
         state = "warning"
     }
 
-    const checkoutMissing = !!(workday && clockIn && requiredMs > 0 && !clockOut && workedMs === null && (!today || Date.now() >= clockIn.getTime() + requiredMs))
-    const missedConfirmed = checkoutMissing && confirmedMissedCheckout(key)
+    const locallyConfirmed = confirmedMissedCheckout(key)
+    const corrected = !!(clockIn && (clockOut || (workedMs !== null ? outSwipe : null)) && workedMs !== null && workedMs >= requiredMs)
+    const checkoutMissing = !!(workday && clockIn && requiredMs > 0 && ((!clockOut && workedMs === null) || (locallyConfirmed && !corrected)) && (!today || Date.now() >= clockIn.getTime() + requiredMs))
+    const missedConfirmed = checkoutMissing && locallyConfirmed
     if (checkoutMissing && (today || missedConfirmed)) { status = missedConfirmed ? "已漏卡 · 待补卡" : "未打下班卡"; state = "warning" }
     return {
         key, kind, label, workday, status, state, workedMs, checkoutMissing, missedConfirmed,
