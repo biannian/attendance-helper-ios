@@ -6,7 +6,8 @@ import { syncAttendanceLiveActivity } from "./core/live_activity_service";
 import { parseLaunchParameter } from "./core/launch";
 
 async function main() {
-  const req = parseLaunchParameter(Intent.shortcutParameter?.value ?? Script.queryParameters?.action ?? "refresh");
+  const input = Intent.shortcutParameter;
+  const req = parseLaunchParameter((input?.type === "text" ? input.value : undefined) ?? Intent.textsParameter?.[0] ?? Script.queryParameters?.action ?? "refresh");
   if (req.account) {
     const old = getAccount();
     if (req.account.username !== old.username || req.account.password !== old.password || req.account.deviceId !== old.deviceId) {
