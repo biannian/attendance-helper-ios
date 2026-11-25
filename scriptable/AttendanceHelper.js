@@ -2745,7 +2745,7 @@ async function loadHistoryHolidays(year, cached) {
  * @param checked 本次页面打开期间已查询的日期
  * @return 日期类型、打卡时间和工时状态
  * @author Kai
- * @date 2026/11/25 12:18
+ * @date 2026/11/25 12:57
  */
 function buildAttendanceHistoryDay(date, holidays, checked) {
     const key = formatDateKey(date)
@@ -2800,11 +2800,14 @@ function buildAttendanceHistoryDay(date, holidays, checked) {
 
     return {
         key, kind, label, workday, status, state, workedMs,
+        // 统计取校验后的工卡时间，请假后认可的离场卡也参与平均。
+        clockInAt: clockIn,
+        clockOutAt: clockOut || (workedMs !== null ? outSwipe : null),
         originalStatus, review, leaveHours, requiredMs,
         outSwipe: outSwipe ? formatTime(outSwipe) : "—",
         weekday: (date.getDay() + 6) % 7,
         clockIn: clockIn ? formatTime(clockIn) : "—",
-        clockOut: clockOut ? formatTime(clockOut) : "—",
+        clockOut: clockOut || workedMs !== null ? formatTime(clockOut || outSwipe) : "—",
         worked: workedMs === null ? "—" : formatShortDuration(workedMs)
     }
 }
@@ -2939,11 +2942,49 @@ async function reviewAttendanceDay(day) {
 }
 
 /**
+ * 根据所选月份已取得的工卡计算平均工时与打卡时刻。
+ *
+ * @param table 原生考勤统计表
+ * @param days 所选月份的日期明细
+ * @param palette 当前主题色
+ * @author Kai
+ * @date 2026/11/25 12:57
+ */
+function addAttendanceMonthlyStats(table, days, palette) {
+    const workdays = days.filter(day => day.workday)
+    // 分别统计三种样本，缺失工卡不会被当成零值计入平均。
+    const mean = values => values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null
+    const formatAverageClock = field => {
+        const clocks = workdays.map(day => day[field]).filter(date => date && Number.isFinite(date.getTime()))
+        const average = mean(clocks.map(date => date.getHours() * 60 + date.getMinutes()))
+        if (average === null) return "—"
+        const minutes = Math.round(average) % (24 * 60)
+        return String(Math.floor(minutes / 60)).padStart(2, "0") + ":" + String(minutes % 60).padStart(2, "0")
+    }
+    const duration = mean(workdays.map(day => day.workedMs).filter(Number.isFinite))
+    const row = new UITableRow()
+    row.height = 57
+    row.cellSpacing = 0
+    for (const [value, label] of [
+        [duration === null ? "—" : formatShortDuration(duration), "平均工时"],
+        [formatAverageClock("clockInAt"), "平均上班"],
+        [formatAverageClock("clockOutAt"), "平均下班"]
+    ]) {
+        const item = row.addText(value, label)
+        item.widthWeight = 1
+        item.centerAligned()
+        item.titleColor = new Color(palette.accent)
+        item.titleFont = Font.boldSystemFont(17)
+    }
+    table.addRow(row)
+}
+
+/**
  * 在原生月历中查看考勤并补查当前月份的缺失工卡。
  *
  * @param initialMonth 从小组件进入时传入的 yyyy-MM 月份
  * @author Kai
- * @date 2026/11/25 12:49
+ * @date 2026/11/25 12:57
  */
 async function presentAttendanceHistory(initialMonth) {
     const table = new UITable()
@@ -2960,6 +3001,8 @@ async function presentAttendanceHistory(initialMonth) {
     let syncing = false
     let syncFailed = false
     let monthChanged = false
+    // 按日期保存选中项，自动补查后仍停留在用户正在看的那天。
+    let selectedKey = month.getTime() === current.getTime() ? todayKey : formatDateKey(month)
 
     /**
      * 重绘选月日历，异常列表和日期格共用同一个核查入口。
@@ -2975,6 +3018,7 @@ async function presentAttendanceHistory(initialMonth) {
         const warnings = days.filter(day => day.state === "warning")
         const normal = days.filter(day => day.state === "normal").length
         const pending = days.filter(day => day.workday && day.state === "neutral").length
+        const selected = days.find(day => day.key === selectedKey)
         table.removeAllRows()
         // 统一页首、汇总和日期区配色，配置返回时重新读取主题。
         const palette = attendancePalette()
@@ -2987,14 +3031,19 @@ async function presentAttendanceHistory(initialMonth) {
         title.titleFont = Font.boldSystemFont(23)
         title.titleColor = Color.white()
         title.subtitleColor = new Color("#E0E7EF")
-        title.widthWeight = 4
-        const settings = heading.addButton("配置")
+        table.addRow(heading)
+
+        // 操作采用整行按钮，避免窄屏上右侧次要列被系统挤出。
+        const settingsRow = new UITableRow()
+        settingsRow.height = 48
+        const settings = settingsRow.addButton("考勤配置")
+        settings.centerAligned()
         settings.dismissOnTap = false
         settings.onTap = async () => {
             await presentAttendancePreferences()
             draw()
         }
-        table.addRow(heading)
+        table.addRow(settingsRow)
 
         const metrics = new UITableRow()
         metrics.height = 55
@@ -3025,6 +3074,7 @@ async function presentAttendanceHistory(initialMonth) {
             cell.onTap = () => {
                 if (date.getTime() === month.getTime()) return
                 month = date
+                selectedKey = date.getTime() === current.getTime() ? todayKey : formatDateKey(date)
                 monthChanged = true
                 syncFailed = false
                 // 重新进入月份时重试失败查询，成功记录继续从快照读取。
@@ -3050,30 +3100,55 @@ async function presentAttendanceHistory(initialMonth) {
         }
         table.addRow(weekdays)
 
-        // 使用短标记和颜色同时区分考勤状态，当天日期用强调色加粗。
+        // 日期列等宽，选中日期在月历下方展开完整记录。
         const symbols = { normal: "·", warning: "!", active: "·", neutral: "?" }
         const dateColors = { normal: "#148267", warning: "#BA5A25", active: palette.accent, neutral: "#738197" }
         for (const week of weeks) {
             const row = new UITableRow()
-            row.height = 42
+            row.height = 45
             row.cellSpacing = 0
+            row.backgroundColor = new Color(palette.paper)
             for (const day of week) {
                 if (!day || !day.key) {
-                    row.addText(day ? String(day.getDate()) : "").centerAligned()
+                    const empty = row.addText(day ? String(day.getDate()) : "")
+                    empty.widthWeight = 1
+                    empty.centerAligned()
                     continue
                 }
                 const marker = day.workday ? symbols[day.state] : "—"
-                const cell = row.addButton(Number(day.key.slice(-2)) + marker)
+                const cell = row.addButton(Number(day.key.slice(-2)) + (day.key === selectedKey ? "◦" : marker))
+                cell.widthWeight = 1
                 cell.centerAligned()
-                cell.titleFont = day.key === todayKey ? Font.boldSystemFont(15) : Font.systemFont(14)
-                cell.titleColor = new Color(day.key === todayKey ? palette.accent
+                cell.titleFont = day.key === selectedKey ? Font.boldSystemFont(17) : Font.systemFont(14)
+                cell.titleColor = new Color(day.key === selectedKey ? palette.ink
                     : day.workday ? dateColors[day.state] : "#738197")
                 cell.dismissOnTap = false
-                cell.onTap = async () => {
-                    if (await reviewAttendanceDay(day)) draw()
+                cell.onTap = () => {
+                    selectedKey = day.key
+                    draw()
                 }
             }
             table.addRow(row)
+        }
+
+        addAttendanceMonthlyStats(table, days, palette)
+        if (selected) {
+            const detail = new UITableRow()
+            detail.height = 61
+            detail.backgroundColor = new Color(palette.paper)
+            const text = detail.addText(selected.key + "　" + selected.status,
+                "上班 " + selected.clockIn + "　下班 " + selected.clockOut + "　工时 " + selected.worked)
+            text.titleColor = new Color(palette.ink)
+            text.subtitleFont = Font.systemFont(12)
+            table.addRow(detail)
+            const action = new UITableRow()
+            const check = action.addButton("查看打卡明细与核查")
+            check.centerAligned()
+            check.dismissOnTap = false
+            check.onTap = async () => {
+                if (await reviewAttendanceDay(selected)) draw()
+            }
+            table.addRow(action)
         }
 
         const notice = new UITableRow()
@@ -3090,9 +3165,8 @@ async function presentAttendanceHistory(initialMonth) {
         for (const day of warnings) {
             const row = new UITableRow()
             row.height = 46
-            const detail = row.addText(day.key.slice(5) + "　" + day.status, "上 " + day.clockIn + "　下 " + day.clockOut)
-            detail.widthWeight = 4
-            const check = row.addButton("核查")
+            const check = row.addButton(day.key.slice(5) + "　" + day.status)
+            check.leftAligned()
             check.dismissOnTap = false
             check.onTap = async () => {
                 if (await reviewAttendanceDay(day)) draw()
