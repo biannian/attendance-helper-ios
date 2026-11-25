@@ -1,4 +1,5 @@
-import { Notification, TimeIntervalNotificationTrigger, Storage } from "scripting";
+import { Notification } from "scripting";
+// Storage and TimeIntervalNotificationTrigger are native runtime globals.
 import { CONFIG } from "./config";
 import { getPreferences } from "./store";
 import { getTodaySummary, isChinaWorkday } from "./attendance";
