@@ -2946,8 +2946,7 @@ function attendanceHistoryHTML() {
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
-<script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.19/index.global.min.js"
-    integrity="sha384-LjuMvep2w70bTtVscyL+xkqhYr7Y0kTM4t5cwWMy0xOTfl5duHb7MnP6K3J3/4Mk" crossorigin="anonymous"></script>
+
 <style>
     * { box-sizing:border-box }
     :root { color-scheme:light; font-family:-apple-system,system-ui,sans-serif; color:#18283c; background:#f4f6fa }
@@ -2998,9 +2997,24 @@ function attendanceHistoryHTML() {
     let eventSource
     let visibleMonth
     let dateRecords = new Map()
+    let currentModel
+    let calendarFailed = false
+
+    // 初次渲染后才请求依赖，避免外部网络阻塞 WebView 打开。
+    function loadCalendarLibrary() {
+        const library = document.createElement("script")
+        library.src = "https://cdn.jsdelivr.net/npm/fullcalendar@6.1.19/index.global.min.js"
+        library.integrity = "sha384-LjuMvep2w70bTtVscyL+xkqhYr7Y0kTM4t5cwWMy0xOTfl5duHb7MnP6K3J3/4Mk"
+        library.crossOrigin = "anonymous"
+        library.onload = () => {
+            if (currentModel) renderAttendance(currentModel)
+        }
+        document.head.append(library)
+    }
 
     // 用状态点呈现考勤。详情与修正仍打开原生核查弹窗。
     function renderAttendance(model) {
+        currentModel = model
         dateRecords = new Map(model.days.map(day => [day.key, day]))
         for (const [name, color] of Object.entries(model.palette)) document.documentElement.style.setProperty("--" + name, color)
         const monthKey = model.month.slice(0,7)
@@ -3018,11 +3032,13 @@ function attendanceHistoryHTML() {
             return button
         }))
         const host = get("calendar")
-        if (!window.FullCalendar) {
+        if (!window.FullCalendar || calendarFailed) {
             renderOfflineMonth(host, model)
-            return
+            return true
         }
+        try {
         if (!calendar) {
+            host.replaceChildren()
             calendar = new FullCalendar.Calendar(host, {
                 initialView:"dayGridMonth", initialDate:model.month, headerToolbar:false,
                 firstDay:1, fixedWeekCount:false, showNonCurrentDates:false, height:"auto",
@@ -3046,6 +3062,11 @@ function attendanceHistoryHTML() {
         if (eventSource) eventSource.remove()
         eventSource = calendar.addEventSource(model.days.filter(day => day.workday)
             .map(day => ({title:day.status, start:day.key, allDay:true, state:day.state})))
+        } catch (error) {
+            calendarFailed = true
+            renderOfflineMonth(host, model)
+        }
+        return true
     }
 
     // CDN 不可用时保留本地月历和逐日核查能力。
@@ -3086,13 +3107,241 @@ function attendanceHistoryHTML() {
 }
 
 /**
+ * 打开考勤统计，WebView 初始化失败时恢复到原生月历。
+ *
+ * @param initialMonth 可选的月份参数
+ * @author Kai
+ * @date 2026/11/25 12:42
+ */
+async function presentAttendanceHistory(initialMonth) {
+    try {
+        await presentWebAttendanceHistory(initialMonth)
+    } catch (error) {
+        console.log("考勤 WebView 无法显示：" + String(error))
+        await presentNativeAttendanceHistory(initialMonth)
+    }
+}
+
+/**
+ * WebView 无法绘制时打开原生月历核查页。
+ *
+ * @param initialMonth 从小组件进入时传入的 yyyy-MM 月份
+ * @author Kai
+ * @date 2026/11/25 11:47
+ */
+async function presentNativeAttendanceHistory(initialMonth) {
+    const table = new UITable()
+    const todayKey = formatDateKey(now)
+    const current = attendanceMonth()
+    const checked = new Map()
+    const holidays = {}
+    const knownYears = new Set()
+    // 翻月后的补查使用新的选月，已有查询结果仍可复用。
+    let month = attendanceMonth(initialMonth)
+    if (month > current) month = current
+    let open = true
+    let presented = false
+    let syncing = false
+    let syncFailed = false
+    let monthChanged = false
+
+    /**
+     * 重绘选月日历，异常列表和日期格共用同一个核查入口。
+     *
+     * @author Kai
+     * @date 2026/11/25 11:47
+     */
+    function draw() {
+        const weeks = attendanceMonthWeeks(month).map(week => week.map(date =>
+            date && formatDateKey(date) <= todayKey ? buildAttendanceHistoryDay(date, holidays, checked) : date
+        ))
+        const days = weeks.flat().filter(day => day && day.key)
+        const warnings = days.filter(day => day.state === "warning")
+        const normal = days.filter(day => day.state === "normal").length
+        const pending = days.filter(day => day.workday && day.state === "neutral").length
+        table.removeAllRows()
+        // 统一页首、汇总和日期区配色，配置返回时重新读取主题。
+        const palette = attendancePalette()
+        table.showSeparators = false
+
+        const heading = new UITableRow()
+        heading.height = 70
+        heading.backgroundColor = new Color(palette.ink)
+        const title = heading.addText(month.getFullYear() + " 年 " + (month.getMonth() + 1) + " 月", "考勤核查")
+        title.titleFont = Font.boldSystemFont(23)
+        title.titleColor = Color.white()
+        title.subtitleColor = new Color("#E0E7EF")
+        title.widthWeight = 4
+        const settings = heading.addButton("配置")
+        settings.dismissOnTap = false
+        settings.onTap = async () => {
+            await presentAttendancePreferences()
+            draw()
+        }
+        table.addRow(heading)
+
+        const metrics = new UITableRow()
+        metrics.height = 55
+        metrics.cellSpacing = 0
+        metrics.backgroundColor = new Color(palette.paper)
+        for (const [count, label, tint] of [
+            [normal, "正常", "#146A56"], [warnings.length, "异常", "#9C4B21"], [pending, "待查", palette.ink]
+        ]) {
+            const metric = metrics.addText(String(count), label)
+            metric.centerAligned()
+            metric.titleFont = Font.boldSystemFont(19)
+            metric.titleColor = new Color(tint)
+            metric.subtitleColor = new Color("#495465")
+        }
+        table.addRow(metrics)
+
+        const controls = new UITableRow()
+        controls.height = 40
+        for (const [label, date] of [
+            ["‹ 上月", new Date(month.getFullYear(), month.getMonth() - 1, 1)],
+            ["本月", current],
+            ["下月 ›", new Date(month.getFullYear(), month.getMonth() + 1, 1)]
+        ]) {
+            const cell = date > current ? controls.addText("") : controls.addButton(label)
+            cell.centerAligned()
+            if (date > current) continue
+            cell.dismissOnTap = false
+            cell.onTap = () => {
+                if (date.getTime() === month.getTime()) return
+                month = date
+                monthChanged = true
+                syncFailed = false
+                draw()
+                startSync()
+            }
+        }
+        table.addRow(controls)
+
+        // 沿用 Month Grid 的七列居中排版，日期使用原生按钮承接核查操作。
+        const weekdays = new UITableRow()
+        weekdays.cellSpacing = 0
+        weekdays.height = 30
+        weekdays.backgroundColor = new Color(palette.paper)
+        for (const weekday of "一二三四五六日") {
+            const label = weekdays.addText(weekday)
+            label.titleFont = Font.mediumSystemFont(12)
+            label.titleColor = new Color(palette.ink)
+            label.centerAligned()
+        }
+        table.addRow(weekdays)
+
+        // 使用短标记和颜色同时区分考勤状态，当天日期用强调色加粗。
+        const symbols = { normal: "·", warning: "!", active: "·", neutral: "?" }
+        const dateColors = { normal: "#148267", warning: "#BA5A25", active: palette.accent, neutral: "#738197" }
+        for (const week of weeks) {
+            const row = new UITableRow()
+            row.height = 42
+            row.cellSpacing = 0
+            for (const day of week) {
+                if (!day || !day.key) {
+                    row.addText(day ? String(day.getDate()) : "").centerAligned()
+                    continue
+                }
+                const marker = day.workday ? symbols[day.state] : "—"
+                const cell = row.addButton(Number(day.key.slice(-2)) + marker)
+                cell.centerAligned()
+                cell.titleFont = day.key === todayKey ? Font.boldSystemFont(15) : Font.systemFont(14)
+                cell.titleColor = new Color(day.key === todayKey ? palette.accent
+                    : day.workday ? dateColors[day.state] : "#738197")
+                cell.dismissOnTap = false
+                cell.onTap = async () => {
+                    if (await reviewAttendanceDay(day)) draw()
+                }
+            }
+            table.addRow(row)
+        }
+
+        const notice = new UITableRow()
+        notice.height = 49
+        notice.backgroundColor = new Color(palette.paper)
+        const noticeText = notice.addText("异常待核查", syncing ? "正在补查本月考勤"
+            : syncFailed ? "补查中断，重新打开可重试"
+                : warnings.length ? "点日期查看原判、登记请假或确认正常"
+                    : pending ? "仍有日期等待补查" : "本月暂无待核查异常")
+        noticeText.titleColor = new Color(palette.ink)
+        noticeText.subtitleColor = new Color("#495465")
+        table.addRow(notice)
+
+        for (const day of warnings) {
+            const row = new UITableRow()
+            row.height = 46
+            const detail = row.addText(day.key.slice(5) + "　" + day.status, "上 " + day.clockIn + "　下 " + day.clockOut)
+            detail.widthWeight = 4
+            const check = row.addButton("核查")
+            check.dismissOnTap = false
+            check.onTap = async () => {
+                if (await reviewAttendanceDay(day)) draw()
+            }
+            table.addRow(row)
+        }
+        if (presented) table.reload()
+    }
+
+    /**
+     * 依次补查所选月份的节假日表和缺失工卡。
+     *
+     * @author Kai
+     * @date 2026/11/25 11:47
+     */
+    async function startSync() {
+        if (syncing) return
+        syncing = true
+        draw()
+        try {
+            while (open) {
+                monthChanged = false
+                const year = month.getFullYear()
+                if (!knownYears.has(year)) {
+                    const cached = readAttendanceRecord("attendance-history-calendar-" + year)
+                    holidays[year] = cached?.holidays
+                    knownYears.add(year)
+                    holidays[year] = await loadHistoryHolidays(year, cached)
+                } else {
+                    const next = attendanceMonthWeeks(month).flat().find(date => date
+                        && formatDateKey(date) <= todayKey
+                        && historyDayKind(date, holidays).workday
+                        && !checked.has(formatDateKey(date))
+                        && !readHistorySnapshot(date))
+                    if (!next) break
+                    const result = await getAttendanceSummary(next)
+                    checked.set(formatDateKey(next), result.ok ? result : null)
+                }
+                if (open) draw()
+            }
+        } catch (error) {
+            syncFailed = true
+            console.log("考勤历史补查失败：" + String(error))
+        } finally {
+            syncing = false
+            if (open) draw()
+            if (open && monthChanged) startSync()
+        }
+    }
+
+    draw()
+    const closed = table.present(true)
+    presented = true
+    startSync()
+    try {
+        await closed
+    } finally {
+        open = false
+    }
+}
+
+/**
  * 打开月历核查页，按当前选月逐日补查缺失的工作日。
  *
  * @param initialMonth 从小组件进入时传入的 yyyy-MM 月份
  * @author Kai
  * @date 2026/11/25 11:47
  */
-async function presentAttendanceHistory(initialMonth) {
+async function presentWebAttendanceHistory(initialMonth) {
     const view = new WebView()
     await view.loadHTML(attendanceHistoryHTML())
     const todayKey = formatDateKey(now)
@@ -3123,7 +3372,8 @@ async function presentAttendanceHistory(initialMonth) {
             month: formatDateKey(month), today: todayKey, palette, syncing, syncFailed,
             days: days.map(({ key, state, status, workday }) => ({ key, state, status, workday }))
         }
-        await view.evaluateJavaScript("renderAttendance(" + JSON.stringify(model) + ")")
+        const painted = await view.evaluateJavaScript("renderAttendance(" + JSON.stringify(model) + ")")
+        if (painted !== true) throw new Error("考勤月历未完成绘制")
     }
 
     /**
@@ -3168,7 +3418,8 @@ async function presentAttendanceHistory(initialMonth) {
     }
 
     await draw()
-    const closed = view.present(true).finally(() => { open = false })
+    await view.evaluateJavaScript("setTimeout(loadCalendarLibrary, 0); true")
+    const closed = view.present().finally(() => { open = false })
     startSync()
     // 原生与 WebView 只交换有限的操作类型。关闭后停止轮询。
     while (open) {
@@ -3413,7 +3664,8 @@ async function renderLargeWidget(widget, data) {
     const width = mediumWidgetContentWidth()
     today.size = new Size(width, Math.max(120, Math.round(width / 2) - 30))
     await renderMediumWidget(today, data)
-    widget.addSpacer(8)
+    // 稍微拉开今日卡片与月历，避免两区贴在一起。
+    widget.addSpacer(14)
     renderWidgetMonthCalendar(widget, data)
 }
 
