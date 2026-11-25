@@ -72,7 +72,7 @@ export async function syncAttendanceLiveActivity(data) {
   return { ok: true, message: "灵动岛倒计时已同步" };
 }
 
-async function endSavedActivity(reason) {
+export async function endSavedActivity(reason) {
   const id = getLiveActivityId();
   if (!id) return;
   try {
@@ -90,7 +90,7 @@ async function endSavedActivity(reason) {
       }, { dismissTimeInterval: 0 });
     }
   } catch (_) {
-  } finally {
-    setLiveActivityId("");
+    throw new Error("无法结束旧实时活动，请先在锁屏关闭后重试");
   }
+  setLiveActivityId("");
 }

@@ -1,3 +1,4 @@
+import { Script, WebViewController } from "scripting";
 import { CONFIG } from "./config";
 import { encryptLoginPassword } from "./crypto";
 import { getAccount, getToken, setToken } from "./store";
@@ -27,6 +28,7 @@ async function requestJSON(url, options = {}) {
   const text = await response.text();
   let json = null;
   try { json = JSON.parse(text); } catch (_) {}
+  if (options.allowNewDeviceCode && Number(json?.code) === CONFIG.NEW_DEVICE_CODE && response.ok) return json;
   if (isAuthFailure(response.status, json, "")) {
     throw authError(json?.msg || json?.message || "登录状态已失效", json?.code || response.status);
   }
@@ -55,6 +57,7 @@ function openLoginHeaders(extra = {}) {
 }
 
 async function collectCaptchaParam() {
+  if (Script.env !== "index") throw new Error("新设备需要安全验证，请打开考勤助手进行验证");
   const html = `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
 <body style="font-family:-apple-system;padding:18px">
@@ -183,8 +186,12 @@ export async function refreshAccessToken() {
     token = await verifyNewDevice();
   }
   if (!token) throw new Error(login?.msg || "登录接口没有返回 Token");
-  setToken(token);
+  const current = getAccount();
+  if (current.username !== account.username || current.password !== account.password || current.deviceId !== account.deviceId) throw new Error("账号已切换，请重新登录");
   await selectCurrentTeam(token);
+  const latest = getAccount();
+  if (latest.username !== account.username || latest.password !== account.password || latest.deviceId !== account.deviceId) throw new Error("账号已切换，请重新登录");
+  setToken(token);
   return token;
 }
 

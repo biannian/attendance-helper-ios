@@ -1,3 +1,4 @@
+import { Keychain, Storage } from "scripting";
 import {
   DEFAULT_PREFERENCES,
   KEYCHAIN_KEYS,
@@ -52,9 +53,11 @@ export function saveAccount(account) {
   if (changed) {
     Keychain.remove(KEYCHAIN_KEYS.TOKEN);
     Storage.remove(STORAGE_KEYS.TODAY_SNAPSHOT);
-    Storage.remove(STORAGE_KEYS.LIVE_ACTIVITY_ID);
-    Storage.remove(STORAGE_KEYS.REMINDER_PREFIX + "schedule9");
-    Storage.remove(STORAGE_KEYS.REMINDER_PREFIX + "near9");
+    // Live Activity must be ended by the foreground caller before replacing credentials.
+    for (const key of Storage.keys()) {
+      if (/^attendance-helper-(schedule9|near9|target-reached)-/.test(key)) Storage.remove(key);
+      if (key.startsWith(STORAGE_KEYS.HISTORY_PREFIX + previous.username + ":")) Storage.remove(key);
+    }
   }
   return { ...getAccount(), changed };
 }
@@ -119,7 +122,10 @@ function historyKey(dateKey) {
 }
 
 export function readHistorySnapshot(dateKey) {
-  return Storage.get(historyKey(dateKey)) || null;
+  const owner = getAccount().username;
+  if (!owner) return null;
+  const snapshot = Storage.get(historyKey(dateKey));
+  return snapshot?.owner === owner ? snapshot : null;
 }
 
 export function writeHistorySnapshot(snapshot) {

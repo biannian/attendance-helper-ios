@@ -44,7 +44,7 @@ function snapshotFromData(data, dateKey) {
 export function loadCachedTodaySummary(now = new Date()) {
   try {
     const snapshot = getTodaySnapshot();
-    if (!snapshot || snapshot.date !== formatDateKey(now)) {
+    if (!snapshot || !getAccount().username || snapshot.owner !== getAccount().username || snapshot.date !== formatDateKey(now)) {
       return { ok: false, cacheMiss: true, error: "暂无今天的考勤快照，请刷新一次" };
     }
     const raw = {
@@ -69,10 +69,12 @@ export function loadCachedTodaySummary(now = new Date()) {
 export async function getAttendanceSummary(day = new Date()) {
   const dateKey = formatDateKey(day);
   try {
+    const owner = getAccount();
     const raw = await fetchAttendance(dateKey);
+    const current = getAccount();
+    if (!owner.username || owner.username !== current.username || owner.password !== current.password || owner.deviceId !== current.deviceId) throw new Error("账号已切换，请重新刷新");
     const data = normalizeAttendanceData(raw, dateKey, new Date());
-    if (dateKey !== formatDateKey(new Date()) &&
-        String(data.date).replace(/\//g, "-").slice(0, 10) !== dateKey) {
+    if (String(data.date).replace(/\//g, "-").slice(0, 10) !== dateKey) {
       throw new Error("考勤返回日期与查询日期不一致");
     }
     if (data.ok) {
@@ -185,8 +187,8 @@ export function summarizeMonth(days) {
     normal: workdays.filter(day => day.state === "normal").length,
     warnings: workdays.filter(day => day.state === "warning").length,
     pending: workdays.filter(day => day.state === "pending" || day.state === "neutral").length,
-    averageIn: averageClock(valid, "clockInAt"),
-    averageOut: averageClock(valid, "clockOutAt"),
+    averageIn: averageClock(workdays, "clockInAt"),
+    averageOut: averageClock(workdays, "clockOutAt"),
     averageWorked: avgMs == null ? "—" : formatShortDuration(avgMs)
   };
 }
@@ -225,7 +227,7 @@ export async function getAttendanceMonth(monthDate = new Date(), options = {}) {
     if (key > todayKey) return { key, future: true, status: "未到该日期", workday: false, state: "future" };
     const record = checked.has(key) ? checked.get(key) : readHistorySnapshot(key);
     const day = buildAttendanceHistoryDay(date, record, readReview(key), holidayForDate(date, holidays), now);
-    return { ...day, reviewed: !!day.review, decision: day.review?.decision || "auto" };
+    return { ...day, ...(checked.has(key) && !record && !day.review ? { state: "warning", status: "查询失败 · 待核对" } : {}), reviewed: !!day.review, decision: day.review?.decision || "auto" };
   });
 
   const byKey = Object.fromEntries(days.map(day => [day.key, day]));
