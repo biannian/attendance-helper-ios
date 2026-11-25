@@ -1,5 +1,19 @@
 # attendance-helper-ios
 
+## Scripting App 版本（V11 迁移版）
+
+除原有 Scriptable 版本外，仓库新增 `scripting/` 目录，提供 Scripting App 版本：使用 JavaScript / TSX 重构管理页面与桌面组件，并通过 Scripting 的 ActivityKit 封装实现锁屏和灵动岛倒计时。原 `scriptable/AttendanceHelper.js` 保留，不覆盖、不自动迁移原版钥匙串数据。
+
+- **迁移版说明与安装：** [scripting/README.md](scripting/README.md)
+- **导入地址：** `https://github.com/biannian/attendance-helper-ios/tree/scripting-migration/scripting`
+- **当前分支：** `scripting-migration`
+- **版本状态：** 迁移预览版；已提供模块化代码和考勤规则测试，尚需在 iPhone 的 Scripting App 中完成登录、组件、通知和 Live Activity 真机验证。
+
+首次使用需要在 Scripting 中重新填写账号、密码和设备 ID。Scripting 与 Scriptable 的系统 Keychain / Storage 相互隔离，迁移版不会读取或覆盖 Scriptable 中的原有凭据。
+
+---
+
+
 Scriptable 今日考勤小组件 + 快捷指令提醒。
 
 项目位置：`scriptable/AttendanceHelper.js`
