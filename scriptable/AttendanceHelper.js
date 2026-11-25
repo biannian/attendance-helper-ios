@@ -3029,17 +3029,25 @@ async function presentAttendanceHistory(initialMonth) {
         }
         table.addRow(controls)
 
+        // 沿用 Month Grid 的七列居中排版，日期使用原生按钮承接核查操作。
         const weekdays = new UITableRow()
         weekdays.cellSpacing = 0
         weekdays.height = 30
-        for (const weekday of "一二三四五六日") weekdays.addText(weekday).centerAligned()
+        weekdays.backgroundColor = new Color(palette.paper)
+        for (const weekday of "一二三四五六日") {
+            const label = weekdays.addText(weekday)
+            label.titleFont = Font.mediumSystemFont(12)
+            label.titleColor = new Color(palette.ink)
+            label.centerAligned()
+        }
         table.addRow(weekdays)
 
-        // ✓ 达标，! 异常，· 进行中，? 等待补查，— 休息。
-        const symbols = { normal: "✓", warning: "!", active: "·", neutral: "?" }
+        // 使用短标记和颜色同时区分考勤状态，当天日期用强调色加粗。
+        const symbols = { normal: "·", warning: "!", active: "·", neutral: "?" }
+        const dateColors = { normal: "#148267", warning: "#BA5A25", active: palette.accent, neutral: "#738197" }
         for (const week of weeks) {
             const row = new UITableRow()
-            row.height = 39
+            row.height = 42
             row.cellSpacing = 0
             for (const day of week) {
                 if (!day || !day.key) {
@@ -3049,6 +3057,9 @@ async function presentAttendanceHistory(initialMonth) {
                 const marker = day.workday ? symbols[day.state] : "—"
                 const cell = row.addButton(Number(day.key.slice(-2)) + marker)
                 cell.centerAligned()
+                cell.titleFont = day.key === todayKey ? Font.boldSystemFont(15) : Font.systemFont(14)
+                cell.titleColor = new Color(day.key === todayKey ? palette.accent
+                    : day.workday ? dateColors[day.state] : "#738197")
                 cell.dismissOnTap = false
                 cell.onTap = async () => {
                     if (await reviewAttendanceDay(day)) draw()
@@ -3260,22 +3271,33 @@ function renderWidgetMonthCalendar(widget, data) {
 
     // 月历标题的待查数来自当前月份，避免大号时间线因未定义变量而刷新失败。
     const pending = days.filter(day => day.workday && day.state === "neutral").length
+    const width = Math.floor((mediumWidgetContentWidth() - 18) / 7)
+    const gridWidth = 7 * width + 18
     const header = widget.addStack()
+    header.size = new Size(gridWidth, 24)
     header.centerAlignContent()
-    header.spacing = 8
-    const title = header.addText(monthKey + "  正常 " + normal + " · 异常 " + warnings + " · 待查 " + pending)
-    title.font = Font.boldSystemFont(12)
-    title.textColor = Color.white()
-    title.lineLimit = 1
-    title.minimumScaleFactor = 0.75
-    title.url = getWeeklyAttendanceUrl(monthKey)
-    header.addSpacer()
-    for (const [label, offset] of [["‹", -1], ["›", 1]]) {
+    // 两个翻月按钮各占固定的一列，标题只能使用剩余宽度。
+    for (const offset of [-1, 0, 1]) {
+        const button = header.addStack()
+        button.centerAlignContent()
+        if (offset === 0) {
+            button.size = new Size(gridWidth - 56, 24)
+            button.addSpacer()
+            const title = button.addText(monthKey + "  正常 " + normal + " · 异常 " + warnings + " · 待查 " + pending)
+            title.font = Font.boldSystemFont(11)
+            title.textColor = Color.white()
+            title.lineLimit = 1
+            title.minimumScaleFactor = 0.7
+            title.url = getWeeklyAttendanceUrl(monthKey)
+            button.addSpacer()
+            continue
+        }
+        button.size = new Size(28, 24)
         const target = new Date(year, monthIndex + offset, 1)
         if (target > current) continue
+        const label = offset < 0 ? "‹" : "›"
+        button.addSpacer()
         const key = formatDateKey(target).slice(0, 7)
-        const button = header.addStack()
-        button.setPadding(0, 6, 0, 6)
         const symbol = button.addText(label)
         symbol.font = Font.boldSystemFont(18)
         symbol.textColor = new Color(palette.accent)
@@ -3285,9 +3307,9 @@ function renderWidgetMonthCalendar(widget, data) {
         } else {
             button.url = getWeeklyAttendanceUrl(key)
         }
+        button.addSpacer()
     }
 
-    const width = Math.floor((mediumWidgetContentWidth() - 18) / 7)
     const weekdays = widget.addStack()
     weekdays.spacing = 3
     for (const day of "一二三四五六日") {
@@ -3300,21 +3322,25 @@ function renderWidgetMonthCalendar(widget, data) {
 
     // 未来日期和月外空格只作占位，工作日按核查结果着色。
     const colors = { normal: "#26715E", warning: "#A16530", active: palette.accent, neutral: palette.ink }
+    // 周数较少时把空间分给日期行，避免底部留下大片空白。
+    const rowHeight = Math.floor(108 / weeks.length)
     for (const week of weeks) {
         widget.addSpacer(2)
         const row = widget.addStack()
         row.spacing = 3
         for (const day of week) {
             const tile = row.addStack()
-            tile.size = new Size(width, 15)
+            tile.size = new Size(width, rowHeight)
             if (!day) continue
             tile.cornerRadius = 4
             tile.setPadding(0, 5, 0, 5)
             tile.centerAlignContent()
+            tile.addSpacer()
             tile.backgroundColor = new Color(day.workday ? colors[day.state] : "#263549")
             const label = tile.addText(String(Number(day.key.slice(-2))))
             label.font = Font.mediumSystemFont(10)
             label.textColor = new Color(day.state === "future" ? "#8695A8" : "#FFFFFF")
+            tile.addSpacer()
         }
     }
 }
@@ -3335,9 +3361,8 @@ async function renderLargeWidget(widget, data) {
     const width = mediumWidgetContentWidth()
     today.size = new Size(width, Math.max(120, Math.round(width / 2) - 30))
     await renderMediumWidget(today, data)
-    widget.addSpacer(12)
+    widget.addSpacer(8)
     renderWidgetMonthCalendar(widget, data)
-    widget.addSpacer()
 }
 
 // ==================== 小组件公共 UI ====================
