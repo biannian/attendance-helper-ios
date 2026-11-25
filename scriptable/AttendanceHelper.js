@@ -2376,6 +2376,44 @@ function addFitnessRing(parent, data, size, workProgressOverride, punchProgressO
     image.centerAlignImage()
 }
 
+function addFitnessMetricLine(parent, labelText, valueText, width, color, fontSize = 9) {
+    const row = parent.addStack()
+    row.layoutHorizontally()
+    row.centerAlignContent()
+    row.size = new Size(width, fontSize + 5)
+    const dot = row.addStack()
+    dot.backgroundColor = new Color(color)
+    dot.cornerRadius = 3
+    dot.size = new Size(6, 6)
+    row.addSpacer(4)
+    const label = row.addText(labelText)
+    label.font = Font.mediumSystemFont(fontSize)
+    label.textColor = new Color("#98A5B4")
+    label.lineLimit = 1
+    row.addSpacer()
+    const value = row.addText(valueText)
+    value.font = Font.mediumSystemFont(fontSize)
+    value.textColor = new Color("#F5F7FA")
+    value.lineLimit = 1
+    value.minimumScaleFactor = 0.55
+}
+
+function addFitnessProgressTrack(parent, width, progress, color, height = 4) {
+    const track = parent.addStack()
+    track.layoutHorizontally()
+    track.backgroundColor = new Color("#2B3540")
+    track.cornerRadius = Math.ceil(height / 2)
+    track.size = new Size(width, height)
+    const fillWidth = Math.max(0, Math.min(width, Math.round(width * progress)))
+    if (fillWidth > 0) {
+        const fill = track.addStack()
+        fill.backgroundColor = new Color(color)
+        fill.cornerRadius = Math.ceil(height / 2)
+        fill.size = new Size(fillWidth, height)
+    }
+    if (fillWidth < width) track.addSpacer(width - fillWidth)
+}
+
 
 function getWidgetMonthModel(data) {
     const todayKey = formatDateKey(now)
@@ -2840,29 +2878,31 @@ function renderFitnessWeekBars(widget, data, width, p, barHeightOverride = 72) {
     const achievement = workdayCount ? model.normal / workdayCount : 0
     const coverage = workdayCount ? recordedCount / workdayCount : 0
 
+    const ringSize = Math.round(72 * scale)
     const summary = widget.addStack()
     summary.layoutHorizontally()
     summary.centerAlignContent()
     summary.size = new Size(width, Math.round(78 * scale))
-    // 大号主题展示月度数据：外环为达标率，内环为已有考勤记录的覆盖率。
-    addFitnessRing(summary, data, Math.round(72 * scale), achievement, coverage)
+    // 大号主题：外圈表示本月达标率，内圈表示已有考勤记录的覆盖率。
+    addFitnessRing(summary, data, ringSize, achievement, coverage)
     summary.addSpacer(10)
 
+    const statsWidth = Math.max(100, width - ringSize - 10)
     const stats = summary.addStack()
     stats.layoutVertically()
-    const score = stats.addText(model.normal + " / " + workdayCount)
-    score.font = Font.boldSystemFont(27)
-    score.textColor = new Color(p.text)
-    score.lineLimit = 1
-    const label = stats.addText("本月达标工作日")
-    label.font = Font.boldSystemFont(9)
-    label.textColor = new Color(p.accent)
-    const average = stats.addText("平均工时  " + model.average)
-    average.font = Font.mediumSystemFont(9)
-    average.textColor = new Color(p.muted)
-    const review = stats.addText("记录覆盖  " + Math.round(coverage * 100) + "%")
-    review.font = Font.systemFont(8)
-    review.textColor = new Color(p.accent2)
+    stats.spacing = 3
+    stats.size = new Size(statsWidth, Math.round(78 * scale))
+
+    addFitnessMetricLine(stats, "外圈 · 本月达标", model.normal + " / " + workdayCount + " 天", statsWidth, p.accent, 9)
+    addFitnessProgressTrack(stats, statsWidth, achievement, p.accent, 5)
+    addFitnessMetricLine(stats, "内圈 · 记录覆盖", Math.round(coverage * 100) + "%", statsWidth, p.accent2, 9)
+    addFitnessProgressTrack(stats, statsWidth, coverage, p.accent2, 5)
+
+    const footer = stats.addText("平均工时 " + model.average + "  ·  待核查 " + model.warnings + " 天")
+    footer.font = Font.systemFont(8)
+    footer.textColor = new Color(p.muted)
+    footer.lineLimit = 1
+    footer.minimumScaleFactor = 0.65
 
     widget.addSpacer(5)
     widget.addSpacer(null)
@@ -3041,11 +3081,11 @@ function renderCyberWidget(widget, data, family, width, showToday = true) {
             status.lineLimit = 1
             status.minimumScaleFactor = 0.65
         }
-        const elapsed = info.addText(widgetElapsedText(data) + " / " + CONFIG.TARGET_HOURS + "h")
-        elapsed.font = Font.mediumSystemFont(8)
-        elapsed.textColor = new Color(p.accent)
-        elapsed.lineLimit = 1
-        elapsed.minimumScaleFactor = 0.65
+        info.addSpacer(2)
+        addFitnessMetricLine(info, "工时", widgetElapsedText(data) + "/" + CONFIG.TARGET_HOURS + "h", infoWidth, p.accent, 7)
+        addFitnessProgressTrack(info, infoWidth, widgetWorkProgress(data), p.accent, 3)
+        addFitnessMetricLine(info, "打卡", ((data.hasClockIn ? 1 : 0) + (data.hasOutRecord ? 1 : 0)) + "/2 次", infoWidth, p.accent2, 7)
+        addFitnessProgressTrack(info, infoWidth, fitnessPunchProgress(data), p.accent2, 3)
     } else {
         const countdownRow = info.addStack()
         countdownRow.layoutHorizontally()
@@ -3065,18 +3105,11 @@ function renderCyberWidget(widget, data, family, width, showToday = true) {
             status.minimumScaleFactor = 0.62
         }
 
-        info.addSpacer(5)
-        const elapsed = info.addText("工时  " + widgetElapsedText(data) + " / " + CONFIG.TARGET_HOURS + "h")
-        elapsed.font = Font.mediumSystemFont(10)
-        elapsed.textColor = new Color(p.accent)
-        elapsed.lineLimit = 1
-        elapsed.minimumScaleFactor = 0.7
-
-        const punchCount = (data.hasClockIn ? 1 : 0) + (data.hasOutRecord ? 1 : 0)
-        const punch = info.addText("打卡  " + punchCount + "/2 次")
-        punch.font = Font.mediumSystemFont(9)
-        punch.textColor = new Color(p.accent2)
-        punch.lineLimit = 1
+        info.addSpacer(3)
+        addFitnessMetricLine(info, "工时", widgetElapsedText(data) + " / " + CONFIG.TARGET_HOURS + "h", infoWidth, p.accent, 9)
+        addFitnessProgressTrack(info, infoWidth, widgetWorkProgress(data), p.accent, 4)
+        addFitnessMetricLine(info, "打卡", ((data.hasClockIn ? 1 : 0) + (data.hasOutRecord ? 1 : 0)) + " / 2 次", infoWidth, p.accent2, 9)
+        addFitnessProgressTrack(info, infoWidth, fitnessPunchProgress(data), p.accent2, 4)
     }
 
     if (small) {
@@ -3094,7 +3127,7 @@ function renderCyberWidget(widget, data, family, width, showToday = true) {
         ["上班", data.hasClockIn ? formatTime(data.inTime) : "--"],
         ["可下班", data.targetTime ? formatTime(data.targetTime) : "--"],
         ["下班", data.hasOutRecord ? formatTime(data.latestOutTime) : "--"]
-    ], width, p, 36)
+    ], width, p, 38)
 }function addMinimalMetricRow(widget, items, width, p, height = 42) {
     const row = widget.addStack()
     row.layoutHorizontally()
