@@ -2383,6 +2383,15 @@ function getWidgetMonthModel(data) {
     const days = weeks.flat().filter(Boolean)
     const workdays = days.filter(day => day.workday)
     const settled = workdays.filter(day => Number.isFinite(day.workedMs))
+    const averageClock = field => {
+        const values = workdays
+            .map(day => day[field])
+            .filter(value => value && Number.isFinite(value.getTime()))
+            .map(value => value.getHours() * 60 + value.getMinutes())
+        if (!values.length) return "—"
+        const minutes = Math.round(values.reduce((sum, value) => sum + value, 0) / values.length) % 1440
+        return String(Math.floor(minutes / 60)).padStart(2, "0") + ":" + String(minutes % 60).padStart(2, "0")
+    }
     return {
         month, monthKey, weeks, days, workdays,
         normal: workdays.filter(day => day.state === "normal").length,
@@ -2391,9 +2400,129 @@ function getWidgetMonthModel(data) {
         active: workdays.filter(day => day.state === "active").length,
         average: settled.length
             ? formatShortDuration(settled.reduce((sum, day) => sum + day.workedMs, 0) / settled.length)
-            : "—"
+            : "—",
+        averageIn: averageClock("clockInAt"),
+        averageOut: averageClock("clockOutAt")
     }
 }
+function largeWidgetScale() {
+    return Math.max(0.9, Math.min(1.12, homeScreenWidgetWidth("large") / 364))
+}
+
+function renderLargeMonthStats(widget, model, width, p, height = 38) {
+    const row = widget.addStack()
+    row.layoutHorizontally()
+    row.spacing = 6
+    row.size = new Size(width, height)
+    const items = [
+        ["本月达标", model.normal + " 天", p.good],
+        ["待核查", model.warnings + " 天", p.warning],
+        ["平均工时", model.average, p.accent]
+    ]
+    const cellWidth = Math.floor((width - 12) / 3)
+    items.forEach((item, index) => {
+        const cell = row.addStack()
+        cell.layoutVertically()
+        cell.centerAlignContent()
+        cell.backgroundColor = new Color(p.cell)
+        cell.cornerRadius = 8
+        cell.setPadding(5, 6, 5, 6)
+        cell.size = new Size(index === 2 ? width - 12 - cellWidth * 2 : cellWidth, height)
+        const label = cell.addText(item[0])
+        label.font = Font.systemFont(8)
+        label.textColor = new Color(p.muted)
+        label.lineLimit = 1
+        const value = cell.addText(item[1])
+        value.font = Font.boldSystemFont(11)
+        value.textColor = new Color(item[2])
+        value.lineLimit = 1
+        value.minimumScaleFactor = 0.65
+    })
+}
+
+function renderLargeWeekSummary(widget, model, width, p, rowHeight = 17) {
+    addWidgetSectionTitle(widget, "每周达标情况", p)
+    const weeks = model.weeks.slice(-5)
+    for (let index = 0; index < weeks.length; index++) {
+        const days = weeks[index].filter(day => day && day.workday)
+        if (!days.length) continue
+        const done = days.filter(day => day.state === "normal").length
+        const row = widget.addStack()
+        row.layoutHorizontally()
+        row.centerAlignContent()
+        row.size = new Size(width, rowHeight)
+        const label = row.addText(days[0].key.slice(-2) + "—" + days[days.length - 1].key.slice(-2) + "日")
+        label.font = Font.systemFont(8)
+        label.textColor = new Color(p.muted)
+        label.size = new Size(48, rowHeight)
+        const barWidth = Math.max(60, width - 112)
+        const track = row.addStack()
+        track.layoutHorizontally()
+        track.centerAlignContent()
+        track.backgroundColor = new Color(p.track)
+        track.cornerRadius = 4
+        track.size = new Size(barWidth, 5)
+        const ratio = done / days.length
+        if (ratio > 0) {
+            const fill = track.addStack()
+            fill.backgroundColor = new Color(p.good)
+            fill.cornerRadius = 4
+            fill.size = new Size(Math.max(2, Math.round(barWidth * ratio)), 5)
+        }
+        row.addSpacer(5)
+        const count = row.addText(done + "/" + days.length)
+        count.font = Font.boldSystemFont(8)
+        count.textColor = new Color(p.text)
+        count.size = new Size(42, rowHeight)
+    }
+}
+
+function renderLargeRecentLogs(widget, model, width, p, count = 4, rowHeight = 20) {
+    addWidgetSectionTitle(widget, "最近打卡记录", p)
+    const records = model.workdays
+        .filter(day => day.clockInAt || Number.isFinite(day.workedMs))
+        .slice(-count)
+        .reverse()
+    if (!records.length) {
+        const empty = widget.addText("本月暂无可展示的打卡记录")
+        empty.font = Font.systemFont(9)
+        empty.textColor = new Color(p.muted)
+        return
+    }
+    const weekdays = ["一", "二", "三", "四", "五", "六", "日"]
+    for (const day of records) {
+        const row = widget.addStack()
+        row.layoutHorizontally()
+        row.centerAlignContent()
+        row.size = new Size(width, rowHeight)
+        const date = row.addText(day.key.slice(5).replace("-", "/") + " 周" + weekdays[day.weekday])
+        date.font = Font.systemFont(8)
+        date.textColor = new Color(p.muted)
+        date.size = new Size(64, rowHeight)
+        const times = row.addText(day.clockIn + "  —  " + day.clockOut)
+        times.font = Font.mediumSystemFont(8)
+        times.textColor = new Color(p.text)
+        times.lineLimit = 1
+        times.minimumScaleFactor = 0.62
+        row.addSpacer(4)
+        const status = day.state === "normal" ? "达标"
+            : day.state === "warning" ? "待核查"
+            : day.state === "active" ? "进行中" : "待查"
+        const badge = row.addText(status)
+        badge.font = Font.boldSystemFont(8)
+        badge.textColor = new Color(day.state === "normal" ? p.good : day.state === "warning" ? p.warning : p.accent)
+        badge.lineLimit = 1
+        badge.size = new Size(42, rowHeight)
+    }
+}
+
+function addWidgetSectionTitle(widget, title, p) {
+    const label = widget.addText(title)
+    label.font = Font.boldSystemFont(9)
+    label.textColor = new Color(p.muted)
+    label.lineLimit = 1
+}
+
 
 function addWidgetMonthNavigation(widget, model, width, p, label) {
     const header = widget.addStack()
@@ -2470,115 +2599,121 @@ function addCyberTimelineEvent(parent, index, label, value, color, p) {
 }
 
 function renderCyberWeekStrip(widget, data, width, p) {
+    addWidgetSectionTitle(widget, "最近 7 天 · 出勤轨迹", p)
     const days = getRecentWidgetDays(data, 7)
-    const heading = widget.addStack()
-    heading.layoutHorizontally()
-    const title = heading.addText("LAST 7 DAYS")
-    title.font = Font.boldSystemFont(8)
-    title.textColor = new Color(p.muted)
-    const note = heading.addText("  /  DAILY TRACE")
-    note.font = Font.systemFont(8)
-    note.textColor = new Color(p.muted)
     const row = widget.addStack()
     row.layoutHorizontally()
     row.spacing = 4
     const cellWidth = Math.max(18, Math.floor((width - 24) / 7))
     const weekdays = ["一", "二", "三", "四", "五", "六", "日"]
+    const barHeight = Math.round(25 * largeWidgetScale())
     for (const day of days) {
         const cell = row.addStack()
         cell.layoutVertically()
         cell.centerAlignContent()
-        cell.size = new Size(cellWidth, 45)
+        cell.size = new Size(cellWidth, barHeight + 25)
         const weekday = cell.addText(weekdays[day.weekday] || "·")
         weekday.font = Font.systemFont(8)
         weekday.textColor = new Color(p.muted)
-        const bar = cell.addStack()
-        bar.backgroundColor = new Color(!day.workday ? p.track
-            : day.state === "normal" ? p.good
-            : day.state === "warning" ? p.warning
-            : day.state === "active" ? p.accent
-            : p.neutral)
-        bar.cornerRadius = 3
-        bar.size = new Size(Math.max(12, cellWidth - 8), 5)
+        const track = cell.addStack()
+        track.layoutVertically()
+        track.backgroundColor = new Color(p.track)
+        track.cornerRadius = 4
+        track.size = new Size(Math.max(12, cellWidth - 8), barHeight)
+        const progress = widgetDayProgress(day, data)
+        const fillHeight = progress > 0 ? Math.max(3, Math.round(barHeight * progress)) : 0
+        if (fillHeight > 0) {
+            track.addSpacer(barHeight - fillHeight)
+            const fill = track.addStack()
+            fill.backgroundColor = new Color(day.state === "normal" ? p.good
+                : day.state === "warning" ? p.warning
+                : day.state === "active" ? p.accent
+                : p.neutral)
+            fill.cornerRadius = 4
+            fill.size = new Size(Math.max(12, cellWidth - 8), fillHeight)
+        } else {
+            track.addSpacer(barHeight)
+        }
         const date = cell.addText(day.key.slice(-2))
         date.font = Font.mediumSystemFont(8)
         date.textColor = new Color(p.text)
     }
-}
-
-function renderCyberLargeWidget(widget, data, width, p) {
+}function renderCyberLargeWidget(widget, data, width, p) {
     const model = getWidgetMonthModel(data)
-    addWidgetMonthNavigation(widget, model, width, p, "COMMAND LOG")
-    widget.addSpacer(8)
+    const scale = largeWidgetScale()
+    addWidgetMonthNavigation(widget, model, width, p, "赛博考勤控制台")
+    widget.addSpacer(5)
 
+    const panelHeight = Math.round(104 * scale)
     const panel = widget.addStack()
     panel.layoutHorizontally()
-    panel.spacing = 10
-    const heroWidth = Math.max(126, Math.floor((width - 10) * 0.46))
+    panel.spacing = 9
+    const heroWidth = Math.max(126, Math.floor((width - 9) * 0.45))
     const hero = panel.addStack()
     hero.layoutVertically()
     hero.backgroundColor = new Color(p.cell)
     hero.cornerRadius = 12
-    hero.setPadding(9, 10, 9, 10)
-    hero.size = new Size(heroWidth, 126)
+    hero.setPadding(8, 9, 8, 9)
+    hero.size = new Size(heroWidth, panelHeight)
 
-    const kicker = hero.addText("TIME TO RELEASE")
-    kicker.font = Font.boldSystemFont(8)
+    const kicker = hero.addText("距离下班")
+    kicker.font = Font.boldSystemFont(9)
     kicker.textColor = new Color(p.muted)
-    const countdown = hero.addText(!data.hasClockIn ? "--:--"
-        : data.targetReached ? "READY"
+    const countdown = hero.addText(!data.hasClockIn ? "未打卡"
+        : data.targetReached ? "已达标"
         : formatRemainCompact(data.remainingMinutes))
-    countdown.font = Font.boldSystemFont(30)
+    countdown.font = Font.boldSystemFont(27)
     countdown.textColor = new Color(p.accent)
     countdown.lineLimit = 1
     countdown.minimumScaleFactor = 0.55
-    const state = hero.addText(data.targetReached ? "TARGET REACHED" : "9H WORK CYCLE")
+    const state = hero.addText(data.targetReached ? "今日目标已完成" : "目标工时 " + CONFIG.TARGET_HOURS + " 小时")
     state.font = Font.mediumSystemFont(8)
     state.textColor = new Color(p.muted)
     state.lineLimit = 1
-    hero.addSpacer(4)
-    addStyledProgress(hero, data, heroWidth - 20, p, 6)
-    hero.addSpacer(5)
-    const target = hero.addText("TARGET  " + (data.targetTime ? formatTime(data.targetTime) : "--"))
+    hero.addSpacer(3)
+    addStyledProgress(hero, data, heroWidth - 18, p, 6)
+    hero.addSpacer(3)
+    const target = hero.addText("预计达标  " + (data.targetTime ? formatTime(data.targetTime) : "—"))
     target.font = Font.boldSystemFont(9)
     target.textColor = new Color(p.text)
     target.lineLimit = 1
 
     const timeline = panel.addStack()
     timeline.layoutVertically()
-    timeline.spacing = 13
-    timeline.size = new Size(width - heroWidth - 10, 126)
-    addCyberTimelineEvent(timeline, "01", "CLOCK IN", data.hasClockIn ? formatTime(data.inTime) : "--", p.accent, p)
-    addCyberTimelineEvent(timeline, "02", "TARGET", data.targetTime ? formatTime(data.targetTime) : "--", p.accent2, p)
-    addCyberTimelineEvent(timeline, "03", "CLOCK OUT", data.hasOutRecord ? formatTime(data.latestOutTime) : "WAITING", data.hasOutRecord ? p.good : p.warning, p)
+    timeline.spacing = 10
+    timeline.size = new Size(width - heroWidth - 9, panelHeight)
+    addCyberTimelineEvent(timeline, "01", "上班打卡", data.hasClockIn ? formatTime(data.inTime) : "未打卡", p.accent, p)
+    addCyberTimelineEvent(timeline, "02", "预计达标", data.targetTime ? formatTime(data.targetTime) : "—", p.accent2, p)
+    addCyberTimelineEvent(timeline, "03", "下班打卡", data.hasOutRecord ? formatTime(data.latestOutTime) : "等待打卡", data.hasOutRecord ? p.good : p.warning, p)
 
-    widget.addSpacer(9)
+    widget.addSpacer()
     renderCyberWeekStrip(widget, data, width, p)
-}
-
-function renderFitnessWeekBars(widget, data, width, p) {
+    widget.addSpacer()
+    renderLargeMonthStats(widget, model, width, p, Math.round(38 * scale))
+    widget.addSpacer()
+    renderLargeRecentLogs(widget, model, width, p, 4, Math.round(20 * scale))
+}function renderFitnessWeekBars(widget, data, width, p) {
+    addWidgetSectionTitle(widget, "最近 7 天 · 工时完成度", p)
     const days = getRecentWidgetDays(data, 7)
-    const heading = widget.addText("LAST 7 DAYS  /  WORK-HOUR LOAD")
-    heading.font = Font.boldSystemFont(8)
-    heading.textColor = new Color(p.muted)
-    widget.addSpacer(5)
+    widget.addSpacer(3)
     const row = widget.addStack()
     row.layoutHorizontally()
     row.spacing = 6
     const barWidth = Math.max(12, Math.floor((width - 36) / 7))
-    const barHeight = 54
+    const scale = largeWidgetScale()
+    const barHeight = Math.round(72 * scale)
     const weekdays = ["一", "二", "三", "四", "五", "六", "日"]
     for (const day of days) {
         const column = row.addStack()
         column.layoutVertically()
         column.centerAlignContent()
-        column.size = new Size(barWidth, 78)
+        column.size = new Size(barWidth, barHeight + 27)
+        const progress = widgetDayProgress(day, data)
         const track = column.addStack()
         track.layoutVertically()
         track.backgroundColor = new Color(p.track)
         track.cornerRadius = 5
         track.size = new Size(barWidth, barHeight)
-        const progress = widgetDayProgress(day, data)
         const fillHeight = progress > 0 ? Math.max(3, Math.round(barHeight * progress)) : 0
         if (fillHeight > 0) {
             track.addSpacer(barHeight - fillHeight)
@@ -2599,16 +2734,17 @@ function renderFitnessWeekBars(widget, data, width, p) {
         weekday.font = Font.systemFont(7)
         weekday.textColor = new Color(p.muted)
     }
-}
-
-function renderFitnessLargeWidget(widget, data, width, p) {
+}function renderFitnessLargeWidget(widget, data, width, p) {
     const model = getWidgetMonthModel(data)
-    addWidgetMonthNavigation(widget, model, width, p, "MONTHLY ACTIVITY")
-    widget.addSpacer(7)
+    const scale = largeWidgetScale()
+    addWidgetMonthNavigation(widget, model, width, p, "月度工时表现")
+    widget.addSpacer(5)
+
     const summary = widget.addStack()
     summary.layoutHorizontally()
     summary.centerAlignContent()
-    addFitnessRing(summary, data, 94)
+    summary.size = new Size(width, Math.round(104 * scale))
+    addFitnessRing(summary, data, Math.round(102 * scale))
     summary.addSpacer(12)
     const stats = summary.addStack()
     stats.layoutVertically()
@@ -2616,96 +2752,61 @@ function renderFitnessLargeWidget(widget, data, width, p) {
     score.font = Font.boldSystemFont(29)
     score.textColor = new Color(p.text)
     score.lineLimit = 1
-    const label = stats.addText("DAYS ON TARGET")
-    label.font = Font.boldSystemFont(8)
+    const label = stats.addText("本月达标天数")
+    label.font = Font.boldSystemFont(9)
     label.textColor = new Color(p.accent)
-    stats.addSpacer(4)
-    const average = stats.addText("AVG  " + model.average)
+    stats.addSpacer(3)
+    const average = stats.addText("平均工时  " + model.average)
     average.font = Font.mediumSystemFont(10)
     average.textColor = new Color(p.text)
-    const review = stats.addText("TO REVIEW  " + model.warnings)
+    const review = stats.addText("待核查  " + model.warnings + " 天")
     review.font = Font.systemFont(9)
     review.textColor = new Color(p.muted)
-    widget.addSpacer(8)
-    renderFitnessWeekBars(widget, data, width, p)
-}
+    const active = stats.addText("进行中  " + model.active + " 天")
+    active.font = Font.systemFont(9)
+    active.textColor = new Color(p.muted)
 
-function renderMinimalLargeWidget(widget, data, width, p) {
+    widget.addSpacer()
+    renderFitnessWeekBars(widget, data, width, p)
+    widget.addSpacer()
+    renderLargeWeekSummary(widget, model, width, p, Math.round(17 * scale))
+}function renderMinimalLargeWidget(widget, data, width, p) {
     const model = getWidgetMonthModel(data)
-    addWidgetMonthNavigation(widget, model, width, p, "TIMESHEET")
-    widget.addSpacer(9)
+    const scale = largeWidgetScale()
+    addWidgetMonthNavigation(widget, model, width, p, "极简工时账本")
+    widget.addSpacer(5)
 
     const summary = widget.addStack()
     summary.layoutHorizontally()
     summary.centerAlignContent()
+    summary.size = new Size(width, Math.round(70 * scale))
     const count = summary.addText(String(model.normal).padStart(2, "0"))
     count.font = Font.boldSystemFont(43)
     count.textColor = new Color(p.text)
     count.lineLimit = 1
     const slash = summary.addText(" / " + model.workdays.length)
-    slash.font = Font.mediumSystemFont(19)
+    slash.font = Font.mediumSystemFont(18)
     slash.textColor = new Color(p.muted)
     const side = summary.addStack()
     side.layoutVertically()
-    side.addSpacer(4)
-    const caption = side.addText("DAYS ON TARGET")
-    caption.font = Font.boldSystemFont(8)
+    side.addSpacer(2)
+    const caption = side.addText("本月达标天数")
+    caption.font = Font.boldSystemFont(9)
     caption.textColor = new Color(p.muted)
-    const average = side.addText("AVG  " + model.average)
+    const average = side.addText("平均工时  " + model.average)
     average.font = Font.mediumSystemFont(10)
     average.textColor = new Color(p.text)
-    const pending = side.addText("待核查  " + model.warnings)
+    const pending = side.addText("待核查  " + model.warnings + " 天")
     pending.font = Font.systemFont(9)
     pending.textColor = new Color(p.muted)
 
-    widget.addSpacer(8)
-    const divider = widget.addStack()
-    divider.backgroundColor = new Color(p.track)
-    divider.size = new Size(width, 1)
-    widget.addSpacer(6)
-    const heading = widget.addText("RECENT ENTRIES")
-    heading.font = Font.boldSystemFont(8)
-    heading.textColor = new Color(p.muted)
-    const records = model.workdays.filter(day => day.clockInAt || Number.isFinite(day.workedMs)).slice(-4).reverse()
-    if (!records.length) {
-        widget.addSpacer(5)
-        const empty = widget.addText("暂无本月打卡快照")
-        empty.font = Font.systemFont(10)
-        empty.textColor = new Color(p.muted)
-        return
-    }
-    const weekdays = ["一", "二", "三", "四", "五", "六", "日"]
-    for (let index = 0; index < records.length; index++) {
-        const day = records[index]
-        const row = widget.addStack()
-        row.layoutHorizontally()
-        row.centerAlignContent()
-        const date = row.addText(day.key.slice(5).replace("-", "/") + " 周" + weekdays[day.weekday])
-        date.font = Font.mediumSystemFont(9)
-        date.textColor = new Color(p.muted)
-        date.lineLimit = 1
-        row.addSpacer(7)
-        const times = row.addText(day.clockIn + "  —  " + day.clockOut)
-        times.font = Font.mediumSystemFont(9)
-        times.textColor = new Color(p.text)
-        times.lineLimit = 1
-        times.minimumScaleFactor = 0.65
-        row.addSpacer()
-        const worked = row.addText(day.worked)
-        worked.font = Font.boldSystemFont(9)
-        worked.textColor = new Color(p.accent2)
-        worked.lineLimit = 1
-        if (index < records.length - 1) {
-            widget.addSpacer(3)
-            const rule = widget.addStack()
-            rule.backgroundColor = new Color(p.track)
-            rule.size = new Size(width, 1)
-            widget.addSpacer(3)
-        }
-    }
-}
-
-function widgetHeatmapCellColor(day, data) {
+    widget.addSpacer()
+    renderLargeMonthStats(widget, model, width, p, Math.round(40 * scale))
+    widget.addSpacer()
+    renderLargeRecentLogs(widget, model, width, p, 4, Math.round(20 * scale))
+    widget.addSpacer()
+    renderLargeWeekSummary(widget, model, width, p, Math.round(16 * scale))
+}function widgetHeatmapCellColor(day, data) {
     if (!day || day.state === "future") return "#172A3B"
     if (!day.workday) return "#1B2B3B"
     if (day.state === "normal") return "#2F9D75"
@@ -2736,9 +2837,10 @@ function addWidgetHeatmapLegendItem(parent, color, label, p) {
 
 function renderHeatmapLargeWidget(widget, data, width, p) {
     const model = getWidgetMonthModel(data)
-    addWidgetMonthNavigation(widget, model, width, p, "CONTRIBUTION MAP")
+    const scale = largeWidgetScale()
+    addWidgetMonthNavigation(widget, model, width, p, "整月考勤热力图")
     widget.addSpacer(5)
-    const summary = widget.addText(model.normal + " 达标  ·  " + model.warnings + " 待核查  ·  " + model.workdays.length + " 个应出勤日")
+    const summary = widget.addText(model.normal + " 天达标  ·  " + model.warnings + " 天待核查  ·  " + model.workdays.length + " 个应出勤日")
     summary.font = Font.mediumSystemFont(9)
     summary.textColor = new Color(p.muted)
     summary.lineLimit = 1
@@ -2750,7 +2852,7 @@ function renderHeatmapLargeWidget(widget, data, width, p) {
     const weekdayWidth = 16
     const gap = 3
     const weekCount = model.weeks.length
-    const cellSize = Math.max(22, Math.min(34, Math.floor((width - weekdayWidth - gap * weekCount) / Math.max(1, weekCount))))
+    const cellSize = Math.max(22, Math.min(36, Math.floor((width - weekdayWidth - gap * weekCount) / Math.max(1, weekCount))))
     const weekdays = ["一", "二", "三", "四", "五", "六", "日"]
     for (let weekday = 0; weekday < 7; weekday++) {
         const row = grid.addStack()
@@ -2781,7 +2883,7 @@ function renderHeatmapLargeWidget(widget, data, width, p) {
         }
     }
 
-    widget.addSpacer(7)
+    widget.addSpacer()
     const legend = widget.addStack()
     legend.layoutHorizontally()
     legend.spacing = 9
@@ -2789,14 +2891,11 @@ function renderHeatmapLargeWidget(widget, data, width, p) {
     addWidgetHeatmapLegendItem(legend, "#2F9CC7", "进行中", p)
     addWidgetHeatmapLegendItem(legend, "#B77B37", "待核查", p)
     addWidgetHeatmapLegendItem(legend, "#2F9D75", "达标", p)
-}
-
-
-function renderCyberWidget(widget, data, family, width) {
+}function renderCyberWidget(widget, data, family, width) {
     const p = widgetStylePalette("cyber")
     const large = family === "large" || family === "extraLarge"
     const small = family === "small"
-    addStyledHeader(widget, large ? "CYBER / COMMAND CENTER" : "CYBER / ATTENDANCE", p)
+    addStyledHeader(widget, large ? "赛博考勤控制台" : "赛博考勤", p)
     if (!data || !data.ok) {
         widget.addSpacer(8)
         renderErrorBlock(widget, data || { error: "暂无考勤数据" })
@@ -2808,14 +2907,14 @@ function renderCyberWidget(widget, data, family, width) {
     }
 
     const headline = widget.addText(data.hasClockIn
-        ? (data.targetReached ? "TARGET REACHED" : formatRemainCompact(data.remainingMinutes))
-        : "NO CLOCK-IN")
+        ? (data.targetReached ? "已达标" : formatRemainCompact(data.remainingMinutes))
+        : "未打卡")
     headline.font = Font.boldSystemFont(small ? 24 : 31)
     headline.textColor = new Color(p.accent)
     headline.lineLimit = 1
     headline.minimumScaleFactor = 0.62
 
-    const status = widget.addText(widgetStatusText(data).toUpperCase())
+    const status = widget.addText(widgetStatusText(data))
     status.font = Font.mediumSystemFont(9)
     status.textColor = new Color(p.muted)
     status.lineLimit = 1
@@ -2825,15 +2924,15 @@ function renderCyberWidget(widget, data, family, width) {
     addStyledProgress(widget, data, width, p, 4)
     widget.addSpacer(6)
     addStyledInfoRow(widget, [
-        ["CLOCK IN", data.hasClockIn ? formatTime(data.inTime) : "--"],
-        ["TARGET", data.targetTime ? formatTime(data.targetTime) : "--"],
-        ["CLOCK OUT", data.hasOutRecord ? formatTime(data.latestOutTime) : "--"]
+        ["上班打卡", data.hasClockIn ? formatTime(data.inTime) : "—"],
+        ["预计达标", data.targetTime ? formatTime(data.targetTime) : "—"],
+        ["下班打卡", data.hasOutRecord ? formatTime(data.latestOutTime) : "—"]
     ], width, p, small ? 34 : 40)
 }function renderFitnessWidget(widget, data, family, width) {
     const p = widgetStylePalette("fitness")
     const large = family === "large" || family === "extraLarge"
     const small = family === "small"
-    addStyledHeader(widget, large ? "ACTIVITY / MONTHLY PERFORMANCE" : "ACTIVITY / WORK RINGS", p)
+    addStyledHeader(widget, large ? "运动环形 · 月度表现" : "运动环形 · 今日工时", p)
     if (!data || !data.ok) {
         widget.addSpacer(8)
         renderErrorBlock(widget, data || { error: "暂无考勤数据" })
@@ -2857,7 +2956,7 @@ function renderCyberWidget(widget, data, family, width) {
     elapsed.textColor = new Color(p.text)
     elapsed.lineLimit = 1
     elapsed.minimumScaleFactor = 0.62
-    const caption = info.addText("WORK TIME / " + CONFIG.TARGET_HOURS + "H")
+    const caption = info.addText("累计工时 / 目标 " + CONFIG.TARGET_HOURS + " 小时")
     caption.font = Font.boldSystemFont(8)
     caption.textColor = new Color(p.accent)
     caption.lineLimit = 1
@@ -2870,7 +2969,7 @@ function renderCyberWidget(widget, data, family, width) {
 
     if (small) {
         widget.addSpacer(4)
-        const line = widget.addText("IN " + (data.hasClockIn ? formatTime(data.inTime) : "--") + "  ·  OUT " + (data.hasOutRecord ? formatTime(data.latestOutTime) : "--"))
+        const line = widget.addText("上班 " + (data.hasClockIn ? formatTime(data.inTime) : "—") + "  ·  下班 " + (data.hasOutRecord ? formatTime(data.latestOutTime) : "—"))
         line.font = Font.mediumSystemFont(8)
         line.textColor = new Color(p.muted)
         line.lineLimit = 1
@@ -2923,7 +3022,7 @@ function renderMinimalWidget(widget, data, family, width) {
     const p = widgetStylePalette("minimal")
     const large = family === "large" || family === "extraLarge"
     const small = family === "small"
-    addStyledHeader(widget, large ? "ATTENDANCE / TIMESHEET" : "ATTENDANCE", p)
+    addStyledHeader(widget, large ? "极简工时账本" : "今日工时", p)
     if (!data || !data.ok) {
         widget.addSpacer(8)
         const error = widget.addText(data && data.cacheMiss ? "需要更新" : "暂时不可用")
@@ -3011,7 +3110,7 @@ function renderHeatmapWidget(widget, data, family, width) {
     const p = widgetStylePalette("heatmap")
     const large = family === "large" || family === "extraLarge"
     const small = family === "small"
-    addStyledHeader(widget, large ? "ATTENDANCE / CONTRIBUTION MAP" : "ATTENDANCE / LAST 7 DAYS", p)
+    addStyledHeader(widget, large ? "整月考勤热力图" : "近 7 天考勤状态", p)
     if (!data || !data.ok) {
         widget.addSpacer(8)
         renderErrorBlock(widget, data || { error: "暂无考勤数据" })
@@ -3047,7 +3146,7 @@ function renderHeatmapWidget(widget, data, family, width) {
     const days = getRecentWidgetDays(data, count)
     const normal = days.filter(day => day.workday && day.state === "normal").length
     const warnings = days.filter(day => day.workday && day.state === "warning").length
-    const title = style === "cyber" ? "WEEKLY / CONTROL" : style === "fitness" ? "WEEKLY / ACTIVITY" : style === "minimal" ? "LAST " + count + " DAYS" : "LAST " + count + " DAYS / HEATMAP"
+    const title = style === "cyber" ? "近 " + count + " 天 · 考勤轨迹" : style === "fitness" ? "近 " + count + " 天 · 工时表现" : style === "minimal" ? "最近 " + count + " 天" : "最近 " + count + " 天 · 考勤热力"
     addStyledHeader(widget, title, p)
     widget.addSpacer(large ? 8 : 6)
     if (style === "fitness") {
@@ -3061,7 +3160,7 @@ function renderHeatmapWidget(widget, data, family, width) {
         const total = summary.addText(normal + " / " + count)
         total.font = Font.boldSystemFont(large ? 28 : 23)
         total.textColor = new Color(p.text)
-        const label = summary.addText("DAYS ON TARGET")
+        const label = summary.addText("达标天数")
         label.font = Font.systemFont(8)
         label.textColor = new Color(p.accent)
         const warn = summary.addText("待核查 " + warnings + " 天")
@@ -3826,8 +3925,18 @@ async function presentAttendanceHistory(initialMonth) {
     }
     const serialize = value => JSON.stringify(value).replace(/</g,"\\u003c").replace(/\u2028/g,"\\u2028").replace(/\u2029/g,"\\u2029")
     async function evaluateAck(code, stage) {
-        const result = await view.evaluateJavaScript("(function(){" + code + ";return 'AH5:OK';})()", false)
-        if (result !== "AH5:OK") throw new Error(stage + "：WebView 返回值异常（" + typeof result + "）")
+        let lastError = null
+        for (let attempt = 0; attempt < 5; attempt++) {
+            try {
+                const result = await view.evaluateJavaScript("(function(){" + code + ";return 'AH5:OK';})()", false)
+                if (result === "AH5:OK") return
+                lastError = new Error("WebView 返回值异常（" + typeof result + "）")
+            } catch (error) {
+                lastError = error
+            }
+            if (attempt < 4) await pause(160)
+        }
+        throw new Error(stage + "：" + managementErrorText(lastError || "页面通信失败"))
     }
     async function draw() {
         if (open) await evaluateAck("window.setAttendanceModel(" + serialize(model()) + ")", "刷新页面")
@@ -3874,7 +3983,7 @@ async function presentAttendanceHistory(initialMonth) {
     let stage = "写入页面模板", closed = null, failure = null
     const pause = ms => new Promise(resolve => Timer.schedule(ms, false, resolve))
     async function ready() {
-        const result = await view.evaluateJavaScript("(function(){return typeof window.setAttendanceModel==='function' && typeof window.takeAttendanceAction==='function' ? 'AH5:READY' : 'AH5:NOT_READY';})()", false)
+        const result = await view.evaluateJavaScript("(function(){return document.readyState!=='loading' && window.__attendanceReady===true && typeof window.setAttendanceModel==='function' && typeof window.takeAttendanceAction==='function' && !!document.getElementById('boot-status') ? 'AH5:READY' : 'AH5:NOT_READY';})()", false)
         return result === "AH5:READY"
     }
     async function loadPage(useFile) {
@@ -3883,10 +3992,16 @@ async function presentAttendanceHistory(initialMonth) {
             if (useFile) await view.loadFile(path)
             else await view.loadHTML(html, "https://attendance-helper.invalid/")
         } catch (e) { loadError = e }
-        // 某些 WebView 已完成 DOM 渲染，但加载 Promise 返回异常；以实际探针为准。
-        for (let i=0;i<3;i++) {
-            try { if (await ready()) return } catch (_) {}
-            await pause(120)
+        // WebView 首次启动、预览和设备负载会影响脚本注入时序。
+        // 最多等待 6 秒，以页面主动上报 READY 为准，不用短暂延迟猜测加载完成。
+        for (let i=0;i<40;i++) {
+            try {
+                if (await ready()) {
+                    await pause(120)
+                    if (await ready()) return
+                }
+            } catch (_) {}
+            await pause(150)
         }
         throw new Error(managementErrorText(loadError || "页面脚本未初始化"))
     }
@@ -3901,15 +4016,27 @@ async function presentAttendanceHistory(initialMonth) {
         }
         stage = "初始化数据"
         await draw()
-        await evaluateAck("document.getElementById('boot-status').hidden=true", "首屏确认")
         stage = "展示管理页面"
-        closed = view.present(true).then(() => { open=false }, e => { failure=e;open=false })
+        closed = Promise.resolve(view.present(true)).then(() => { open=false }, e => { failure=e;open=false })
         stage = "操作桥接"
         while (open) {
             // 不使用 completion、浏览器异步回调或 Promise.race；一次读取一个动作。
-            const event = await view.evaluateJavaScript("window.takeAttendanceAction()", false)
+            let event = null
+            let bridgeError = null
+            for (let attempt = 0; attempt < 5; attempt++) {
+                try {
+                    event = await view.evaluateJavaScript("window.takeAttendanceAction()", false)
+                    if (typeof event === "string" && event.startsWith("AH5:")) break
+                    bridgeError = new Error("桥接返回值异常（" + typeof event + "）")
+                } catch (error) {
+                    bridgeError = error
+                }
+                if (attempt < 4) await pause(140)
+            }
             if (!open) break
-            if (typeof event !== "string" || !event.startsWith("AH5:")) throw new Error("操作桥接返回值异常（" + typeof event + "）")
+            if (typeof event !== "string" || !event.startsWith("AH5:")) {
+                throw new Error("操作桥接暂不可用：" + managementErrorText(bridgeError || "请重新打开页面"))
+            }
             const {action,data={}} = JSON.parse(event.slice(4))
             if (action === "idle") { await pause(300); continue }
             try {
@@ -4009,7 +4136,7 @@ function managementErrorText(error) {
 
 
 function attendanceManagementHTML() {
-        return "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\"><title>考勤管理</title><style>\n:root{color-scheme:light dark;--bg:#f5f6f8;--card:#fff;--ink:#172033;--muted:#687487;--line:#e8ebf0;--soft:#f0f3f7;--accent:#315fbd;--accent-bg:#eaf1ff;--good:#087b5b;--good-bg:#e5f5ed;--bad:#b34534;--bad-bg:#fff0ec;--warn:#97600d;--warn-bg:#fff5dd;--radius:20px}*{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:-apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif;background:var(--bg);color:var(--ink);-webkit-tap-highlight-color:transparent}body[data-theme=teal]{--accent:#167e74;--accent-bg:#e3f5f1}body[data-theme=slate]{--accent:#5a637a;--accent-bg:#eef0f6}button,input,textarea{font:inherit}button{color:inherit;cursor:pointer;border:0;background:none}button:disabled{opacity:.35;cursor:default}button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}button:active:not(:disabled){transform:scale(.97)}.wrap{max-width:560px;margin:auto;padding:64px 16px 32px;padding-top:max(64px,calc(env(safe-area-inset-top) + 20px));padding-bottom:max(32px,env(safe-area-inset-bottom))}.top{display:flex;align-items:center;justify-content:space-between;margin:0 0 20px}.eyebrow{font-size:11px;letter-spacing:1.5px;font-weight:700;color:var(--muted);margin-bottom:5px}h1,h2,h3,p{margin:0}h1{font-size:30px;letter-spacing:-1.2px;font-weight:750}h2{font-size:18px;letter-spacing:-.3px}h3{font-size:15px}.icon-btn{width:44px;height:44px;display:grid;place-items:center;border:1px solid var(--line);background:var(--card);border-radius:15px;flex:none}.icon-btn svg{width:21px;height:21px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}.tools{display:flex;gap:8px}.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:16px;margin-bottom:12px;box-shadow:0 3px 12px #17203304}.hero{background:#17283f;color:#fff;border:none;padding:19px;position:relative;overflow:hidden}.hero::after{content:'';position:absolute;width:180px;height:180px;border:1px solid #ffffff15;border-radius:50%;right:-64px;top:-90px;box-shadow:0 0 0 24px #ffffff09,0 0 0 48px #ffffff06;pointer-events:none}.hero-top,.section-head,.month-head,.detail-top,.modal-head{display:flex;align-items:center;justify-content:space-between;gap:8px}.hero small{color:#b8c8de;font-size:12px}.hero-main{font-size:32px;font-weight:750;letter-spacing:-1px;margin:9px 0 4px;font-variant-numeric:tabular-nums}.hero .pill{color:#dceaff;background:#ffffff1e}.progress{height:6px;border-radius:20px;background:#ffffff20;margin:16px 0;overflow:hidden}.progress i{height:100%;display:block;background:#9ac2ff;border-radius:20px}.hero-grid,.metric-grid,.detail-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.hero-grid>div{border-left:1px solid #ffffff23;padding-left:10px}.hero-grid>div:first-child{border:0;padding:0}.hero-grid b{display:block;font-size:18px;margin-top:5px;font-variant-numeric:tabular-nums}.section-head{margin:20px 2px 10px}.sub{font-size:12px;color:var(--muted);line-height:1.5}.metric-grid{gap:7px;margin-bottom:12px}.metric{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:11px 5px;text-align:center;min-width:0}.metric b{display:block;font-size:25px;line-height:1.15;font-variant-numeric:tabular-nums}.metric small{display:block;font-size:11px;color:var(--muted);margin-top:4px}.metric[data-active=true]{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}.good-text{color:var(--good)}.bad-text{color:var(--bad)}.warn-text{color:var(--warn)}.month-head{margin-bottom:15px}.month-title{font-size:19px;font-weight:750;white-space:nowrap;letter-spacing:-.4px}.month-nav{display:flex;gap:5px;align-items:center}.month-nav button,.mini{padding:8px 10px;border-radius:10px;background:var(--soft);font-size:12px;font-weight:650;min-height:36px}.month-nav .arrow{font-size:21px;line-height:1;width:36px;padding:0}.week,.calendar{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:5px}.week{margin-bottom:7px}.week span{text-align:center;font-size:11px;color:var(--muted);font-weight:600;padding:4px 0}.day{min-width:0;min-height:49px;aspect-ratio:1 / 1.12;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;border:1px solid transparent;border-radius:12px;background:var(--soft);padding:3px 0;font-variant-numeric:tabular-nums;position:relative}.day b{font-size:16px;line-height:1.1}.day em{font-style:normal;font-size:9px;line-height:1;white-space:nowrap}.day.normal{background:var(--good-bg);color:var(--good)}.day.warning{background:var(--warn-bg);color:var(--warn)}.day.abnormal{background:var(--bad-bg);color:var(--bad)}.day.active{background:var(--accent-bg);color:var(--accent)}.day.pending{background:var(--soft);color:var(--muted);border:1px dashed var(--line)}.day.rest{background:transparent;color:var(--muted)}.day.future{background:transparent;color:var(--muted);opacity:.48}.day.selected{outline:2px solid var(--accent);outline-offset:-2px}.day.today:after{content:'';position:absolute;right:5px;top:5px;width:5px;height:5px;background:var(--accent);border-radius:50%}.legend{display:flex;flex-wrap:wrap;gap:10px 13px;margin-top:14px;padding-top:12px;border-top:1px solid var(--line);font-size:11px;color:var(--muted)}.legend span{display:flex;align-items:center;gap:4px}.dot{width:8px;height:8px;border-radius:3px;background:var(--soft);border:1px solid var(--line)}.dot.normal{background:var(--good)}.dot.warning{background:var(--warn)}.dot.abnormal{background:var(--bad)}.dot.active{background:var(--accent)}.pill{display:inline-flex;align-items:center;padding:5px 9px;border-radius:9px;font-size:11px;font-weight:650;white-space:nowrap;background:var(--soft);color:var(--muted)}.pill.normal{background:var(--good-bg);color:var(--good)}.pill.warning{background:var(--warn-bg);color:var(--warn)}.pill.abnormal{background:var(--bad-bg);color:var(--bad)}.pill.active{background:var(--accent-bg);color:var(--accent)}.detail-grid{margin:13px 0;gap:6px}.detail-grid div{background:var(--soft);padding:11px 5px;border-radius:12px;text-align:center;min-width:0}.detail-grid small{display:block;color:var(--muted);font-size:11px;margin-bottom:6px}.detail-grid b{font-size:17px;white-space:nowrap;letter-spacing:-.4px;font-variant-numeric:tabular-nums}.line{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:9px 0;border-top:1px solid var(--line);font-size:13px}.line span:first-child{color:var(--muted);flex:none}.line span:last-child{text-align:right;overflow-wrap:anywhere}.primary,.secondary,.danger{width:100%;min-height:44px;border-radius:13px;padding:10px 13px;font-size:14px;font-weight:650;background:var(--accent);color:#fff}.secondary{background:var(--soft);color:var(--ink)}.danger{background:var(--bad-bg);color:var(--bad)}.actions{display:flex;gap:8px;margin-top:12px}.actions>*{flex:1}.review-list{padding:0 14px}.review-row{display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:12px 0;border-bottom:1px solid var(--line)}.review-row:last-child{border:0}.date-chip{background:var(--soft);border-radius:11px;min-width:45px;padding:8px 4px;text-align:center;font-size:12px;font-weight:700}.review-row .grow{flex:1;min-width:0}.review-row strong{font-size:13px;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.review-row small{display:block;font-size:11px;color:var(--muted);margin-top:4px}.chevron{color:var(--muted);font-size:20px}.empty{padding:19px 8px;text-align:center;font-size:13px;color:var(--muted)}.sync{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:0 3px;margin:0 0 10px}.sync span{font-size:12px;color:var(--muted);overflow-wrap:anywhere}.overlay{position:fixed;inset:0;z-index:10;background:#101b326e;display:flex;align-items:center;justify-content:center;padding:64px 16px 16px;padding-top:max(64px,calc(env(safe-area-inset-top) + 20px));padding-bottom:max(16px,env(safe-area-inset-bottom));overflow:auto}.overlay[hidden]{display:none!important}.modal{max-width:440px;width:100%;max-height:calc(100vh - 80px);max-height:100%;overflow:auto;background:var(--card);border-radius:24px;padding:20px;box-shadow:0 16px 64px #0003;overscroll-behavior:contain}.modal-head{margin-bottom:16px}.close{width:34px;height:34px;border-radius:50%;background:var(--soft);font-size:21px;color:var(--muted);flex:none}.field-title{font-size:13px;font-weight:700;margin:16px 0 9px}.options{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}.style-tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin:8px 0}.style-tab{min-height:36px;border-radius:11px;background:var(--soft);font-size:12px;font-weight:700}.style-tab.on{background:var(--accent-bg);color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}.widget-style-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.widget-style-card{min-width:0;text-align:left;border:1px solid var(--line);border-radius:14px;background:var(--card);padding:8px}.widget-style-card.on{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent);background:var(--accent-bg)}.widget-style-card strong{display:block;font-size:12px;margin-top:7px}.widget-style-card small{display:block;font-size:10px;color:var(--muted);margin-top:3px}.style-sample{height:55px;border-radius:9px;padding:8px;display:flex;flex-direction:column;justify-content:center;gap:5px;overflow:hidden}.style-sample b{font-size:18px;line-height:1}.style-sample span{font-size:8px;letter-spacing:.7px}.style-sample i{height:4px;border-radius:4px;display:block;background:#ffffff30;overflow:hidden}.style-sample i:after{content:'';display:block;width:52%;height:100%;background:currentColor;border-radius:4px}.style-sample.cyber{background:#071321;color:#54E6DC}.style-sample.fitness{background:#0C1017;color:#B9F36A;align-items:center;position:relative}.style-sample.fitness:before{content:'';width:35px;height:35px;border-radius:50%;border:4px solid #B9F36A;border-right-color:#FF8176;border-bottom-color:#63B9FF;position:absolute;right:10px;top:9px}.style-sample.minimal{background:#F2F2EC;color:#171A18}.style-sample.heatmap{background:#0C1724;color:#F3F7FB}.style-sample.heatmap i{height:8px;background:linear-gradient(90deg,#26715E 0 12%,#A16530 12% 24%,#26715E 24% 52%,#344A60 52% 64%,#26715E 64% 100%)}.style-preview{margin-top:9px}.option{background:var(--soft);border:1px solid transparent;border-radius:12px;min-height:40px;font-size:12px;font-weight:600;padding:8px 4px}.option.on{background:var(--accent-bg);border-color:var(--accent);color:var(--accent)}.swatch{display:block;width:24px;height:24px;border-radius:9px;margin:0 auto 5px}.form-control{width:100%;border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:12px;padding:11px;font-size:16px;min-height:44px}.form-control+ .form-control{margin-top:8px}textarea.form-control{resize:vertical;min-height:76px}.muted-note{font-size:12px;color:var(--muted);line-height:1.6;margin-top:9px}.tool-row{width:100%;display:flex;justify-content:space-between;align-items:center;text-align:left;padding:13px 0;border-top:1px solid var(--line);font-size:14px}.tool-row span:last-child{color:var(--muted)}.toast{position:fixed;bottom:max(20px,env(safe-area-inset-bottom));left:50%;transform:translateX(-50%);background:#17283f;color:white;padding:12px 18px;border-radius:13px;z-index:20;font-size:13px;max-width:90%;width:max-content;box-shadow:0 5px 20px #0003}.toast[hidden]{display:none}.filter{display:flex;gap:5px;overflow:auto;margin-bottom:8px}.filter button{white-space:nowrap}.filter .on{background:var(--accent-bg);color:var(--accent)}@media(max-width:350px){.wrap{padding-left:10px;padding-right:10px}.card{padding:12px}.week,.calendar{gap:3px}.day{min-height:42px;border-radius:9px}.day em{font-size:8px}.month-title{font-size:17px}.month-nav{gap:3px}.month-nav button{padding:6px}.month-nav .arrow{width:31px}}@media(prefers-color-scheme:dark){:root{--bg:#11141b;--card:#1b202a;--ink:#e9edf4;--muted:#a1aec0;--line:#303745;--soft:#262e3a;--accent:#91b4ff;--accent-bg:#283b5b;--good:#75d7b3;--good-bg:#19382e;--bad:#ffad9e;--bad-bg:#452a2a;--warn:#f4c477;--warn-bg:#413525}.primary{color:#101a2a}body[data-theme=teal]{--accent:#77d8c6;--accent-bg:#20413d}body[data-theme=slate]{--accent:#bac5da;--accent-bg:#343e51}}\n#boot-status[hidden]{display:none!important}#boot-status{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.6}#boot-status[data-error]{color:var(--bad)}\n</style></head><body><main class=\"wrap\"><header class=\"top\"><div><div class=\"eyebrow\">ATTENDANCE / WORKSPACE</div><h1>考勤管理</h1></div><div class=\"tools\"><button class=\"icon-btn\" id=\"refresh\" aria-label=\"同步考勤\"><svg viewBox=\"0 0 24 24\"><path d=\"M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7\"/></svg></button><button class=\"icon-btn\" id=\"settings\" aria-label=\"考勤配置\"><svg viewBox=\"0 0 24 24\"><path d=\"M4 7h16M4 17h16\"/><circle cx=\"9\" cy=\"7\" r=\"2.5\" fill=\"var(--card)\"/><circle cx=\"15\" cy=\"17\" r=\"2.5\" fill=\"var(--card)\"/></svg></button></div></header><div class=\"card\" id=\"boot-status\" role=\"status\">正在初始化考勤管理…</div><div id=\"hero\"></div><div class=\"section-head\"><h2>月度考勤</h2><span class=\"sub\" id=\"month-summary\"></span></div><div class=\"metric-grid\" id=\"metrics\"></div><div class=\"sync\"><span id=\"sync-status\" role=\"status\"></span><button class=\"mini\" id=\"sync\">补查本月</button></div><section class=\"card\"><div class=\"month-head\"><div class=\"month-title\" id=\"month-title\"></div><div class=\"month-nav\"><button class=\"arrow\" id=\"prev\" aria-label=\"上月\">‹</button><button id=\"current\">本月</button><button class=\"arrow\" id=\"next\" aria-label=\"下月\">›</button></div></div><div class=\"week\"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span></div><div class=\"calendar\" id=\"calendar\"></div><div class=\"legend\"><span><i class=\"dot normal\"></i>正常</span><span><i class=\"dot warning\"></i>待核查</span><span><i class=\"dot abnormal\"></i>确认异常</span><span><i class=\"dot active\"></i>进行中</span><span><i class=\"dot\"></i>待查 / 休息</span></div></section><div id=\"detail\"></div><section class=\"card\" id=\"averages\"></section><div class=\"section-head\"><h2>考勤核查</h2><span class=\"sub\">仅影响本机判定</span></div><div class=\"filter\" id=\"filters\"></div><section class=\"card review-list\" id=\"review-list\"></section><p class=\"muted-note\" style=\"text-align:center\">考勤助手 · 本机核查不修改企业原始工卡</p></main><div class=\"overlay\" id=\"overlay\" hidden><section class=\"modal\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"modal-title\"><div class=\"modal-head\"><h2 id=\"modal-title\"></h2><button class=\"close\" id=\"close\" aria-label=\"关闭弹窗\">×</button></div><div id=\"modal-content\"></div></section></div><div class=\"toast\" id=\"toast\" role=\"status\" hidden></div><script>\nwindow.attendanceBootError=function(message){var el=document.getElementById('boot-status');if(el){el.hidden=false;el.setAttribute('data-error','1');el.textContent='考勤页面加载失败：'+String(message)+'。请关闭页面，进入原生备用管理页。'}};\nwindow.addEventListener('error',function(e){window.attendanceBootError(e.message||'未知脚本错误')});\nwindow.addEventListener('unhandledrejection',function(e){window.attendanceBootError(e.reason&&e.reason.message||e.reason||'未知异步错误')});\n</script><script>\n(function(){'use strict';var model=null,selected='',filter='todo',queue=[],modalType='',draft=null,toastTimer=null;var $=function(id){return document.getElementById(id)};var esc=function(v){return String(v==null?'':v).replace(/[&<>\"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]})};var statusNames={normal:'正常',warning:'待核查',abnormal:'确认异常',active:'进行中',pending:'待查',rest:'休息',future:'未到'};var tags={normal:'正常',warning:'待核',abnormal:'异常',active:'进行',pending:'待查',rest:'休',future:''};function emit(action,data){queue.push({action:action,data:data||{}})}window.takeAttendanceAction=function(){return 'AH5:'+JSON.stringify(queue.length?queue.shift():{action:'idle'})};function toast(t){if(!t)return;$('toast').textContent=t;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(function(){$('toast').hidden=true},3600)}window.attendanceToast=toast;function pill(d){return '<span class=\"pill '+esc(d.uiState)+'\">'+esc(statusNames[d.uiState]||d.status)+'</span>'}function metric(n,l,f,c){return '<button class=\"metric\" data-filter=\"'+f+'\" data-active=\"'+(filter===f)+'\"><b class=\"'+c+'\">'+n+'</b><small>'+l+'</small></button>'}function stats(items){return items.map(function(x){return '<div><small>'+esc(x[0])+'</small><b>'+esc(x[1])+'</b></div>'}).join('')}function line(k,v){return '<div class=\"line\"><span>'+esc(k)+'</span><span>'+esc(v)+'</span></div>'}function render(){if(!model)return;document.body.dataset.theme=model.preferences.theme;var t=model.today;var weeks=model.weeks;var days=[].concat.apply([],weeks).filter(Boolean);var done=days.filter(function(d){return d.uiState==='normal'}).length;var todo=days.filter(function(d){return d.uiState==='warning'}).length;var bad=days.filter(function(d){return d.uiState==='abnormal'}).length;var pending=days.filter(function(d){return d.uiState==='pending'}).length;var active=days.filter(function(d){return d.uiState==='active'}).length;$('hero').innerHTML='<section class=\"card hero\"><div class=\"hero-top\"><small>今日 · '+esc(model.todayKey)+'</small><span class=\"pill\">'+esc(t.status)+'</span></div><div class=\"hero-main\">'+esc(t.headline)+'</div><small>'+esc(t.subtitle)+'</small><div class=\"progress\" role=\"progressbar\" aria-valuenow=\"'+t.progress+'\" aria-valuemin=\"0\" aria-valuemax=\"100\"><i style=\"width:'+t.progress+'%\"></i></div><div class=\"hero-grid\">'+stats([['上班',t.clockIn],['下班',t.clockOut],['达标时间',t.target]])+'</div></section>';$('month-summary').textContent='待查 '+pending+' · 进行中 '+active;$('metrics').innerHTML=metric(done,'正常','normal','good-text')+metric(todo,'待核查','todo','warn-text')+metric(bad,'确认异常','abnormal','bad-text');$('month-title').textContent=model.monthLabel;$('next').disabled=!model.canNext;$('prev').disabled=!model.canPrev;$('current').disabled=model.month===model.currentMonth;$('sync-status').textContent=model.syncText;$('sync').disabled=model.busy||!model.canSync;$('refresh').disabled=model.busy||!model.canSync;$('sync').textContent=model.busy?'同步中…':'补查本月';$('calendar').innerHTML=[].concat.apply([],weeks).map(function(d){if(!d)return '<div></div>';return '<button class=\"day '+d.uiState+(selected===d.key?' selected':'')+(d.key===model.todayKey?' today':'')+'\" data-day=\"'+d.key+'\" aria-label=\"'+esc(d.key+' '+d.status)+'\" '+(d.uiState==='future'?'disabled':'')+'><b>'+Number(d.key.slice(-2))+'</b><em>'+esc(tags[d.uiState])+'</em></button>'}).join('');var d=days.find(function(x){return x.key===selected});$('detail').innerHTML=d&&d.uiState!=='future'?'<section class=\"card\"><div class=\"detail-top\"><h2>'+esc(d.key.slice(5).replace('-',' 月 ')+' 日')+'</h2>'+pill(d)+'</div><div class=\"detail-grid\">'+stats([['上班',d.clockIn],['下班',d.clockOut],['实际工时',d.worked]])+'</div>'+line('系统原判',d.originalStatus)+line('本机判定',d.status)+(d.outSwipe!==d.clockOut?line('原始离场卡',d.outSwipe):'')+(d.leaveHours?line('已批准请假',d.leaveHours+' 小时'):'')+'<div class=\"actions\">'+(d.workday?'<button class=\"primary\" id=\"open-review\">核查与修正</button>':'')+'<button class=\"secondary\" id=\"refresh-day\" '+(model.busy||!model.canSync?'disabled':'')+'>查询此日</button></div></section>':'';$('averages').innerHTML='<div class=\"section-head\" style=\"margin:0 0 10px\"><h3>月度统计</h3><span class=\"sub\">仅统计有效工卡</span></div><div class=\"detail-grid\" style=\"margin:0\">'+stats([['平均上班',model.average.in],['平均下班',model.average.out],['平均工时',model.average.worked]])+'</div>';$('filters').innerHTML=[['todo','待核查'],['abnormal','确认异常'],['reviewed','已核实'],['pending','待查'],['all','全部']].map(function(x){return '<button class=\"mini '+(filter===x[0]?'on':'')+'\" data-filter=\"'+x[0]+'\">'+x[1]+'</button>'}).join('');var list=days.filter(function(d){if(d.uiState==='future')return false;switch(filter){case 'todo':return d.uiState==='warning';case 'abnormal':return d.uiState==='abnormal';case 'reviewed':return d.reviewed;case 'normal':return d.uiState==='normal';case 'pending':return d.uiState==='pending';default:return d.workday||d.reviewed}}).reverse();$('review-list').innerHTML=list.length?list.map(function(d){return '<button class=\"review-row\" data-day=\"'+d.key+'\" data-list=\"1\"><span class=\"date-chip\">'+d.key.slice(5).replace('-','/')+'</span><span class=\"grow\"><strong>'+esc(d.status)+'</strong><small>'+esc(d.clockIn+' – '+d.clockOut+' · '+d.worked)+'</small></span>'+pill(d)+'<span class=\"chevron\">›</span></button>'}).join(''):'<div class=\"empty\">暂无此类记录</div>'}window.setAttendanceModel=function(m){var old=model&&model.month;model=m;if(old!==m.month||!selected)selected=m.selected;render()};function closeModal(){modalType='';draft=null;$('overlay').hidden=true;document.body.style.overflow='';$('modal-content').innerHTML=''}function openModal(type,title,html){modalType=type;$('modal-title').textContent=title;$('modal-content').innerHTML=html;$('overlay').hidden=false;document.body.style.overflow='hidden'}var styleFamily='medium';function styleKey(family){return family==='small'?'widgetStyleSmall':family==='large'?'widgetStyleLarge':'widgetStyleMedium'}function settings(){draft={theme:model.preferences.theme,remindMinutes:model.preferences.remindMinutes,widgetStyleSmall:model.preferences.widgetStyleSmall,widgetStyleMedium:model.preferences.widgetStyleMedium,widgetStyleLarge:model.preferences.widgetStyleLarge};styleFamily='medium';openModal('settings','考勤配置','<p class=\"sub\">组件样式按尺寸独立保存；修改后会预览当前尺寸，桌面组件下次刷新生效。</p><div class=\"field-title\">小组件样式</div><div class=\"style-tabs\" id=\"style-size-tabs\"></div><div class=\"widget-style-grid\" id=\"widget-style-options\"></div><button class=\"secondary style-preview\" id=\"preview-widget\">预览当前尺寸</button><div class=\"field-title\">组件配色</div><div class=\"options\" id=\"theme-options\"></div><div class=\"field-title\">提前下班提醒</div><div class=\"options\" id=\"reminder-options\"></div><div class=\"muted-note\">目标工时 '+model.targetHours+' 小时；提醒关闭后会取消已预约的提前通知。</div><div class=\"actions\"><button class=\"secondary\" data-close>关闭</button><button class=\"primary\" id=\"save-settings\">保存配置</button></div><div class=\"field-title\">账户与工具</div><button class=\"tool-row\" id=\"account\"><span>账号配置</span><span>'+esc(model.accountLabel)+' ›</span></button><button class=\"tool-row\" id=\"more-tools\"><span>其他工具</span><span>›</span></button>');drawOptions()}function drawWidgetStyles(){var tabs=[['small','小号'],['medium','中号'],['large','大号']];$('style-size-tabs').innerHTML=tabs.map(function(x){return '<button class=\"style-tab '+(styleFamily===x[0]?'on':'')+'\" data-style-family=\"'+x[0]+'\">'+x[1]+'</button>'}).join('');var current=draft[styleKey(styleFamily)];var options=[['cyber','赛博仪表盘','霓虹科技 · HUD 进度','04:28','● ONLINE'],['fitness','Fitness 环形','三环进度 · 工时目标','04h32m','WORK RINGS'],['minimal','极简电子墨水','黑白排版 · 低干扰','04:28','REMAINING'],['heatmap','月历热力图','日期状态 · 连续分布','15 DAYS','MONTH VIEW']];$('widget-style-options').innerHTML=options.map(function(x){return '<button class=\"widget-style-card '+(current===x[0]?'on':'')+'\" data-widget-style=\"'+x[0]+'\"><div class=\"style-sample '+x[0]+'\"><b>'+x[3]+'</b><span>'+x[4]+'</span><i></i></div><strong>'+x[1]+'</strong><small>'+x[2]+'</small></button>'}).join('')}function drawOptions(){ $('theme-options').innerHTML=[['navy','深海蓝','#315fbd'],['teal','松石绿','#167e74'],['slate','岩灰','#5a637a']].map(function(x){return '<button class=\"option '+(draft.theme===x[0]?'on':'')+'\" data-theme-choice=\"'+x[0]+'\"><i class=\"swatch\" style=\"background:'+x[2]+'\"></i>'+x[1]+'</button>'}).join('');$('reminder-options').innerHTML=[5,15,30,45,60,0].map(function(x){return '<button class=\"option '+(draft.remindMinutes===x?'on':'')+'\" data-reminder=\"'+x+'\">'+(x?x+' 分钟':'关闭')+'</button>'}).join('');drawWidgetStyles()}function review(d){if(!d||!d.workday)return;draft={key:d.key,leaveHours:d.leaveHours||0};openModal('review','核查 '+d.key.slice(5),'<p class=\"sub\">原判：'+esc(d.originalStatus)+'</p><div class=\"detail-grid\">'+stats([['上班',d.clockIn],['下班',d.clockOut],['工时',d.worked]])+'</div><div class=\"actions\"><button class=\"primary\" data-quick-review=\"normal\">确认正常</button><button class=\"danger\" data-quick-review=\"abnormal\">确认异常</button></div><div class=\"field-title\">请假时长（可选）</div><input class=\"form-control\" id=\"hours\" type=\"number\" inputmode=\"decimal\" min=\"0\" max=\"'+model.targetHours+'\" step=\"any\" value=\"'+d.leaveHours+'\"><button class=\"secondary\" id=\"save-review\" style=\"margin-top:8px\">按请假时长判断</button>'+(d.reviewed?'<button class=\"secondary\" id=\"reset-review\" style=\"margin-top:8px\">恢复原判</button>':''))}function account(){openModal('account','账号配置','<p class=\"sub\">账户信息通过 Scriptable 钥匙串保存。不会向页面回传已有密码。</p><div class=\"field-title\">账号</div><input class=\"form-control\" id=\"username\" autocomplete=\"username\" value=\"'+esc(model.accountUsername)+'\"><div class=\"field-title\">密码</div><input class=\"form-control\" type=\"password\" id=\"password\" autocomplete=\"current-password\" placeholder=\"'+(model.accountConfigured?'留空保留原密码（同账号）':'输入密码')+'\"><div class=\"field-title\">设备 ID</div><input class=\"form-control\" id=\"device\" value=\"'+esc(model.accountDevice)+'\"><div class=\"actions\"><button class=\"secondary\" data-close>取消</button><button class=\"primary\" id=\"save-account\">保存账户</button></div>')}function tools(){openModal('tools','小组件与维护','<p class=\"sub\">使用原脚本的功能，组件预览及 Debug 可能弹出原生窗口。</p>'+[['previewSmall','预览小号小组件'],['previewMedium','预览中号小组件'],['previewLarge','预览大号组件'],['leave','离开公司检查'],['schedule9','预约工时提醒'],['near9','检查工时提醒'],['debug','Debug 信息'],['update','从 GitHub 更新脚本']].map(function(x){return '<button class=\"tool-row\" data-tool=\"'+x[0]+'\"><span>'+x[1]+'</span><span>›</span></button>'}).join('')+'<p class=\"muted-note\">GitHub 更新会覆盖本地代码；请先将新版提交至仓库。</p>')}function selectedDay(){return [].concat.apply([],model.weeks).find(function(d){return d&&d.key===selected})}function sendAndClose(action,data){emit(action,data);closeModal()}document.addEventListener('click',function(e){var b=e.target.closest('button');if(!b||b.disabled||!model)return;var ds=b.dataset;if(ds.day){selected=ds.day;render();if(ds.list){var d=selectedDay();if(d&&d.workday)review(d)}return}if(ds.filter){filter=ds.filter;render();return}if(ds.themeChoice){draft.theme=ds.themeChoice;drawOptions();return}if(ds.reminder!==undefined){draft.remindMinutes=Number(ds.reminder);drawOptions();return}if(ds.styleFamily){styleFamily=ds.styleFamily;drawWidgetStyles();return}if(ds.widgetStyle){draft[styleKey(styleFamily)]=ds.widgetStyle;drawWidgetStyles();return}if(ds.quickReview){sendAndClose('review',{key:draft.key,decision:ds.quickReview,leaveHours:draft.leaveHours});return}if(ds.close!==undefined||b.id==='close'){closeModal();return}if(ds.tool){if(ds.tool==='update'){openModal('update','确认更新','<p class=\"muted-note\">更新将覆盖本地脚本。确定仓库中已经包含这一版管理页？</p><div class=\"actions\"><button class=\"secondary\" data-close>取消</button><button class=\"primary\" id=\"confirm-update\">确认更新</button></div>')}else sendAndClose('tool',{name:ds.tool});return}switch(b.id){case 'settings':settings();break;case 'prev':emit('month',{offset:-1});break;case 'next':emit('month',{offset:1});break;case 'current':emit('month',{offset:0});break;case 'sync':emit('sync',{});break;case 'refresh':emit('refreshToday',{});break;case 'refresh-day':emit('refreshDay',{key:selected});break;case 'open-review':review(selectedDay());break;case 'save-settings':sendAndClose('settings',{theme:draft.theme,remindMinutes:draft.remindMinutes,widgetStyleSmall:draft.widgetStyleSmall,widgetStyleMedium:draft.widgetStyleMedium,widgetStyleLarge:draft.widgetStyleLarge,previewFamily:styleFamily,previewStyle:draft[styleKey(styleFamily)]});break;case 'preview-widget':emit('previewWidget',{family:styleFamily,style:draft[styleKey(styleFamily)]});break;case 'save-review':var val=$('hours').value;var h=Number(val);if(val===''||!Number.isFinite(h)||h<0||h>model.targetHours){toast('请输入有效的请假小时数');return}sendAndClose('review',{key:draft.key,decision:'auto',leaveHours:h});break;case 'reset-review':sendAndClose('resetReview',{key:draft.key});break;case 'account':account();break;case 'save-account':var u=$('username').value.trim(),p=$('password').value,dev=$('device').value.trim();if(!u||!dev||(!p&&(u!==model.accountUsername||!model.accountConfigured))){toast('请填写完整的账户资料');return}sendAndClose('account',{username:u,password:p,deviceId:dev});break;case 'more-tools':tools();break;case 'confirm-update':sendAndClose('tool',{name:'update'});break}});$('overlay').addEventListener('click',function(e){if(e.target===$('overlay'))closeModal()});document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal()});\n})();\n\n</script></body></html>\n"
+    return "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\"><title>考勤管理</title><style>\n:root{color-scheme:light dark;--bg:#f5f6f8;--card:#fff;--ink:#172033;--muted:#687487;--line:#e8ebf0;--soft:#f0f3f7;--accent:#315fbd;--accent-bg:#eaf1ff;--good:#087b5b;--good-bg:#e5f5ed;--bad:#b34534;--bad-bg:#fff0ec;--warn:#97600d;--warn-bg:#fff5dd;--radius:20px}*{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:-apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif;background:var(--bg);color:var(--ink);-webkit-tap-highlight-color:transparent}body[data-theme=teal]{--accent:#167e74;--accent-bg:#e3f5f1}body[data-theme=slate]{--accent:#5a637a;--accent-bg:#eef0f6}button,input,textarea{font:inherit}button{color:inherit;cursor:pointer;border:0;background:none}button:disabled{opacity:.35;cursor:default}button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}button:active:not(:disabled){transform:scale(.97)}.wrap{max-width:560px;margin:auto;padding:64px 16px 32px;padding-top:max(64px,calc(env(safe-area-inset-top) + 20px));padding-bottom:max(32px,env(safe-area-inset-bottom))}.top{display:flex;align-items:center;justify-content:space-between;margin:0 0 20px}.eyebrow{font-size:11px;letter-spacing:1.5px;font-weight:700;color:var(--muted);margin-bottom:5px}h1,h2,h3,p{margin:0}h1{font-size:30px;letter-spacing:-1.2px;font-weight:750}h2{font-size:18px;letter-spacing:-.3px}h3{font-size:15px}.icon-btn{width:44px;height:44px;display:grid;place-items:center;border:1px solid var(--line);background:var(--card);border-radius:15px;flex:none}.icon-btn svg{width:21px;height:21px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}.tools{display:flex;gap:8px}.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:16px;margin-bottom:12px;box-shadow:0 3px 12px #17203304}.hero{background:#17283f;color:#fff;border:none;padding:19px;position:relative;overflow:hidden}.hero::after{content:'';position:absolute;width:180px;height:180px;border:1px solid #ffffff15;border-radius:50%;right:-64px;top:-90px;box-shadow:0 0 0 24px #ffffff09,0 0 0 48px #ffffff06;pointer-events:none}.hero-top,.section-head,.month-head,.detail-top,.modal-head{display:flex;align-items:center;justify-content:space-between;gap:8px}.hero small{color:#b8c8de;font-size:12px}.hero-main{font-size:32px;font-weight:750;letter-spacing:-1px;margin:9px 0 4px;font-variant-numeric:tabular-nums}.hero .pill{color:#dceaff;background:#ffffff1e}.progress{height:6px;border-radius:20px;background:#ffffff20;margin:16px 0;overflow:hidden}.progress i{height:100%;display:block;background:#9ac2ff;border-radius:20px}.hero-grid,.metric-grid,.detail-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.hero-grid>div{border-left:1px solid #ffffff23;padding-left:10px}.hero-grid>div:first-child{border:0;padding:0}.hero-grid b{display:block;font-size:18px;margin-top:5px;font-variant-numeric:tabular-nums}.section-head{margin:20px 2px 10px}.sub{font-size:12px;color:var(--muted);line-height:1.5}.metric-grid{gap:7px;margin-bottom:12px}.metric{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:11px 5px;text-align:center;min-width:0}.metric b{display:block;font-size:25px;line-height:1.15;font-variant-numeric:tabular-nums}.metric small{display:block;font-size:11px;color:var(--muted);margin-top:4px}.metric[data-active=true]{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}.good-text{color:var(--good)}.bad-text{color:var(--bad)}.warn-text{color:var(--warn)}.month-head{margin-bottom:15px}.month-title{font-size:19px;font-weight:750;white-space:nowrap;letter-spacing:-.4px}.month-nav{display:flex;gap:5px;align-items:center}.month-nav button,.mini{padding:8px 10px;border-radius:10px;background:var(--soft);font-size:12px;font-weight:650;min-height:36px}.month-nav .arrow{font-size:21px;line-height:1;width:36px;padding:0}.week,.calendar{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:5px}.week{margin-bottom:7px}.week span{text-align:center;font-size:11px;color:var(--muted);font-weight:600;padding:4px 0}.day{min-width:0;min-height:49px;aspect-ratio:1 / 1.12;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;border:1px solid transparent;border-radius:12px;background:var(--soft);padding:3px 0;font-variant-numeric:tabular-nums;position:relative}.day b{font-size:16px;line-height:1.1}.day em{font-style:normal;font-size:9px;line-height:1;white-space:nowrap}.day.normal{background:var(--good-bg);color:var(--good)}.day.warning{background:var(--warn-bg);color:var(--warn)}.day.abnormal{background:var(--bad-bg);color:var(--bad)}.day.active{background:var(--accent-bg);color:var(--accent)}.day.pending{background:var(--soft);color:var(--muted);border:1px dashed var(--line)}.day.rest{background:transparent;color:var(--muted)}.day.future{background:transparent;color:var(--muted);opacity:.48}.day.selected{outline:2px solid var(--accent);outline-offset:-2px}.day.today:after{content:'';position:absolute;right:5px;top:5px;width:5px;height:5px;background:var(--accent);border-radius:50%}.legend{display:flex;flex-wrap:wrap;gap:10px 13px;margin-top:14px;padding-top:12px;border-top:1px solid var(--line);font-size:11px;color:var(--muted)}.legend span{display:flex;align-items:center;gap:4px}.dot{width:8px;height:8px;border-radius:3px;background:var(--soft);border:1px solid var(--line)}.dot.normal{background:var(--good)}.dot.warning{background:var(--warn)}.dot.abnormal{background:var(--bad)}.dot.active{background:var(--accent)}.pill{display:inline-flex;align-items:center;padding:5px 9px;border-radius:9px;font-size:11px;font-weight:650;white-space:nowrap;background:var(--soft);color:var(--muted)}.pill.normal{background:var(--good-bg);color:var(--good)}.pill.warning{background:var(--warn-bg);color:var(--warn)}.pill.abnormal{background:var(--bad-bg);color:var(--bad)}.pill.active{background:var(--accent-bg);color:var(--accent)}.detail-grid{margin:13px 0;gap:6px}.detail-grid div{background:var(--soft);padding:11px 5px;border-radius:12px;text-align:center;min-width:0}.detail-grid small{display:block;color:var(--muted);font-size:11px;margin-bottom:6px}.detail-grid b{font-size:17px;white-space:nowrap;letter-spacing:-.4px;font-variant-numeric:tabular-nums}.line{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:9px 0;border-top:1px solid var(--line);font-size:13px}.line span:first-child{color:var(--muted);flex:none}.line span:last-child{text-align:right;overflow-wrap:anywhere}.primary,.secondary,.danger{width:100%;min-height:44px;border-radius:13px;padding:10px 13px;font-size:14px;font-weight:650;background:var(--accent);color:#fff}.secondary{background:var(--soft);color:var(--ink)}.danger{background:var(--bad-bg);color:var(--bad)}.actions{display:flex;gap:8px;margin-top:12px}.actions>*{flex:1}.review-list{padding:0 14px}.review-row{display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:12px 0;border-bottom:1px solid var(--line)}.review-row:last-child{border:0}.date-chip{background:var(--soft);border-radius:11px;min-width:45px;padding:8px 4px;text-align:center;font-size:12px;font-weight:700}.review-row .grow{flex:1;min-width:0}.review-row strong{font-size:13px;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.review-row small{display:block;font-size:11px;color:var(--muted);margin-top:4px}.chevron{color:var(--muted);font-size:20px}.empty{padding:19px 8px;text-align:center;font-size:13px;color:var(--muted)}.sync{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:0 3px;margin:0 0 10px}.sync span{font-size:12px;color:var(--muted);overflow-wrap:anywhere}.overlay{position:fixed;inset:0;z-index:10;background:#101b326e;display:flex;align-items:center;justify-content:center;padding:64px 16px 16px;padding-top:max(64px,calc(env(safe-area-inset-top) + 20px));padding-bottom:max(16px,env(safe-area-inset-bottom));overflow:auto}.overlay[hidden]{display:none!important}.modal{max-width:440px;width:100%;max-height:calc(100vh - 80px);max-height:100%;overflow:auto;background:var(--card);border-radius:24px;padding:20px;box-shadow:0 16px 64px #0003;overscroll-behavior:contain}.modal-head{margin-bottom:16px}.close{width:34px;height:34px;border-radius:50%;background:var(--soft);font-size:21px;color:var(--muted);flex:none}.field-title{font-size:13px;font-weight:700;margin:16px 0 9px}.options{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}.style-tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin:8px 0}.style-tab{min-height:36px;border-radius:11px;background:var(--soft);font-size:12px;font-weight:700}.style-tab.on{background:var(--accent-bg);color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}.widget-style-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.widget-style-card{min-width:0;text-align:left;border:1px solid var(--line);border-radius:14px;background:var(--card);padding:8px}.widget-style-card.on{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent);background:var(--accent-bg)}.widget-style-card strong{display:block;font-size:12px;margin-top:7px}.widget-style-card small{display:block;font-size:10px;color:var(--muted);margin-top:3px}.style-sample{height:55px;border-radius:9px;padding:8px;display:flex;flex-direction:column;justify-content:center;gap:5px;overflow:hidden}.style-sample b{font-size:18px;line-height:1}.style-sample span{font-size:8px;letter-spacing:.7px}.style-sample i{height:4px;border-radius:4px;display:block;background:#ffffff30;overflow:hidden}.style-sample i:after{content:'';display:block;width:52%;height:100%;background:currentColor;border-radius:4px}.style-sample.cyber{background:#071321;color:#54E6DC}.style-sample.fitness{background:#0C1017;color:#B9F36A;align-items:center;position:relative}.style-sample.fitness:before{content:'';width:35px;height:35px;border-radius:50%;border:4px solid #B9F36A;border-right-color:#FF8176;border-bottom-color:#63B9FF;position:absolute;right:10px;top:9px}.style-sample.minimal{background:#F2F2EC;color:#171A18}.style-sample.heatmap{background:#0C1724;color:#F3F7FB}.style-sample.heatmap i{height:8px;background:linear-gradient(90deg,#26715E 0 12%,#A16530 12% 24%,#26715E 24% 52%,#344A60 52% 64%,#26715E 64% 100%)}.style-preview{margin-top:9px}.option{background:var(--soft);border:1px solid transparent;border-radius:12px;min-height:40px;font-size:12px;font-weight:600;padding:8px 4px}.option.on{background:var(--accent-bg);border-color:var(--accent);color:var(--accent)}.swatch{display:block;width:24px;height:24px;border-radius:9px;margin:0 auto 5px}.form-control{width:100%;border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:12px;padding:11px;font-size:16px;min-height:44px}.form-control+ .form-control{margin-top:8px}textarea.form-control{resize:vertical;min-height:76px}.muted-note{font-size:12px;color:var(--muted);line-height:1.6;margin-top:9px}.tool-row{width:100%;display:flex;justify-content:space-between;align-items:center;text-align:left;padding:13px 0;border-top:1px solid var(--line);font-size:14px}.tool-row span:last-child{color:var(--muted)}.toast{position:fixed;bottom:max(20px,env(safe-area-inset-bottom));left:50%;transform:translateX(-50%);background:#17283f;color:white;padding:12px 18px;border-radius:13px;z-index:20;font-size:13px;max-width:90%;width:max-content;box-shadow:0 5px 20px #0003}.toast[hidden]{display:none}.filter{display:flex;gap:5px;overflow:auto;margin-bottom:8px}.filter button{white-space:nowrap}.filter .on{background:var(--accent-bg);color:var(--accent)}@media(max-width:350px){.wrap{padding-left:10px;padding-right:10px}.card{padding:12px}.week,.calendar{gap:3px}.day{min-height:42px;border-radius:9px}.day em{font-size:8px}.month-title{font-size:17px}.month-nav{gap:3px}.month-nav button{padding:6px}.month-nav .arrow{width:31px}}@media(prefers-color-scheme:dark){:root{--bg:#11141b;--card:#1b202a;--ink:#e9edf4;--muted:#a1aec0;--line:#303745;--soft:#262e3a;--accent:#91b4ff;--accent-bg:#283b5b;--good:#75d7b3;--good-bg:#19382e;--bad:#ffad9e;--bad-bg:#452a2a;--warn:#f4c477;--warn-bg:#413525}.primary{color:#101a2a}body[data-theme=teal]{--accent:#77d8c6;--accent-bg:#20413d}body[data-theme=slate]{--accent:#bac5da;--accent-bg:#343e51}}\n#boot-status[hidden]{display:none!important}#boot-status{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.6}#boot-status[data-error]{color:var(--bad)}.boot-card{display:flex;align-items:center;gap:10px;min-height:52px;color:var(--muted)}.boot-dot{width:9px;height:9px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 5px var(--accent-bg);flex:none}\n</style></head><body><main class=\"wrap\"><header class=\"top\"><div><div class=\"eyebrow\">考勤 · 管理工作台</div><h1>考勤管理</h1></div><div class=\"tools\"><button class=\"icon-btn\" id=\"refresh\" aria-label=\"同步考勤\"><svg viewBox=\"0 0 24 24\"><path d=\"M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7\"/></svg></button><button class=\"icon-btn\" id=\"settings\" aria-label=\"考勤配置\"><svg viewBox=\"0 0 24 24\"><path d=\"M4 7h16M4 17h16\"/><circle cx=\"9\" cy=\"7\" r=\"2.5\" fill=\"var(--card)\"/><circle cx=\"15\" cy=\"17\" r=\"2.5\" fill=\"var(--card)\"/></svg></button></div></header><div class=\"card boot-card\" id=\"boot-status\" role=\"status\"><span class=\"boot-dot\"></span><span id=\"boot-message\">正在加载考勤数据…</span></div><div id=\"hero\"></div><div class=\"section-head\"><h2>月度考勤</h2><span class=\"sub\" id=\"month-summary\"></span></div><div class=\"metric-grid\" id=\"metrics\"></div><div class=\"sync\"><span id=\"sync-status\" role=\"status\"></span><button class=\"mini\" id=\"sync\">补查本月</button></div><section class=\"card\"><div class=\"month-head\"><div class=\"month-title\" id=\"month-title\"></div><div class=\"month-nav\"><button class=\"arrow\" id=\"prev\" aria-label=\"上月\">‹</button><button id=\"current\">本月</button><button class=\"arrow\" id=\"next\" aria-label=\"下月\">›</button></div></div><div class=\"week\"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span></div><div class=\"calendar\" id=\"calendar\"></div><div class=\"legend\"><span><i class=\"dot normal\"></i>正常</span><span><i class=\"dot warning\"></i>待核查</span><span><i class=\"dot abnormal\"></i>确认异常</span><span><i class=\"dot active\"></i>进行中</span><span><i class=\"dot\"></i>待查 / 休息</span></div></section><div id=\"detail\"></div><section class=\"card\" id=\"averages\"></section><div class=\"section-head\"><h2>考勤核查</h2><span class=\"sub\">仅影响本机判定</span></div><div class=\"filter\" id=\"filters\"></div><section class=\"card review-list\" id=\"review-list\"></section><p class=\"muted-note\" style=\"text-align:center\">考勤助手 · 本机核查不修改企业原始工卡</p></main><div class=\"overlay\" id=\"overlay\" hidden><section class=\"modal\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"modal-title\"><div class=\"modal-head\"><h2 id=\"modal-title\"></h2><button class=\"close\" id=\"close\" aria-label=\"关闭弹窗\">×</button></div><div id=\"modal-content\"></div></section></div><div class=\"toast\" id=\"toast\" role=\"status\" hidden></div><script>\nwindow.__attendanceReady=false;\nwindow.__attendanceRendered=false;\nwindow.attendanceBootError=function(message){var el=document.getElementById('boot-status');if(el){el.hidden=false;el.setAttribute('data-error','1');el.textContent='管理页面初始化失败：'+String(message)+'。请关闭后重新打开；也可在返回菜单后使用“原生考勤管理”。'}};\nwindow.addEventListener('error',function(e){window.attendanceBootError(e.message||'未知脚本错误')});\nwindow.addEventListener('unhandledrejection',function(e){window.attendanceBootError(e.reason&&e.reason.message||e.reason||'未知异步错误')});\nwindow.addEventListener('DOMContentLoaded',function(){window.__attendanceDomReady=true});\n</script><script>\n(function(){'use strict';var model=null,selected='',filter='todo',queue=[],modalType='',draft=null,toastTimer=null;var $=function(id){return document.getElementById(id)};var esc=function(v){return String(v==null?'':v).replace(/[&<>\"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]})};var statusNames={normal:'正常',warning:'待核查',abnormal:'确认异常',active:'进行中',pending:'待查',rest:'休息',future:'未到'};var tags={normal:'正常',warning:'待核',abnormal:'异常',active:'进行',pending:'待查',rest:'休',future:''};function emit(action,data){queue.push({action:action,data:data||{}})}window.takeAttendanceAction=function(){return 'AH5:'+JSON.stringify(queue.length?queue.shift():{action:'idle'})};function toast(t){if(!t)return;$('toast').textContent=t;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(function(){$('toast').hidden=true},3600)}window.attendanceToast=toast;function pill(d){return '<span class=\"pill '+esc(d.uiState)+'\">'+esc(statusNames[d.uiState]||d.status)+'</span>'}function metric(n,l,f,c){return '<button class=\"metric\" data-filter=\"'+f+'\" data-active=\"'+(filter===f)+'\"><b class=\"'+c+'\">'+n+'</b><small>'+l+'</small></button>'}function stats(items){return items.map(function(x){return '<div><small>'+esc(x[0])+'</small><b>'+esc(x[1])+'</b></div>'}).join('')}function line(k,v){return '<div class=\"line\"><span>'+esc(k)+'</span><span>'+esc(v)+'</span></div>'}function render(){if(!model)return;document.body.dataset.theme=model.preferences.theme;var t=model.today;var weeks=model.weeks;var days=[].concat.apply([],weeks).filter(Boolean);var done=days.filter(function(d){return d.uiState==='normal'}).length;var todo=days.filter(function(d){return d.uiState==='warning'}).length;var bad=days.filter(function(d){return d.uiState==='abnormal'}).length;var pending=days.filter(function(d){return d.uiState==='pending'}).length;var active=days.filter(function(d){return d.uiState==='active'}).length;$('hero').innerHTML='<section class=\"card hero\"><div class=\"hero-top\"><small>今日 · '+esc(model.todayKey)+'</small><span class=\"pill\">'+esc(t.status)+'</span></div><div class=\"hero-main\">'+esc(t.headline)+'</div><small>'+esc(t.subtitle)+'</small><div class=\"progress\" role=\"progressbar\" aria-valuenow=\"'+t.progress+'\" aria-valuemin=\"0\" aria-valuemax=\"100\"><i style=\"width:'+t.progress+'%\"></i></div><div class=\"hero-grid\">'+stats([['上班',t.clockIn],['下班',t.clockOut],['达标时间',t.target]])+'</div></section>';$('month-summary').textContent='待查 '+pending+' · 进行中 '+active;$('metrics').innerHTML=metric(done,'正常','normal','good-text')+metric(todo,'待核查','todo','warn-text')+metric(bad,'确认异常','abnormal','bad-text');$('month-title').textContent=model.monthLabel;$('next').disabled=!model.canNext;$('prev').disabled=!model.canPrev;$('current').disabled=model.month===model.currentMonth;$('sync-status').textContent=model.syncText;$('sync').disabled=model.busy||!model.canSync;$('refresh').disabled=model.busy||!model.canSync;$('sync').textContent=model.busy?'同步中…':'补查本月';$('calendar').innerHTML=[].concat.apply([],weeks).map(function(d){if(!d)return '<div></div>';return '<button class=\"day '+d.uiState+(selected===d.key?' selected':'')+(d.key===model.todayKey?' today':'')+'\" data-day=\"'+d.key+'\" aria-label=\"'+esc(d.key+' '+d.status)+'\" '+(d.uiState==='future'?'disabled':'')+'><b>'+Number(d.key.slice(-2))+'</b><em>'+esc(tags[d.uiState])+'</em></button>'}).join('');var d=days.find(function(x){return x.key===selected});$('detail').innerHTML=d&&d.uiState!=='future'?'<section class=\"card\"><div class=\"detail-top\"><h2>'+esc(d.key.slice(5).replace('-',' 月 ')+' 日')+'</h2>'+pill(d)+'</div><div class=\"detail-grid\">'+stats([['上班',d.clockIn],['下班',d.clockOut],['实际工时',d.worked]])+'</div>'+line('系统原判',d.originalStatus)+line('本机判定',d.status)+(d.outSwipe!==d.clockOut?line('原始离场卡',d.outSwipe):'')+(d.leaveHours?line('已批准请假',d.leaveHours+' 小时'):'')+'<div class=\"actions\">'+(d.workday?'<button class=\"primary\" id=\"open-review\">核查与修正</button>':'')+'<button class=\"secondary\" id=\"refresh-day\" '+(model.busy||!model.canSync?'disabled':'')+'>查询此日</button></div></section>':'';$('averages').innerHTML='<div class=\"section-head\" style=\"margin:0 0 10px\"><h3>月度统计</h3><span class=\"sub\">仅统计有效工卡</span></div><div class=\"detail-grid\" style=\"margin:0\">'+stats([['平均上班',model.average.in],['平均下班',model.average.out],['平均工时',model.average.worked]])+'</div>';$('filters').innerHTML=[['todo','待核查'],['abnormal','确认异常'],['reviewed','已核实'],['pending','待查'],['all','全部']].map(function(x){return '<button class=\"mini '+(filter===x[0]?'on':'')+'\" data-filter=\"'+x[0]+'\">'+x[1]+'</button>'}).join('');var list=days.filter(function(d){if(d.uiState==='future')return false;switch(filter){case 'todo':return d.uiState==='warning';case 'abnormal':return d.uiState==='abnormal';case 'reviewed':return d.reviewed;case 'normal':return d.uiState==='normal';case 'pending':return d.uiState==='pending';default:return d.workday||d.reviewed}}).reverse();$('review-list').innerHTML=list.length?list.map(function(d){return '<button class=\"review-row\" data-day=\"'+d.key+'\" data-list=\"1\"><span class=\"date-chip\">'+d.key.slice(5).replace('-','/')+'</span><span class=\"grow\"><strong>'+esc(d.status)+'</strong><small>'+esc(d.clockIn+' – '+d.clockOut+' · '+d.worked)+'</small></span>'+pill(d)+'<span class=\"chevron\">›</span></button>'}).join(''):'<div class=\"empty\">暂无此类记录</div>'}window.setAttendanceModel=function(m){try{var old=model&&model.month;model=m;if(old!==m.month||!selected)selected=m.selected;render();var boot=$('boot-status');if(boot)boot.hidden=true;window.__attendanceRendered=true;return true}catch(error){window.attendanceBootError(error&&error.message||error);throw error}};function closeModal(){modalType='';draft=null;$('overlay').hidden=true;document.body.style.overflow='';$('modal-content').innerHTML=''}function openModal(type,title,html){modalType=type;$('modal-title').textContent=title;$('modal-content').innerHTML=html;$('overlay').hidden=false;document.body.style.overflow='hidden'}var styleFamily='medium';function styleKey(family){return family==='small'?'widgetStyleSmall':family==='large'?'widgetStyleLarge':'widgetStyleMedium'}function settings(){draft={theme:model.preferences.theme,remindMinutes:model.preferences.remindMinutes,widgetStyleSmall:model.preferences.widgetStyleSmall,widgetStyleMedium:model.preferences.widgetStyleMedium,widgetStyleLarge:model.preferences.widgetStyleLarge};styleFamily='medium';openModal('settings','考勤配置','<p class=\"sub\">组件样式按尺寸独立保存；修改后会预览当前尺寸，桌面组件下次刷新生效。</p><div class=\"field-title\">小组件样式</div><div class=\"style-tabs\" id=\"style-size-tabs\"></div><div class=\"widget-style-grid\" id=\"widget-style-options\"></div><button class=\"secondary style-preview\" id=\"preview-widget\">预览当前尺寸</button><div class=\"field-title\">组件配色</div><div class=\"options\" id=\"theme-options\"></div><div class=\"field-title\">提前下班提醒</div><div class=\"options\" id=\"reminder-options\"></div><div class=\"muted-note\">目标工时 '+model.targetHours+' 小时；提醒关闭后会取消已预约的提前通知。</div><div class=\"actions\"><button class=\"secondary\" data-close>关闭</button><button class=\"primary\" id=\"save-settings\">保存配置</button></div><div class=\"field-title\">账户与工具</div><button class=\"tool-row\" id=\"account\"><span>账号配置</span><span>'+esc(model.accountLabel)+' ›</span></button><button class=\"tool-row\" id=\"more-tools\"><span>其他工具</span><span>›</span></button>');drawOptions()}function drawWidgetStyles(){var tabs=[['small','小号'],['medium','中号'],['large','大号']];$('style-size-tabs').innerHTML=tabs.map(function(x){return '<button class=\"style-tab '+(styleFamily===x[0]?'on':'')+'\" data-style-family=\"'+x[0]+'\">'+x[1]+'</button>'}).join('');var current=draft[styleKey(styleFamily)];var options=[['cyber','赛博控制台','霓虹仪表 · 工时倒计时','04:28','运行中'],['fitness','运动环形','目标进度 · 工时累计','04h32m','目标进度'],['minimal','极简工时账本','清晰排版 · 每日记录','04:28','剩余工时'],['heatmap','月历热力图','整月状态 · 一目了然','15 天','本月考勤']];$('widget-style-options').innerHTML=options.map(function(x){return '<button class=\"widget-style-card '+(current===x[0]?'on':'')+'\" data-widget-style=\"'+x[0]+'\"><div class=\"style-sample '+x[0]+'\"><b>'+x[3]+'</b><span>'+x[4]+'</span><i></i></div><strong>'+x[1]+'</strong><small>'+x[2]+'</small></button>'}).join('')}function drawOptions(){ $('theme-options').innerHTML=[['navy','深海蓝','#315fbd'],['teal','松石绿','#167e74'],['slate','岩灰','#5a637a']].map(function(x){return '<button class=\"option '+(draft.theme===x[0]?'on':'')+'\" data-theme-choice=\"'+x[0]+'\"><i class=\"swatch\" style=\"background:'+x[2]+'\"></i>'+x[1]+'</button>'}).join('');$('reminder-options').innerHTML=[5,15,30,45,60,0].map(function(x){return '<button class=\"option '+(draft.remindMinutes===x?'on':'')+'\" data-reminder=\"'+x+'\">'+(x?x+' 分钟':'关闭')+'</button>'}).join('');drawWidgetStyles()}function review(d){if(!d||!d.workday)return;draft={key:d.key,leaveHours:d.leaveHours||0};openModal('review','核查 '+d.key.slice(5),'<p class=\"sub\">原判：'+esc(d.originalStatus)+'</p><div class=\"detail-grid\">'+stats([['上班',d.clockIn],['下班',d.clockOut],['工时',d.worked]])+'</div><div class=\"actions\"><button class=\"primary\" data-quick-review=\"normal\">确认正常</button><button class=\"danger\" data-quick-review=\"abnormal\">确认异常</button></div><div class=\"field-title\">请假时长（可选）</div><input class=\"form-control\" id=\"hours\" type=\"number\" inputmode=\"decimal\" min=\"0\" max=\"'+model.targetHours+'\" step=\"any\" value=\"'+d.leaveHours+'\"><button class=\"secondary\" id=\"save-review\" style=\"margin-top:8px\">按请假时长判断</button>'+(d.reviewed?'<button class=\"secondary\" id=\"reset-review\" style=\"margin-top:8px\">恢复原判</button>':''))}function account(){openModal('account','账号配置','<p class=\"sub\">账户信息通过 Scriptable 钥匙串保存。不会向页面回传已有密码。</p><div class=\"field-title\">账号</div><input class=\"form-control\" id=\"username\" autocomplete=\"username\" value=\"'+esc(model.accountUsername)+'\"><div class=\"field-title\">密码</div><input class=\"form-control\" type=\"password\" id=\"password\" autocomplete=\"current-password\" placeholder=\"'+(model.accountConfigured?'留空保留原密码（同账号）':'输入密码')+'\"><div class=\"field-title\">设备 ID</div><input class=\"form-control\" id=\"device\" value=\"'+esc(model.accountDevice)+'\"><div class=\"actions\"><button class=\"secondary\" data-close>取消</button><button class=\"primary\" id=\"save-account\">保存账户</button></div>')}function tools(){openModal('tools','小组件与维护','<p class=\"sub\">使用原脚本的功能，组件预览及 诊断 可能弹出原生窗口。</p>'+[['previewSmall','预览小号小组件'],['previewMedium','预览中号小组件'],['previewLarge','预览大号组件'],['leave','离开公司检查'],['schedule9','预约工时提醒'],['near9','检查工时提醒'],['debug','诊断信息'],['update','从 GitHub 更新脚本']].map(function(x){return '<button class=\"tool-row\" data-tool=\"'+x[0]+'\"><span>'+x[1]+'</span><span>›</span></button>'}).join('')+'<p class=\"muted-note\">GitHub 更新会覆盖本地代码；请先将新版提交至仓库。</p>')}function selectedDay(){return [].concat.apply([],model.weeks).find(function(d){return d&&d.key===selected})}function sendAndClose(action,data){emit(action,data);closeModal()}document.addEventListener('click',function(e){var b=e.target.closest('button');if(!b||b.disabled||!model)return;var ds=b.dataset;if(ds.day){selected=ds.day;render();if(ds.list){var d=selectedDay();if(d&&d.workday)review(d)}return}if(ds.filter){filter=ds.filter;render();return}if(ds.themeChoice){draft.theme=ds.themeChoice;drawOptions();return}if(ds.reminder!==undefined){draft.remindMinutes=Number(ds.reminder);drawOptions();return}if(ds.styleFamily){styleFamily=ds.styleFamily;drawWidgetStyles();return}if(ds.widgetStyle){draft[styleKey(styleFamily)]=ds.widgetStyle;drawWidgetStyles();return}if(ds.quickReview){sendAndClose('review',{key:draft.key,decision:ds.quickReview,leaveHours:draft.leaveHours});return}if(ds.close!==undefined||b.id==='close'){closeModal();return}if(ds.tool){if(ds.tool==='update'){openModal('update','确认更新','<p class=\"muted-note\">更新将覆盖本地脚本。确定仓库中已经包含这一版管理页？</p><div class=\"actions\"><button class=\"secondary\" data-close>取消</button><button class=\"primary\" id=\"confirm-update\">确认更新</button></div>')}else sendAndClose('tool',{name:ds.tool});return}switch(b.id){case 'settings':settings();break;case 'prev':emit('month',{offset:-1});break;case 'next':emit('month',{offset:1});break;case 'current':emit('month',{offset:0});break;case 'sync':emit('sync',{});break;case 'refresh':emit('refreshToday',{});break;case 'refresh-day':emit('refreshDay',{key:selected});break;case 'open-review':review(selectedDay());break;case 'save-settings':sendAndClose('settings',{theme:draft.theme,remindMinutes:draft.remindMinutes,widgetStyleSmall:draft.widgetStyleSmall,widgetStyleMedium:draft.widgetStyleMedium,widgetStyleLarge:draft.widgetStyleLarge,previewFamily:styleFamily,previewStyle:draft[styleKey(styleFamily)]});break;case 'preview-widget':emit('previewWidget',{family:styleFamily,style:draft[styleKey(styleFamily)]});break;case 'save-review':var val=$('hours').value;var h=Number(val);if(val===''||!Number.isFinite(h)||h<0||h>model.targetHours){toast('请输入有效的请假小时数');return}sendAndClose('review',{key:draft.key,decision:'auto',leaveHours:h});break;case 'reset-review':sendAndClose('resetReview',{key:draft.key});break;case 'account':account();break;case 'save-account':var u=$('username').value.trim(),p=$('password').value,dev=$('device').value.trim();if(!u||!dev||(!p&&(u!==model.accountUsername||!model.accountConfigured))){toast('请填写完整的账户资料');return}sendAndClose('account',{username:u,password:p,deviceId:dev});break;case 'more-tools':tools();break;case 'confirm-update':sendAndClose('tool',{name:'update'});break}});$('overlay').addEventListener('click',function(e){if(e.target===$('overlay'))closeModal()});document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal()});\nwindow.__attendanceReady=true;\nwindow.__attendanceReadyAt=Date.now();\n})();\n\n</script></body></html>\n"
 }
 
 
@@ -4121,7 +4248,7 @@ async function presentAttendanceSettings() {
         const menu = new Alert()
         menu.title = "考勤设置"
         menu.message = "组件主题：" + themeName + "\n提前提醒：" + reminderName + "\n\n选择要调整的项目"
-        const styleLabels = { cyber: "赛博控制台", fitness: "Fitness 活动环", minimal: "极简工时账本", heatmap: "贡献热力图" }
+        const styleLabels = { cyber: "赛博控制台", fitness: "运动环形", minimal: "极简工时账本", heatmap: "月历热力图" }
         menu.message += "\n小号：" + styleLabels[preferences.widgetStyleSmall]
             + "\n中号：" + styleLabels[preferences.widgetStyleMedium]
             + "\n大号：" + styleLabels[preferences.widgetStyleLarge]
@@ -4183,7 +4310,7 @@ async function presentAttendanceSettings() {
             const key = widgetStyleKey(family)
             const stylePicker = new Alert()
             stylePicker.title = families[familyIndex][1] + "组件样式"
-            const styleOptions = [["cyber", "赛博控制台"], ["fitness", "Fitness 活动环"], ["minimal", "极简工时账本"], ["heatmap", "贡献热力图"]]
+            const styleOptions = [["cyber", "赛博控制台"], ["fitness", "运动环形"], ["minimal", "极简工时账本"], ["heatmap", "月历热力图"]]
             styleOptions.forEach(item => stylePicker.addAction((preferences[key] === item[0] ? "✓  " : "") + item[1]))
             stylePicker.addCancelAction("返回")
             const styleIndex = await stylePicker.presentSheet()
