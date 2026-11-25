@@ -102,7 +102,7 @@ function TodayTab({ data, palette, loading, onRefresh, statusMessage, isWorkday,
         </VStack>
         <Spacer />
         <VStack spacing={3} alignment="trailing">
-          <StatusBadge text={status} color={missingCheckout(data) ? "systemRed" : data?.hasOutRecord && data.targetReached ? palette.normal : palette.accent} />
+          <StatusBadge text={status} color={missingCheckout(data) || (data?.hasOutRecord && !data.targetReached) ? "systemRed" : data?.hasOutRecord && data.targetReached ? palette.normal : palette.accent} />
           <Button title={loading ? "同步中…" : "刷新"} buttonStyle="bordered" action={onRefresh} disabled={loading} />
         </VStack>
       </HStack>
@@ -129,7 +129,7 @@ function TodayTab({ data, palette, loading, onRefresh, statusMessage, isWorkday,
         <Spacer />
         <VStack spacing={3} alignment="leading">
           <Text font="caption2" foregroundStyle="secondaryLabel">下班卡</Text>
-          <Text font="headline">{data?.hasOutRecord ? formatTime(data.latestOutTime) : "未打"}</Text>
+          <Text font="headline" foregroundStyle={missingCheckout(data) ? "systemRed" : "primaryLabel"}>{data?.hasOutRecord ? formatTime(data.latestOutTime) : "未打"}</Text>
         </VStack>
       </HStack>
       {data?.refreshError

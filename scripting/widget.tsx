@@ -46,7 +46,7 @@ function Countdown({ data, palette }) {
     return <Text font="title2" foregroundStyle={palette.text}>等待上班卡</Text>;
   }
   if (data.hasOutRecord) {
-    return <Text font="title2" foregroundStyle={data.targetReached ? "#22C55E" : "#F0A45D"}>{data.targetReached ? "考勤正常" : "工时不足"}</Text>;
+    return <Text font="title2" foregroundStyle={data.targetReached ? "#22C55E" : "#EF4444"}>{data.targetReached ? "考勤正常" : "工时不足"}</Text>;
   }
   if (missingCheckout(data)) {
     return <Text font="title2" foregroundStyle="#EF4444">{checkoutWarningTitle(data)}</Text>;
