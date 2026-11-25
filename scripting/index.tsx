@@ -11,7 +11,7 @@ async function runAction(action) {
     const data = await getTodaySummary({ force: true });
     if (data.ok) {
       await syncAttendanceLiveActivity(data);
-      if (getPreferences().remindMinutes > 0 && data.hasClockIn && !data.hasOutRecord) {
+      if (data.hasClockIn) {
         await handleScheduleNineHours();
       }
     }
