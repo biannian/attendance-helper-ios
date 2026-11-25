@@ -3,7 +3,7 @@ import { Notification } from "scripting";
 import { CONFIG } from "./config";
 import { getPreferences } from "./store";
 import { getTodaySummary, isChinaWorkday } from "./attendance";
-import { formatDateKey, formatRemainTitle, formatTime } from "./rules";
+import { formatDateKey, formatRemainTitle, formatTime, missingCheckout } from "./rules";
 
 async function sendNotification(title, body, identifier) {
   await Notification.schedule({
@@ -27,17 +27,13 @@ function notifyTimes(data) {
 }
 
 export async function cancelUpcomingReminder() {
-  try { await Notification.removePendings(["attendance-helper-upcoming-work"]); } catch (_) {}
+  try { await Notification.removePendings(["attendance-helper-upcoming-work", "attendance-helper-checkout-due"]); } catch (_) {}
 }
 
 export async function handleScheduleNineHours() {
   const preferences = getPreferences();
   const minutes = preferences.remindMinutes;
   const dateKey = formatDateKey(new Date());
-  if (!minutes) {
-    await cancelUpcomingReminder();
-    return { ok: true, message: "提前下班提醒已关闭" };
-  }
   if (!(await isChinaWorkday(new Date()))) return { ok: true, message: "今天是休息日" };
 
   const data = await getTodaySummary({ force: true });
@@ -49,14 +45,18 @@ export async function handleScheduleNineHours() {
     await sendNotification("今天还没有上班卡", "同步后会自动安排提前下班提醒");
     return { ok: true, message: "尚未打上班卡" };
   }
-  if (data.hasOutRecord || data.targetReached) {
+  if (data.hasOutRecord) {
     await cancelUpcomingReminder();
-    return { ok: true, message: "今天已经达到下班条件" };
+    return { ok: true, message: "已检测到下班卡", data };
   }
+  if (missingCheckout(data)) return handleNearNineHours(data);
+  // The deadline notification is independent of optional advance reminders.
+  await Notification.schedule({ identifier: "attendance-helper-checkout-due", title: "⚠ 下班时间到了，请确认下班卡", subtitle: "请打卡并刷新考勤确认", trigger: new TimeIntervalNotificationTrigger({ timeInterval: Math.max(1, Math.ceil((data.targetTime.getTime()-Date.now())/1000)), repeats: false }) });
+  if (!minutes) return { ok: true, message: "已安排下班打卡提醒", data };
 
   if (Storage.get("attendance-helper-schedule9-" + dateKey)) return { ok: true, message: "今日提醒已安排", data };
   const remindAt = new Date(data.targetTime.getTime() - minutes * 60000);
-  await cancelUpcomingReminder();
+  await Notification.removePendings(["attendance-helper-upcoming-work"]);
   if (remindAt <= new Date()) {
     await sendNotification(formatRemainTitle(data.remainingMinutes), notifyTimes(data));
   } else {
@@ -74,20 +74,21 @@ export async function handleScheduleNineHours() {
   return { ok: true, message: "已安排提前 " + minutes + " 分钟提醒" };
 }
 
-export async function handleNearNineHours() {
+export async function handleNearNineHours(existingData) {
   if (!(await isChinaWorkday(new Date()))) return { ok: true, message: "今天是休息日" };
-  const data = await getTodaySummary({ force: true });
+  const data = existingData || await getTodaySummary({ force: true });
   if (!data.ok || !data.hasClockIn) return { ok: false, error: data.error || "尚未打上班卡" };
 
   const dateKey = formatDateKey(new Date());
   const preferences = getPreferences();
   if (data.targetReached) {
-    const key = "attendance-helper-target-reached-" + dateKey;
+    if (data.hasOutRecord) await cancelUpcomingReminder();
+    const key = "attendance-helper-target-reached-" + dateKey + (data.hasOutRecord ? "-done" : data.missedConfirmed ? "-correction" : "-missing");
     if (!Storage.get(key)) {
-      await sendNotification(data.hasOutRecord ? "已打下班卡" : "已到下班时间，请打卡", notifyTimes(data), key);
+      await sendNotification(data.hasOutRecord ? "考勤正常 · 已打下班卡" : data.missedConfirmed ? "⚠ 已漏卡，请申请补卡" : "⚠ 未打下班卡！请立即打卡", notifyTimes(data), key);
       Storage.set(key, true);
     }
-    return { ok: true, message: "工时已达标", data };
+    return { ok: true, message: data.hasOutRecord ? "考勤正常 · 已打下班卡" : data.missedConfirmed ? "已漏卡 · 待补卡" : "未打下班卡！请立即打卡", data };
   }
 
   const scheduleKey = "attendance-helper-schedule9-" + dateKey;
@@ -114,10 +115,10 @@ export async function handleLeaveCompany() {
       data.targetReached ? "考勤正常" : "工时不足",
       notifyTimes(data) + " · 实际工时 " + Math.floor(data.currentWorkMs / 3600000) + "小时"
     );
-  } else if (data.targetReached) {
-    await sendNotification("已满 9 小时，但未打下班卡", notifyTimes(data));
+  } else if (missingCheckout(data)) {
+    await sendNotification(data.missedConfirmed ? "⚠ 已漏卡，请申请补卡" : "⚠ 未打下班卡！请立即打卡", notifyTimes(data));
   } else {
-    await sendNotification(formatRemainTitle(data.remainingMinutes), notifyTimes(data));
+    await sendNotification("⚠ 下班卡未确认", formatRemainTitle(data.remainingMinutes) + " · " + notifyTimes(data));
   }
   return data;
 }
