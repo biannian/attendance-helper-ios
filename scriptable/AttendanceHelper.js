@@ -2225,7 +2225,7 @@ async function handleNearNineHours() {
  * @param previewFamily 手动预览的组件尺寸
  * @return 已配置外观、点击链接和刷新时间的小组件
  * @author Kai
- * @date 2026/11/25 12:18
+ * @date 2026/11/25 12:49
  */
 async function createWidget(data, previewFamily) {
   const family = config.widgetFamily || previewFamily || "medium"
@@ -2272,11 +2272,15 @@ async function createWidget(data, previewFamily) {
     widget.setPadding(14, 10, 14, 10)
     await renderSmallWidget(widget, data)
   } else if (calendarOnly) {
-    widget.setPadding(16, 10, 16, 10)
+    // 正方形组件在纯月历模式下也使用较紧凑的外边距。
+    if (family === "large") widget.setPadding(13, 8, 13, 8)
+    else widget.setPadding(16, 10, 16, 10)
     if (hasCalendar) renderWidgetMonthCalendar(widget, data)
     else renderWidgetAttendanceStats(widget, data, 7, true)
   } else if (hasCalendar) {
-    widget.setPadding(15, 10, 15, 10)
+    // 区块间距由大号渲染器控制，外边距按系统尺寸单独设置。
+    if (family === "large") widget.setPadding(12, 8, 12, 8)
+    else widget.setPadding(15, 10, 15, 10)
     await renderLargeWidget(widget, data)
   } else {
     widget.setPadding(15, 10, 15, 10)
@@ -2935,201 +2939,13 @@ async function reviewAttendanceDay(day) {
 }
 
 /**
- * 生成统计管理页。使用固定版本的 FullCalendar，离线时用同一数据绘制七列月历。
- *
- * @return 供 Scriptable WebView 加载的页面 HTML
- * @author Kai
- * @date 2026/11/25 12:35
- */
-function attendanceHistoryHTML() {
-    return `<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
-
-<style>
-    * { box-sizing:border-box }
-    :root { color-scheme:light; font-family:-apple-system,system-ui,sans-serif; color:#18283c; background:#f4f6fa }
-    body { margin:0 }
-    main { width:100%; max-width:680px; margin:auto; padding:16px max(12px,env(safe-area-inset-right)) 24px max(12px,env(safe-area-inset-left)) }
-    header,nav,.metrics { display:grid; align-items:center; gap:8px }
-    header { grid-template-columns:minmax(0,1fr) auto }
-    h1 { margin:0; color:var(--ink); font-size:22px }
-    h2 { font-size:16px; margin:0 0 12px }
-    button { font:inherit; color:var(--ink); border:0; border-radius:10px; padding:8px; background:var(--paper); cursor:pointer }
-    button:disabled { opacity:.35; cursor:default }
-    .metrics,nav { grid-template-columns:repeat(3,minmax(0,1fr)); text-align:center; margin:12px 0 }
-    .metrics div,.card { background:white; border:1px solid #e6ebf2; border-radius:16px; min-width:0 }
-    .metrics div { padding:9px 4px; font-size:12px; color:#586579 }
-    .metrics strong { display:block; font-size:21px; color:var(--ink) }
-    .card { padding:8px; margin-top:12px }
-    #calendar { width:100%; min-width:0; --fc-border-color:#e9edf3; --fc-today-bg-color:var(--paper); --fc-small-font-size:10px }
-    .fc table { width:100%; table-layout:fixed }
-    .fc .fc-col-header-cell-cushion,.fc .fc-daygrid-day-number { padding:4px 1px; color:var(--ink); font-size:12px }
-    .fc .fc-daygrid-day-top { justify-content:center }
-    .fc .fc-daygrid-day-frame { min-height:36px; cursor:pointer }
-    .fc .fc-daygrid-day-events { min-height:0; margin:0 }
-    .fc .fc-daygrid-event { justify-content:center; margin:0; border:0; background:none; color:inherit; cursor:pointer }
-    .mark { border-radius:50%; background:var(--mark); width:6px; height:6px; display:block; margin:2px auto }
-    .grid { display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:2px; text-align:center }
-    .grid > * { min-width:0; padding:5px 0; font-size:12px }
-    .current { outline:1px solid var(--accent); outline-offset:-1px }
-    #warnings button { display:block; width:100%; text-align:left; margin:5px 0; overflow-wrap:anywhere }
-    #sync { font-size:12px; color:#586579; margin:6px 0 }
-</style></head>
-<body><main>
-    <header><h1 id="month">考勤核查</h1><button id="settings">配置</button></header>
-    <section class="metrics" aria-label="当月考勤统计"><div><strong id="normal">0</strong>正常</div><div><strong id="warning">0</strong>异常</div><div><strong id="pending">0</strong>待查</div></section>
-    <nav aria-label="翻月"><button id="previous">‹ 上月</button><button id="today">本月</button><button id="next">下月 ›</button></nav>
-    <section class="card" id="calendar" aria-label="月历"></section>
-    <section class="card"><h2>异常待核查</h2><p id="sync" aria-live="polite"></p><div id="warnings"></div></section>
-</main><script>
-    // 日期、切月与配置通过消息队列交回 Scriptable。
-    const attendanceActions = []
-    const get = id => document.getElementById(id)
-    const request = (type, value) => attendanceActions.push({type, value})
-    get("settings").onclick = () => request("settings")
-    for (const [id, value] of [["previous", -1], ["today", 0], ["next", 1]]) {
-        get(id).onclick = () => request("month", value)
-    }
-    const stateColors = {normal:"#148267", warning:"#ba5a25", active:"#528ad9", neutral:"#8896aa"}
-    let calendar
-    let eventSource
-    let visibleMonth
-    let dateRecords = new Map()
-    let currentModel
-    let calendarFailed = false
-
-    // 初次渲染后才请求依赖，避免外部网络阻塞 WebView 打开。
-    function loadCalendarLibrary() {
-        const library = document.createElement("script")
-        library.src = "https://cdn.jsdelivr.net/npm/fullcalendar@6.1.19/index.global.min.js"
-        library.integrity = "sha384-LjuMvep2w70bTtVscyL+xkqhYr7Y0kTM4t5cwWMy0xOTfl5duHb7MnP6K3J3/4Mk"
-        library.crossOrigin = "anonymous"
-        library.onload = () => {
-            if (currentModel) renderAttendance(currentModel)
-        }
-        document.head.append(library)
-    }
-
-    // 用状态点呈现考勤。详情与修正仍打开原生核查弹窗。
-    function renderAttendance(model) {
-        currentModel = model
-        dateRecords = new Map(model.days.map(day => [day.key, day]))
-        for (const [name, color] of Object.entries(model.palette)) document.documentElement.style.setProperty("--" + name, color)
-        const monthKey = model.month.slice(0,7)
-        get("month").textContent = monthKey + " 考勤核查"
-        get("next").disabled = monthKey === model.today.slice(0,7)
-        const warnings = model.days.filter(day => day.state === "warning")
-        get("normal").textContent = model.days.filter(day => day.state === "normal").length
-        get("warning").textContent = warnings.length
-        get("pending").textContent = model.days.filter(day => day.workday && day.state === "neutral").length
-        get("sync").textContent = model.syncing ? "正在补查本月考勤…" : model.syncFailed ? "补查失败，切月或重新打开可重试" : warnings.length ? "点日期查看原判并核查" : "本月暂无待核查异常"
-        get("warnings").replaceChildren(...warnings.map(day => {
-            const button = document.createElement("button")
-            button.textContent = day.key.slice(5) + " · " + day.status
-            button.onclick = () => request("day", day.key)
-            return button
-        }))
-        const host = get("calendar")
-        if (!window.FullCalendar || calendarFailed) {
-            renderOfflineMonth(host, model)
-            return true
-        }
-        try {
-        if (!calendar) {
-            host.replaceChildren()
-            calendar = new FullCalendar.Calendar(host, {
-                initialView:"dayGridMonth", initialDate:model.month, headerToolbar:false,
-                firstDay:1, fixedWeekCount:false, showNonCurrentDates:false, height:"auto",
-                dayHeaderContent:arg => "日一二三四五六"[arg.date.getDay()],
-                dayCellContent:arg => String(arg.date.getDate()),
-                dateClick:arg => { if (dateRecords.has(arg.dateStr)) request("day", arg.dateStr) },
-                eventClick:arg => request("day", arg.event.startStr),
-                eventContent:arg => {
-                    const point = document.createElement("span")
-                    point.className = "mark"
-                    point.style.setProperty("--mark", stateColors[arg.event.extendedProps.state])
-                    point.setAttribute("aria-label", arg.event.title)
-                    return {domNodes:[point]}
-                }
-            })
-            calendar.render()
-        } else if (visibleMonth !== monthKey) {
-            calendar.gotoDate(model.month)
-        }
-        visibleMonth = monthKey
-        if (eventSource) eventSource.remove()
-        eventSource = calendar.addEventSource(model.days.filter(day => day.workday)
-            .map(day => ({title:day.status, start:day.key, allDay:true, state:day.state})))
-        } catch (error) {
-            calendarFailed = true
-            renderOfflineMonth(host, model)
-        }
-        return true
-    }
-
-    // CDN 不可用时保留本地月历和逐日核查能力。
-    function renderOfflineMonth(host, model) {
-        const grid = document.createElement("div")
-        grid.className = "grid"
-        for (const name of "一二三四五六日") {
-            const label = document.createElement("span")
-            label.textContent = name
-            grid.append(label)
-        }
-        const date = new Date(model.month + "T00:00:00")
-        const month = date.getMonth()
-        const offset = (date.getDay() + 6) % 7
-        for (let index = 0; index < offset; index++) grid.append(document.createElement("span"))
-        for (let day = 1; date.getMonth() === month; day++, date.setDate(day)) {
-            const key = model.month.slice(0, 8) + String(day).padStart(2, "0")
-            const record = dateRecords.get(key)
-            const cell = document.createElement("button")
-            cell.textContent = day
-            cell.disabled = !record
-            if (key === model.today) cell.classList.add("current")
-            if (record) {
-                cell.setAttribute("aria-label", key + " " + record.status)
-                cell.onclick = () => request("day", key)
-            }
-            if (record?.workday) {
-                const point = document.createElement("span")
-                point.className = "mark"
-                point.style.setProperty("--mark", stateColors[record.state])
-                cell.append(point)
-            }
-            grid.append(cell)
-        }
-        host.replaceChildren(grid)
-    }
-</script></body></html>`
-}
-
-/**
- * 打开考勤统计，WebView 初始化失败时恢复到原生月历。
- *
- * @param initialMonth 可选的月份参数
- * @author Kai
- * @date 2026/11/25 12:42
- */
-async function presentAttendanceHistory(initialMonth) {
-    try {
-        await presentWebAttendanceHistory(initialMonth)
-    } catch (error) {
-        console.log("考勤 WebView 无法显示：" + String(error))
-        await presentNativeAttendanceHistory(initialMonth)
-    }
-}
-
-/**
- * WebView 无法绘制时打开原生月历核查页。
+ * 在原生月历中查看考勤并补查当前月份的缺失工卡。
  *
  * @param initialMonth 从小组件进入时传入的 yyyy-MM 月份
  * @author Kai
- * @date 2026/11/25 11:47
+ * @date 2026/11/25 12:49
  */
-async function presentNativeAttendanceHistory(initialMonth) {
+async function presentAttendanceHistory(initialMonth) {
     const table = new UITable()
     const todayKey = formatDateKey(now)
     const current = attendanceMonth()
@@ -3211,6 +3027,10 @@ async function presentNativeAttendanceHistory(initialMonth) {
                 month = date
                 monthChanged = true
                 syncFailed = false
+                // 重新进入月份时重试失败查询，成功记录继续从快照读取。
+                for (const [key, result] of checked) {
+                    if (!result) checked.delete(key)
+                }
                 draw()
                 startSync()
             }
@@ -3331,120 +3151,6 @@ async function presentNativeAttendanceHistory(initialMonth) {
         await closed
     } finally {
         open = false
-    }
-}
-
-/**
- * 打开月历核查页，按当前选月逐日补查缺失的工作日。
- *
- * @param initialMonth 从小组件进入时传入的 yyyy-MM 月份
- * @author Kai
- * @date 2026/11/25 11:47
- */
-async function presentWebAttendanceHistory(initialMonth) {
-    const view = new WebView()
-    await view.loadHTML(attendanceHistoryHTML())
-    const todayKey = formatDateKey(now)
-    const current = attendanceMonth()
-    const checked = new Map()
-    const holidays = {}
-    const knownYears = new Set()
-    // 翻月后的补查使用新的选月，已有查询结果仍可复用。
-    let month = attendanceMonth(initialMonth)
-    if (month > current) month = current
-    let open = true
-    let syncing = false
-    let syncFailed = false
-    let monthChanged = false
-
-    /**
-     * 重绘选月日历，异常列表和日期格共用同一个核查入口。
-     *
-     * @author Kai
-     * @date 2026/11/25 11:47
-     */
-    async function draw() {
-        const days = attendanceMonthWeeks(month).flat().filter(date => date && formatDateKey(date) <= todayKey)
-            .map(date => buildAttendanceHistoryDay(date, holidays, checked))
-        const palette = attendancePalette()
-        // 页面只接收日期和状态显示数据，工卡明细与核查记录仍由原生弹窗读取。
-        const model = {
-            month: formatDateKey(month), today: todayKey, palette, syncing, syncFailed,
-            days: days.map(({ key, state, status, workday }) => ({ key, state, status, workday }))
-        }
-        const painted = await view.evaluateJavaScript("renderAttendance(" + JSON.stringify(model) + ")")
-        if (painted !== true) throw new Error("考勤月历未完成绘制")
-    }
-
-    /**
-     * 依次补查所选月份的节假日表和缺失工卡。
-     *
-     * @author Kai
-     * @date 2026/11/25 11:47
-     */
-    async function startSync() {
-        if (syncing) return
-        syncing = true
-        try {
-            await draw()
-            while (open) {
-                monthChanged = false
-                const year = month.getFullYear()
-                if (!knownYears.has(year)) {
-                    const cached = readAttendanceRecord("attendance-history-calendar-" + year)
-                    holidays[year] = cached?.holidays
-                    knownYears.add(year)
-                    holidays[year] = await loadHistoryHolidays(year, cached)
-                } else {
-                    const next = attendanceMonthWeeks(month).flat().find(date => date
-                        && formatDateKey(date) <= todayKey
-                        && historyDayKind(date, holidays).workday
-                        && !checked.has(formatDateKey(date))
-                        && !readHistorySnapshot(date))
-                    if (!next) break
-                    const result = await getAttendanceSummary(next)
-                    checked.set(formatDateKey(next), result.ok ? result : null)
-                }
-                if (open) await draw()
-            }
-        } catch (error) {
-            syncFailed = true
-            console.log("考勤历史补查失败：" + String(error))
-        } finally {
-            syncing = false
-            if (open) await draw()
-            if (open && monthChanged) startSync()
-        }
-    }
-
-    await draw()
-    await view.evaluateJavaScript("setTimeout(loadCalendarLibrary, 0); true")
-    const closed = view.present().finally(() => { open = false })
-    startSync()
-    // 原生与 WebView 只交换有限的操作类型。关闭后停止轮询。
-    while (open) {
-        const action = await Promise.race([
-            closed.then(() => null),
-            view.evaluateJavaScript("setTimeout(() => completion(attendanceActions.shift() || null), 200)", true)
-        ])
-        if (!open || !action) continue
-        if (action.type === "month" && [-1, 0, 1].includes(action.value)) {
-            const next = new Date(month.getFullYear(), month.getMonth() + action.value, 1)
-            month = action.value === 0 ? current : next > current ? current : next
-            monthChanged = true
-            syncFailed = false
-            // 切月时重新尝试上一次查询失败的日期，保留成功缓存。
-            for (const [key, result] of checked) if (!result) checked.delete(key)
-            await draw()
-            startSync()
-        } else if (action.type === "settings") {
-            await presentAttendancePreferences()
-            if (open) await draw()
-        } else if (action.type === "day" && /^\d{4}-\d{2}-\d{2}$/.test(action.value)
-            && action.value.startsWith(formatDateKey(month).slice(0, 7)) && action.value <= todayKey) {
-            const date = new Date(action.value + "T00:00:00")
-            if (await reviewAttendanceDay(buildAttendanceHistoryDay(date, holidays, checked)) && open) await draw()
-        }
     }
 }
 
