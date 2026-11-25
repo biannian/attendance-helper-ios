@@ -40,7 +40,7 @@ https://raw.githubusercontent.com/biannian/attendance-helper-ios/main/scriptable
 2. 全选复制。
 3. 在 Scriptable 新建脚本，粘贴后运行一次。
 4. 不需要填写 GitHub Token。
-5. 安装器会下载 `main` 分支最新的 `AttendanceHelper.js` 并写入 Scriptable。
+5. 安装器会下载同一份源码，生成 `AttendanceHelper`（管理页、小组件）和 `AttendanceCheck`（独立的无界面快捷指令检查）。
 6. 桌面小组件选择 `AttendanceHelper`。
 
 ### 更新已有脚本
@@ -85,7 +85,7 @@ refresh
 | 动作 | 用途 |
 |---|---|
 | `refresh` | 刷新今日考勤 |
-| `leave` | 离开公司检查 |
+| `leave` / `check` | 离开公司或主动检查打卡 |
 | `schedule9` | 预约工时提醒 |
 | `near9` | 检查接近或达到 9 小时 |
 | `update` | 更新脚本 |
@@ -238,11 +238,14 @@ V9 大号布局调整：
 
 ## 手动刷新小组件
 
+若管理页面打开时「检查打卡」不能完成，先更新脚本或运行新版安装器生成 `AttendanceCheck`，然后在快捷指令的 Scriptable「运行脚本」动作选择该脚本，保留原参数，关闭「运行时显示」，如有「在 App 中运行」也关闭。`check` 主动查询并通知，`leave` 离开检查，`near9` 定时检查，`refresh` 只刷新快照；管理页仍由 `AttendanceHelper` 打开。账号使用原钥匙串，无需再填。管理页前台每约 60 秒检查今日考勤，并读取更新后的本地快照；iOS 调度、网络及安全验证仍可能影响实际执行。
+
+
 小号和锁屏组件沿用原来的刷新链接，会打开快捷指令「更新打卡小组件」。
 
 这条快捷指令执行两个操作：
 
-1. Scriptable → 运行脚本 `AttendanceHelper`。
+1. Scriptable → 运行脚本 `AttendanceCheck`（独立于管理页）。
    - 参数贴入四行文本。
    - 第一行填写 `refresh`。
    - 后面依次填写账号、密码、设备 ID。
@@ -542,6 +545,8 @@ V9 大号布局调整：
 - 快捷指令：Shortcuts。
 
 V9 已进行 JavaScript 静态语法检查、12 种基础风格组合及 24 组模拟布局测试。
+
+已确认漏卡表示无法返回公司，记录本机一次漏卡机会，不提示申请补卡，不修改企业考勤或推断额度重置周期。
 
 实际运行仍需在 iPhone Scriptable 环境中验证组件渲染、WebView 桥接和 iOS 后台刷新行为。
 
