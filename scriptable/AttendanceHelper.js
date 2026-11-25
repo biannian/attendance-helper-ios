@@ -2225,7 +2225,7 @@ async function handleNearNineHours() {
  * @param previewFamily 手动预览的组件尺寸
  * @return 已配置外观、点击链接和刷新时间的小组件
  * @author Kai
- * @date 2026/11/25 12:49
+ * @date 2026/11/25 13:00
  */
 async function createWidget(data, previewFamily) {
   const family = config.widgetFamily || previewFamily || "medium"
@@ -2273,15 +2273,15 @@ async function createWidget(data, previewFamily) {
     await renderSmallWidget(widget, data)
   } else if (calendarOnly) {
     // 正方形组件在纯月历模式下也使用较紧凑的外边距。
-    if (family === "large") widget.setPadding(13, 8, 13, 8)
+    if (family === "large") widget.setPadding(4, 4, 4, 4)
     else widget.setPadding(16, 10, 16, 10)
-    if (hasCalendar) renderWidgetMonthCalendar(widget, data)
+    if (hasCalendar) renderWidgetMonthCalendar(widget, data, mediumWidgetContentWidth(family === "large" ? 4 : 10))
     else renderWidgetAttendanceStats(widget, data, 7, true)
   } else if (hasCalendar) {
     // 区块间距由大号渲染器控制，外边距按系统尺寸单独设置。
-    if (family === "large") widget.setPadding(12, 8, 12, 8)
+    if (family === "large") widget.setPadding(4, 4, 4, 4)
     else widget.setPadding(15, 10, 15, 10)
-    await renderLargeWidget(widget, data)
+    await renderLargeWidget(widget, data, mediumWidgetContentWidth(family === "large" ? 4 : 10))
   } else {
     widget.setPadding(15, 10, 15, 10)
     await renderMediumWidget(widget, data)
@@ -2575,10 +2575,11 @@ async function renderSmallWidget(widget, data) {
  *
  * @param widget 中号桌面组件
  * @param data 今日打卡摘要
+ * @param contentWidth 去掉两侧外边距后的可用宽度
  * @author Kai
- * @date 2026/11/25 12:06
+ * @date 2026/11/25 13:00
  */
-async function renderMediumWidget(widget, data) {
+async function renderMediumWidget(widget, data, contentWidth = mediumWidgetContentWidth()) {
     addCompactHeader(widget, "今日打卡")
     widget.addSpacer(4)
     if (!data.ok) {
@@ -2606,19 +2607,19 @@ async function renderMediumWidget(widget, data) {
     }
 
     widget.addSpacer(5)
-    addProgressBar(widget, data, mediumWidgetContentWidth())
+    addProgressBar(widget, data, contentWidth)
 
     // 当天短暂外出已在摘要里过滤，只有有效下班卡才能点亮下班格。
     widget.addSpacer()
     const row = widget.addStack()
     row.spacing = 6
-    const width = Math.floor((mediumWidgetContentWidth() - 12) / 3)
+    const width = Math.floor((contentWidth - 12) / 3)
     addInfoCell(row, "上班卡", data.hasClockIn ? formatTime(data.inTime) : "待打卡",
         data.hasClockIn ? "done" : "idle", width)
     addInfoCell(row, "可下班", data.hasClockIn ? formatTime(data.targetTime) : "—",
         live ? "active" : "idle", width)
     addInfoCell(row, "下班卡", data.hasOutRecord ? formatTime(data.latestOutTime) : "待打卡",
-        data.hasOutRecord ? "done" : data.targetReached ? "warning" : "idle", width)
+        data.hasOutRecord ? "done" : data.targetReached ? "warning" : "idle", contentWidth - 12 - width * 2)
 }
 
 
@@ -3326,10 +3327,11 @@ function saveWidgetCalendarAction(actionId) {
  *
  * @param widget 承载月历的组件容器
  * @param data 本次刷新取得的今日考勤摘要
+ * @param contentWidth 去掉两侧外边距后的可用宽度
  * @author Kai
- * @date 2026/11/25 12:18
+ * @date 2026/11/25 13:00
  */
-function renderWidgetMonthCalendar(widget, data) {
+function renderWidgetMonthCalendar(widget, data, contentWidth) {
     const palette = attendancePalette()
     const todayKey = formatDateKey(now)
     const current = attendanceMonth()
@@ -3353,7 +3355,7 @@ function renderWidgetMonthCalendar(widget, data) {
 
     // 月历标题的待查数来自当前月份，避免大号时间线因未定义变量而刷新失败。
     const pending = days.filter(day => day.workday && day.state === "neutral").length
-    const width = Math.floor((mediumWidgetContentWidth() - 18) / 7)
+    const width = Math.floor((contentWidth - 18) / 7)
     const gridWidth = 7 * width + 18
     const header = widget.addStack()
     header.size = new Size(gridWidth, 24)
@@ -3405,7 +3407,7 @@ function renderWidgetMonthCalendar(widget, data) {
     // 未来日期和月外空格只作占位，工作日按核查结果着色。
     const colors = { normal: "#26715E", warning: "#A16530", active: palette.accent, neutral: palette.ink }
     // 周数较少时把空间分给日期行，避免底部留下大片空白。
-    const calendarHeight = mediumWidgetContentWidth() < 275 ? 116 : 124
+    const calendarHeight = homeScreenWidgetWidth("medium") < 311 ? 116 : 124
     const rowHeight = Math.floor(calendarHeight / weeks.length)
     for (const week of weeks) {
         widget.addSpacer(2)
@@ -3433,20 +3435,21 @@ function renderWidgetMonthCalendar(widget, data) {
  *
  * @param widget 大号桌面组件
  * @param data 今日打卡摘要
+ * @param contentWidth 去掉两侧外边距后的可用宽度
  * @author Kai
- * @date 2026/11/25 12:06
+ * @date 2026/11/25 13:00
  */
-async function renderLargeWidget(widget, data) {
+async function renderLargeWidget(widget, data, contentWidth) {
     const today = widget.addStack()
     today.layoutVertically()
     // 用中号双列宽度估算其单行高度，扣除上下各 15 点的共同留白。
     // 固定此区域后，中号自己的弹性间距只在今日区域内分配。
-    const width = mediumWidgetContentWidth()
-    today.size = new Size(width, Math.max(120, Math.round(width / 2) - 30))
-    await renderMediumWidget(today, data)
+    const height = Math.max(120, Math.round(homeScreenWidgetWidth("medium") / 2) - 48)
+    today.size = new Size(contentWidth, height)
+    await renderMediumWidget(today, data, contentWidth)
     // 稍微拉开今日卡片与月历，避免两区贴在一起。
     widget.addSpacer(14)
-    renderWidgetMonthCalendar(widget, data)
+    renderWidgetMonthCalendar(widget, data, contentWidth)
 }
 
 // ==================== 小组件公共 UI ====================
@@ -4120,13 +4123,14 @@ function getNextWidgetRefreshDate(data, refreshProgress = false) {
  *
  * 三个信息格按去掉两侧内边距后的宽度平分。
  *
+ * @param horizontalPadding 每侧的外边距，默认 10 点
  * @return 内容宽度，单位是点
  * @author Kai
- * @date 2026/11/25 12:18
+ * @date 2026/11/25 13:00
  */
-function mediumWidgetContentWidth() {
-    // 留出左右边距和系统缩放余量，跨设备避免固定列宽撑破卡片。
-    return Math.min(336, homeScreenWidgetWidth("medium") - 36)
+function mediumWidgetContentWidth(horizontalPadding = 10) {
+    // 与标题行使用相同的内容边界，避免卡片和进度条提前结束。
+    return homeScreenWidgetWidth("medium") - horizontalPadding * 2
 }
 
 /**
