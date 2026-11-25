@@ -4,18 +4,34 @@
 
 > 当前分支为迁移预览版。代码已按 Scripting 官方 API 拆分并完成静态规则测试；尚未在真实 iPhone / Scripting App 环境完成端到端验证。请先用测试账号验证登录、打卡接口、组件与 Live Activity，再作为日常考勤工具使用。
 
-## 1. 导入
+## 1. 安装与更新
+
+### 推荐：独立 ZIP 预览通道
+
+- 发布页：https://github.com/biannian/attendance-helper-ios/releases/tag/scripting-preview
+- 固定 ZIP 下载地址（首次工作流成功发布后生效）：
+
+  `https://github.com/biannian/attendance-helper-ios/releases/download/scripting-preview/AttendanceHelper-Scripting.zip`
 
 1. 从 App Store 安装并打开 Scripting。
-2. 在 Scripting 中选择从 GitHub 导入脚本。
-3. 仓库地址填写：
+2. 选择远程脚本导入，粘贴上述 ZIP 直链（不是 Release 网页）。
+3. 如果远程下载受限，尝试在 Safari 下载 ZIP 到「文件」，再从 Scripting 导入本地归档。
+4. 打开「考勤助手」，先在「配置」中重新填写账号、密码和设备 ID。
+5. 在脚本设置中保留上述固定 ZIP 地址作为远程源，可手动检查更新；如需自动检查，建议每小时一次，并按需打开全局自动应用更新开关。
 
-   `https://github.com/biannian/attendance-helper-ios/tree/scripting-migration/scripting`
+建议在真机验证完成前关闭自动应用更新，先手动确认预览版变更。iOS 调度不会保证精确的更新时间。
 
-4. 导入完整 `scripting/` 目录（包括 `core/` 和 `intent.tsx`），不要只复制入口文件。
-5. 打开「考勤助手」，先在「配置」中重新填写账号、密码和设备 ID。
+### 备用：GitHub 子目录导入
 
-Scripting 的远程仓库导入按分支子目录定位，当前分支名不包含斜杠，便于使用该导入 URL。可在脚本设置中配置远程源和自动检查更新；不要把 GitHub Token、企业账号或密码写入脚本。
+`https://github.com/biannian/attendance-helper-ios/tree/scripting-migration/scripting`
+
+完整导入目录，不要仅复制入口文件。
+
+### 发布维护
+
+`.github/workflows/scripting-release.yml` 在迁移分支的相关提交后自动执行规则与参数测试、构建并校验 ZIP，再更新独立的 `scripting-preview` 预发布通道。该通道的 tag 是固定渠道标识，不代表最新安装包对应的源码提交；实际提交 SHA 记录于 Release 说明。ZIP 根目录包含 `script.json`、所有运行入口和 core 模块，不包含测试、README、Git 元数据或本机账号文件。新增运行时文件时需同步更新工作流的打包白名单；功能版本更新时同步调整 `script.json` 和 `package.json` 版本。工作流同时生成 SHA-256 校验文件；测试失败不发布。
+
+该流程不修改 Scriptable 发布，也不将预览版设为仓库的 latest release。不要在脚本中写入 GitHub Token、企业账号或密码。
 
 ## 2. 与旧版 Scriptable 的数据隔离
 
