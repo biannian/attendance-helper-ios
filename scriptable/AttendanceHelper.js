@@ -7,7 +7,7 @@
  * 考勤助手
  *
  * @author Kai
- * @date 2026/11/25 11:29
+ * @date 2026/11/25 11:47
  * @description 展示今日打卡、多日历史并执行考勤提醒
  */
 // ==================================================
@@ -201,7 +201,9 @@ const mode = launch.mode
 if (config.runsInWidget) {
   // 时间线刷新和「刷新所有小组件」都走这里，需要拉到最新打卡。
   // 锁屏或网络失败时改用今天的快照，倒计时仍按当前时刻重算。
-  let data = await getAttendanceSummary()
+    // 翻月只改变本地选月，优先用缓存立即重绘。
+    const monthChanged = saveWidgetCalendarAction(args.widgetAction?.id)
+    let data = monthChanged ? loadCachedAttendanceSummary() : await getAttendanceSummary()
   if (!data.ok) {
     const cached = loadCachedAttendanceSummary()
     if (cached.ok) {
@@ -233,7 +235,7 @@ if (config.runsInWidget) {
   } else if (mode === "week") {
     // 点击中号组件后直接打开全屏考勤历史。
     try {
-      await presentAttendanceHistory()
+      await presentAttendanceHistory(args.queryParameters?.month)
     } catch (e) {
       await presentMessage("考勤历史", "页面无法打开，请重试。\n" + String(e.message || e))
     }
@@ -2001,19 +2003,18 @@ async function handleLeaveCompany() {
 // ==================== 功能 2：预约快满 9 小时提醒 ====================
 
 /**
- * 读取本机的主题、提醒提前量与历史默认范围
+ * 读取本机的小组件主题和提前提醒设置。
  *
  * @return 经校验的考勤偏好设置
  * @author Kai
- * @date 2026/11/24 17:55
+ * @date 2026/11/25 11:47
  */
 function readAttendancePreferences() {
     const saved = readAttendanceRecord("attendance-helper-preferences-v1") || {}
     return {
         theme: ["navy", "teal", "slate"].includes(saved.theme) ? saved.theme : "navy",
         remindMinutes: [0, 5, 15, 30, 45, 60].includes(saved.remindMinutes)
-            ? saved.remindMinutes : CONFIG.NEAR_MINUTES,
-        historyDays: [7, 14, 30].includes(saved.historyDays) ? saved.historyDays : 14
+            ? saved.remindMinutes : CONFIG.NEAR_MINUTES
     }
 }
 
@@ -2027,7 +2028,6 @@ async function presentAttendancePreferences() {
     const themeValues = ["navy", "teal", "slate"]
     const themeLabels = ["深海蓝", "松石绿", "岩灰"]
     const minuteValues = [30, 15, 5, 45, 60, 0]
-    const rangeValues = [7, 14, 30]
 
     while (true) {
         const preferences = readAttendancePreferences()
@@ -2036,7 +2036,6 @@ async function presentAttendancePreferences() {
         menu.message = "每日目标 " + CONFIG.TARGET_HOURS + " 小时。提醒使用 iOS 通知。"
         menu.addAction("组件主题 · " + themeLabels[themeValues.indexOf(preferences.theme)])
         menu.addAction("提前提醒 · " + (preferences.remindMinutes ? preferences.remindMinutes + " 分钟" : "关闭"))
-        menu.addAction("历史默认范围 · " + preferences.historyDays + " 天")
         menu.addCancelAction("完成")
         const section = await menu.presentSheet()
         if (section < 0) return
@@ -2044,10 +2043,9 @@ async function presentAttendancePreferences() {
         const choice = new Alert()
         const labels = [
             themeLabels,
-            minuteValues.map(minutes => minutes ? "提前 " + minutes + " 分钟" : "关闭提前提醒"),
-            rangeValues.map(days => "最近 " + days + " 天")
+            minuteValues.map(minutes => minutes ? "提前 " + minutes + " 分钟" : "关闭提前提醒")
         ][section]
-        choice.title = ["组件主题", "提前提醒", "历史默认范围"][section]
+        choice.title = ["组件主题", "提前提醒"][section]
         for (const label of labels) choice.addAction(label)
         choice.addCancelAction("返回")
         const selected = await choice.presentSheet()
@@ -2056,7 +2054,6 @@ async function presentAttendancePreferences() {
         const next = { ...preferences }
         if (section === 0) next.theme = themeValues[selected]
         if (section === 1) next.remindMinutes = minuteValues[selected]
-        if (section === 2) next.historyDays = rangeValues[selected]
         Keychain.set("attendance-helper-preferences-v1", JSON.stringify(next))
 
         if (next.remindMinutes !== preferences.remindMinutes) {
@@ -2212,8 +2209,10 @@ async function createWidget(data) {
 
   const widget = new ListWidget()
 
-  // 统计专用布局在休息日也能查看历史。
-  if (!statsOnly && !(await isChinaWorkday(now))) {
+    // 大号月历和统计专用布局在休息日仍可查看历史。
+    const workday = statsOnly || await isChinaWorkday(now)
+    const calendarOnly = statsOnly || (!workday && family === "large" && layout !== "today")
+  if (!workday && !calendarOnly) {
     widget.refreshAfterDate = morningRefreshOn(addDays(now, 1))
     return widget
   }
@@ -2243,11 +2242,12 @@ async function createWidget(data) {
   } else if (family === "small") {
     widget.setPadding(14, 10, 14, 10)
     await renderSmallWidget(widget, data)
-  } else if (statsOnly) {
+  } else if (calendarOnly) {
     widget.setPadding(16, 10, 16, 10)
-    renderWidgetAttendanceStats(widget, data, family === "large" ? 14 : 7, true)
+    if (family === "large") renderWidgetMonthCalendar(widget, data)
+    else renderWidgetAttendanceStats(widget, data, 7, true)
   } else if (family === "large") {
-    widget.setPadding(20, 14, 20, 14)
+    widget.setPadding(20, 10, 20, 10)
     await renderLargeWidget(widget, data, layout !== "today")
   } else {
     widget.setPadding(15, 10, 15, 10)
@@ -2258,7 +2258,7 @@ async function createWidget(data) {
     const opensHistory = statsOnly || family === "medium" || (family === "large" && layout !== "today")
     widget.url = opensHistory ? getWeeklyAttendanceUrl() : getWidgetUrl()
     widget.refreshAfterDate = getNextWidgetRefreshDate(
-        data, !statsOnly && (family === "medium" || family === "large")
+        data, !calendarOnly && (family === "medium" || family === "large")
     )
 
   return widget
@@ -2542,10 +2542,11 @@ async function renderSmallWidget(widget, data) {
  *
  * @param widget 中号桌面组件
  * @param data 今日打卡摘要
+ * @param embedded 是否在大号组件的固定上半区内绘制
  * @author Kai
  * @date 2026/11/25 11:28
  */
-async function renderMediumWidget(widget, data) {
+async function renderMediumWidget(widget, data, embedded = false) {
     addCompactHeader(widget, "今日打卡")
     widget.addSpacer(4)
     if (!data.ok) {
@@ -2576,7 +2577,8 @@ async function renderMediumWidget(widget, data) {
     addProgressBar(widget, data, mediumWidgetContentWidth())
 
     // 当天短暂外出已在摘要里过滤，只有有效下班卡才能点亮下班格。
-    widget.addSpacer()
+    if (embedded) widget.addSpacer(7)
+    else widget.addSpacer()
     const row = widget.addStack()
     row.spacing = 6
     const width = Math.floor((mediumWidgetContentWidth() - 12) / 3)
@@ -2712,7 +2714,7 @@ async function loadHistoryHolidays(year, cached) {
  * @param checked 本次页面打开期间已查询的日期
  * @return 日期类型、打卡时间和工时状态
  * @author Kai
- * @date 2026/11/25 10:53
+ * @date 2026/11/25 11:47
  */
 function buildAttendanceHistoryDay(date, holidays, checked) {
     const key = formatDateKey(date)
@@ -2721,9 +2723,10 @@ function buildAttendanceHistoryDay(date, holidays, checked) {
     const record = readHistorySnapshot(date) || checked.get(key)
     const clockIn = record && record.inTime ? new Date(record.inTime) : null
     // 今日历史卡也会读到旧快照，应用与小组件相同的离场判断。
-    const outSwipe = record && record.latestOutTime ? new Date(record.latestOutTime) : null
+    const rawOut = record && (record.outSwipeTime || record.latestOutTime)
+    const outSwipe = rawOut ? new Date(rawOut) : null
     const clockOut = resolveAttendanceCheckout(clockIn, outSwipe, today)
-    const workedMs = clockIn && clockOut ? Math.max(0, clockOut - clockIn) : null
+    let workedMs = clockIn && clockOut ? Math.max(0, clockOut - clockIn) : null
     const deficit = workedMs === null ? 0 : Math.ceil((CONFIG.TARGET_HOURS * 3600000 - workedMs) / 60000)
     let status = label
     let state = "neutral"
@@ -2744,8 +2747,30 @@ function buildAttendanceHistoryDay(date, holidays, checked) {
         }
     }
 
+    // 保留系统原判，核查结果只影响本机考勤日历。
+    const originalStatus = status
+    const review = workday ? readAttendanceReview(key) : null
+    const leaveHours = Math.max(0, Math.min(CONFIG.TARGET_HOURS, Number(review?.leaveHours) || 0))
+    const requiredMs = Math.round((CONFIG.TARGET_HOURS - leaveHours) * 3600000)
+    // 已批准的部分请假会把当天可接受的离场时间提前。
+    if (leaveHours > 0 && workedMs === null && clockIn && outSwipe
+        && outSwipe <= now && outSwipe - clockIn >= requiredMs) {
+        workedMs = outSwipe - clockIn
+    }
+    if (review?.confirmed) {
+        status = "已确认正常"
+        state = "normal"
+    } else if (leaveHours > 0 && (requiredMs === 0 || (workedMs !== null && workedMs >= requiredMs))) {
+        status = "请假后达标"
+        state = "normal"
+    } else if (leaveHours > 0 && workedMs !== null) {
+        status = "扣除请假仍差 " + formatRemainText(Math.ceil((requiredMs - workedMs) / 60000))
+    }
+
     return {
         key, kind, label, workday, status, state, workedMs,
+        originalStatus, review, leaveHours, requiredMs,
+        outSwipe: outSwipe ? formatTime(outSwipe) : "—",
         weekday: (date.getDay() + 6) % 7,
         clockIn: clockIn ? formatTime(clockIn) : "—",
         clockOut: clockOut ? formatTime(clockOut) : "—",
@@ -2770,207 +2795,278 @@ function readAttendanceRecord(key) {
 }
 
 /**
- * 绘制所选范围的考勤统计和逐日状态格。
+ * 读取当前账号对指定日期的本机核查记录。
  *
- * @param table 承载统计的原生历史表格
- * @param days 按日期倒序排列的考勤记录
- * @param warningCount 当前范围的待核对天数
+ * @param key 考勤日期，格式为 yyyy-MM-dd
+ * @return 含请假时长与确认说明的记录，未核查时为空
  * @author Kai
- * @date 2026/11/25 11:14
+ * @date 2026/11/25 11:47
  */
-function addAttendanceHistoryOverview(table, days, warningCount) {
-    // 平均工时仅按已结算的工作日计算，缺卡和补查中的日期不进入分母。
-    const workdays = days.filter(day => day.workday)
-    const completed = workdays.filter(day => day.workedMs !== null)
-    const average = completed.length
-        ? formatShortDuration(completed.reduce((sum, day) => sum + day.workedMs, 0) / completed.length)
-        : "—"
-    const summary = new UITableRow()
-    summary.height = 55
-    for (const [value, label, color] of [
-        [String(workdays.length), "工作日", "#64748B"],
-        [String(workdays.filter(day => day.state === "normal").length), "已达标", "#059669"],
-        [String(warningCount), "待核对", "#B45309"],
-        [average, "平均工时", "#2563EB"]
-    ]) {
-        const cell = summary.addText(value, label)
-        cell.titleColor = new Color(color)
-        cell.centerAligned()
-    }
-    table.addRow(summary)
-
-    // 每行最多七格，颜色与短标签同时传达状态，兼顾深色模式与色觉差异。
-    const states = {
-        normal: ["达标", "#059669"],
-        active: ["进行中", "#2563EB"],
-        warning: ["核对", "#B45309"],
-        neutral: ["待定", "#64748B"]
-    }
-    const ascending = days.slice().reverse()
-    for (let start = 0; start < ascending.length; start += 7) {
-        const row = new UITableRow()
-        row.height = 43
-        const week = ascending.slice(start, start + 7)
-        for (const day of week) {
-            const [label, color] = day.workday ? states[day.state] : ["休息", "#64748B"]
-            const cell = row.addText(day.key.slice(5).replace("-", "/"), label)
-            cell.titleColor = new Color(color)
-            cell.centerAligned()
-        }
-        for (let remaining = week.length; remaining < 7; remaining++) row.addText("")
-        table.addRow(row)
-    }
+function readAttendanceReview(key) {
+    return readAttendanceRecord("attendance-review-v1:" + CONFIG.USERNAME + ":" + key)
 }
 
 /**
- * 打开原生全屏考勤历史，显示本机记录并逐日补查缺失工作日
+ * 将月份参数归一为该月第一天。
  *
+ * @param value yyyy-MM 格式的月份参数
+ * @return 本地月份起始时间，空值或非法值回到本月
  * @author Kai
- * @date 2026/11/24 16:56
+ * @date 2026/11/25 11:47
  */
-async function presentAttendanceHistory() {
-    const table = new UITable()
-    table.showSeparators = true
-    const dates = Array.from({ length: 30 }, (_, index) => addDays(now, -index))
-    const checked = new Map()
-    const knownYears = new Set()
-    const holidayCache = {}
-    const holidays = {}
-    for (const year of new Set(dates.map(date => date.getFullYear()))) {
-        holidayCache[year] = readAttendanceRecord("attendance-history-calendar-" + year)
-        holidays[year] = holidayCache[year] && holidayCache[year].holidays
-    }
+function attendanceMonth(value) {
+    const match = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(String(value || ""))
+    return match && Number(match[1]) >= 2000
+        ? new Date(Number(match[1]), Number(match[2]) - 1, 1)
+        : new Date(now.getFullYear(), now.getMonth(), 1)
+}
 
-    // 范围和筛选在同一个原生页面内切换，补查任务共用一个队列。
-    let range = readAttendancePreferences().historyDays
-    let onlyWarnings = false
+/**
+ * 将月内日期按周一至周日对齐。
+ *
+ * @param month 该月第一天
+ * @return 按周排列的日期格，月外的格为空
+ * @author Kai
+ * @date 2026/11/25 11:47
+ */
+function attendanceMonthWeeks(month) {
+    const year = month.getFullYear()
+    const index = month.getMonth()
+    const count = new Date(year, index + 1, 0).getDate()
+    const offset = (month.getDay() + 6) % 7
+    const weeks = []
+    for (let start = 1 - offset; start <= count; start += 7) {
+        weeks.push(Array.from({ length: 7 }, (_, slot) => {
+            const day = start + slot
+            return day >= 1 && day <= count ? new Date(year, index, day) : null
+        }))
+    }
+    return weeks
+}
+
+/**
+ * 显示一天的原始工卡和核查结果，提示用户补记请假或人工确认。
+ *
+ * @param day 含原始工卡、工时及核查结果的日历记录
+ * @return 是否更新了本机核查记录
+ * @author Kai
+ * @date 2026/11/25 11:47
+ */
+async function reviewAttendanceDay(day) {
+    const detail = new Alert()
+    detail.title = day.key + " · " + day.status
+    detail.message = [
+        "上班 " + day.clockIn + "　下班 " + day.clockOut,
+        "实际工时 " + day.worked + "　应出勤 " + formatShortDuration(day.requiredMs),
+        "系统原判 " + day.originalStatus,
+        ...(day.outSwipe !== day.clockOut ? ["门禁离场记录 " + day.outSwipe] : []),
+        "请假 " + day.leaveHours + " 小时",
+        ...(day.review?.note ? ["核查说明 " + day.review.note] : [])
+    ].join("\n")
+    if (!day.workday) {
+        detail.addAction("关闭")
+        await detail.presentAlert()
+        return false
+    }
+    detail.addAction("记录请假")
+    detail.addAction("确认正常")
+    if (day.review) detail.addDestructiveAction("撤销修正")
+    detail.addCancelAction("关闭")
+    const action = await detail.presentAlert()
+    if (action < 0) return false
+
+    const key = "attendance-review-v1:" + CONFIG.USERNAME + ":" + day.key
+    if (action === 2) {
+        Keychain.remove(key)
+        return true
+    }
+    const input = new Alert()
+    input.title = action === 0 ? "请假小时数" : "确认正常"
+    input.message = action === 0
+        ? "输入已批准的请假时长。填 " + CONFIG.TARGET_HOURS + " 表示全天请假。"
+        : "请记录你确认这天正常的原因。"
+    input.addTextField(action === 0 ? "例如 2.5" : "例如 已查到请假审批", action === 0 && day.leaveHours ? String(day.leaveHours) : "")
+    input.addAction("保存")
+    input.addCancelAction("取消")
+    if (await input.presentAlert() !== 0) return false
+
+    // 人工确认必须留说明，请假只扣减应出勤时长。
+    const value = input.textFieldValue(0).trim()
+    const hours = Number(value)
+    if (!value || (action === 0 && (!Number.isFinite(hours) || hours < 0 || hours > CONFIG.TARGET_HOURS))) {
+        await presentMessage("无法保存", action === 0 ? "请输入有效的请假小时数。" : "请输入核查说明。")
+        return false
+    }
+    const review = action === 0
+        ? { leaveHours: hours }
+        : { leaveHours: day.leaveHours, confirmed: true, note: value }
+    Keychain.set(key, JSON.stringify(review))
+    return true
+}
+
+/**
+ * 打开月历核查页，按当前选月逐日补查缺失的工作日。
+ *
+ * @param initialMonth 从小组件进入时传入的 yyyy-MM 月份
+ * @author Kai
+ * @date 2026/11/25 11:47
+ */
+async function presentAttendanceHistory(initialMonth) {
+    const table = new UITable()
+    const todayKey = formatDateKey(now)
+    const current = attendanceMonth()
+    const checked = new Map()
+    const holidays = {}
+    const knownYears = new Set()
+    // 翻月后的补查使用新的选月，已有查询结果仍可复用。
+    let month = attendanceMonth(initialMonth)
+    if (month > current) month = current
     let open = true
     let presented = false
-    let loading = true
+    let syncing = false
     let syncFailed = false
-    let syncTask = null
+    let monthChanged = false
 
     /**
-     * 根据当前范围、缓存和筛选状态重绘手机端历史列表
+     * 重绘选月日历，异常列表和日期格共用同一个核查入口。
      *
      * @author Kai
-     * @date 2026/11/25 11:14
+     * @date 2026/11/25 11:47
      */
     function draw() {
-        const days = dates.slice(0, range).map(date => buildAttendanceHistoryDay(date, holidays, checked))
+        const weeks = attendanceMonthWeeks(month).map(week => week.map(date =>
+            date && formatDateKey(date) <= todayKey ? buildAttendanceHistoryDay(date, holidays, checked) : date
+        ))
+        const days = weeks.flat().filter(day => day && day.key)
         const warnings = days.filter(day => day.state === "warning")
-
+        const normal = days.filter(day => day.state === "normal").length
+        const pending = days.filter(day => day.workday && day.state === "neutral").length
         table.removeAllRows()
+
         const heading = new UITableRow()
+        heading.height = 56
         heading.isHeader = true
-        heading.height = 62
-        const headingText = heading.addText("考勤历史", days[days.length - 1].key + " 至 " + days[0].key)
-        headingText.widthWeight = 4
+        const title = heading.addText(formatDateKey(month).slice(0, 7) + " 考勤核查",
+            "正常 " + normal + "　异常 " + warnings.length + "　待查 " + pending)
+        title.widthWeight = 4
         const settings = heading.addButton("配置")
-        settings.rightAligned()
         settings.dismissOnTap = false
         settings.onTap = async () => {
-            try {
-                await presentAttendancePreferences()
-            } catch (error) {
-                await presentMessage("考勤配置", String(error.message || error))
-            }
+            await presentAttendancePreferences()
+            draw()
         }
         table.addRow(heading)
 
-        // 范围按钮保持在同一行，切换时只刷新当前列表。
-        const ranges = new UITableRow()
-        ranges.height = 46
-        for (const days of [7, 14, 30]) {
-            const cell = ranges.addButton(days === range ? "✓ " + days + " 天" : "最近 " + days + " 天")
+        const controls = new UITableRow()
+        controls.height = 40
+        for (const [label, date] of [
+            ["‹ 上月", new Date(month.getFullYear(), month.getMonth() - 1, 1)],
+            ["本月", current],
+            ["下月 ›", new Date(month.getFullYear(), month.getMonth() + 1, 1)]
+        ]) {
+            const cell = date > current ? controls.addText("") : controls.addButton(label)
             cell.centerAligned()
+            if (date > current) continue
             cell.dismissOnTap = false
             cell.onTap = () => {
-                if (days === range) return
-                range = days
-                loading = true
+                if (date.getTime() === month.getTime()) return
+                month = date
+                monthChanged = true
                 syncFailed = false
                 draw()
                 startSync()
             }
         }
-        table.addRow(ranges)
-        addAttendanceHistoryOverview(table, days, warnings.length)
+        table.addRow(controls)
 
-        const filters = new UITableRow()
-        filters.height = 48
-        const details = filters.addText("逐日明细")
-        details.widthWeight = 3
-        const filter = filters.addButton(onlyWarnings ? "显示全部" : "仅看异常")
-        filter.rightAligned()
-        filter.dismissOnTap = false
-        filter.onTap = () => {
-            onlyWarnings = !onlyWarnings
-            draw()
-        }
-        table.addRow(filters)
+        const weekdays = new UITableRow()
+        weekdays.height = 30
+        for (const weekday of "一二三四五六日") weekdays.addText(weekday).centerAligned()
+        table.addRow(weekdays)
 
-        if (loading || syncFailed || (onlyWarnings && !warnings.length)) {
-            const note = new UITableRow()
-            note.height = 36
-            const message = loading ? "正在补查缺少的日期…"
-                : syncFailed ? "补查中断，请重新打开重试" : "所选范围暂无异常"
-            note.addText(message)
-            table.addRow(note)
-        }
-
-        // 单日信息分两栏显示，窄屏上也能直接看到打卡和日期类型。
-        for (const day of onlyWarnings ? warnings : days) {
+        // ✓ 达标，! 异常，· 进行中，? 等待补查，— 休息。
+        const symbols = { normal: "✓", warning: "!", active: "·", neutral: "?" }
+        for (const week of weeks) {
             const row = new UITableRow()
-            row.height = 60
-            const date = row.addText(day.key.slice(5) + " 周" + "一二三四五六日"[day.weekday] + " · " + day.label,
-                "上 " + day.clockIn + "  /  下 " + day.clockOut)
-            date.widthWeight = 3
-            if (day.kind === "holiday" || day.kind === "makeup") {
-                date.titleColor = new Color(day.kind === "holiday" ? "#BE456B" : "#4279CF")
+            row.height = 39
+            for (const day of week) {
+                if (!day || !day.key) {
+                    row.addText(day ? String(day.getDate()) : "").centerAligned()
+                    continue
+                }
+                const marker = day.workday ? symbols[day.state] : "—"
+                const cell = row.addButton(Number(day.key.slice(-2)) + marker)
+                cell.centerAligned()
+                cell.dismissOnTap = false
+                cell.onTap = async () => {
+                    if (await reviewAttendanceDay(day)) draw()
+                }
             }
-            const detail = row.addText(day.workday ? day.status : "休息", "工时 " + day.worked)
-            detail.widthWeight = 2
-            detail.rightAligned()
-            if (day.state === "warning") detail.titleColor = new Color("#D97706")
-            if (day.state === "normal") detail.titleColor = new Color("#059669")
+            table.addRow(row)
+        }
+
+        const notice = new UITableRow()
+        notice.height = 49
+        notice.addText("异常待核查", syncing ? "正在补查本月考勤"
+            : syncFailed ? "补查中断，重新打开可重试"
+                : warnings.length ? "点日期查看原判、登记请假或确认正常"
+                    : pending ? "仍有日期等待补查" : "本月暂无待核查异常")
+        table.addRow(notice)
+
+        for (const day of warnings) {
+            const row = new UITableRow()
+            row.height = 46
+            const detail = row.addText(day.key.slice(5) + "　" + day.status, "上 " + day.clockIn + "　下 " + day.clockOut)
+            detail.widthWeight = 4
+            const check = row.addButton("核查")
+            check.dismissOnTap = false
+            check.onTap = async () => {
+                if (await reviewAttendanceDay(day)) draw()
+            }
             table.addRow(row)
         }
         if (presented) table.reload()
     }
 
     /**
-     * 补查当前范围的缺失日期，范围变化后从最新选择继续
+     * 依次补查所选月份的节假日表和缺失工卡。
      *
      * @author Kai
-     * @date 2026/11/24 16:56
+     * @date 2026/11/25 11:47
      */
-    function startSync() {
-        if (syncTask) return
-        syncTask = (async () => {
+    async function startSync() {
+        if (syncing) return
+        syncing = true
+        draw()
+        try {
             while (open) {
-                const selected = dates.slice(0, range)
-                const year = selected.map(day => day.getFullYear()).find(item => !knownYears.has(item))
-                if (year !== undefined) {
+                monthChanged = false
+                const year = month.getFullYear()
+                if (!knownYears.has(year)) {
+                    const cached = readAttendanceRecord("attendance-history-calendar-" + year)
+                    holidays[year] = cached?.holidays
                     knownYears.add(year)
-                    holidays[year] = await loadHistoryHolidays(year, holidayCache[year])
+                    holidays[year] = await loadHistoryHolidays(year, cached)
                 } else {
-                    const next = selected.find(day => historyDayKind(day, holidays).workday
-                        && !checked.has(formatDateKey(day)) && !readHistorySnapshot(day))
+                    const next = attendanceMonthWeeks(month).flat().find(date => date
+                        && formatDateKey(date) <= todayKey
+                        && historyDayKind(date, holidays).workday
+                        && !checked.has(formatDateKey(date))
+                        && !readHistorySnapshot(date))
                     if (!next) break
-                    const data = await getAttendanceSummary(next)
-                    checked.set(formatDateKey(next), data.ok ? data : null)
+                    const result = await getAttendanceSummary(next)
+                    checked.set(formatDateKey(next), result.ok ? result : null)
                 }
                 if (open) draw()
             }
-        })().catch(error => {
+        } catch (error) {
             syncFailed = true
             console.log("考勤历史补查失败：" + String(error))
-        }).finally(() => {
-            syncTask = null
-            loading = false
+        } finally {
+            syncing = false
             if (open) draw()
-        })
+            if (open && monthChanged) startSync()
+        }
     }
 
     draw()
@@ -2985,15 +3081,17 @@ async function presentAttendanceHistory() {
 }
 
 /**
- * 生成点击中号组件时打开考勤历史的链接
+ * 生成打开考勤月历的 Scriptable 链接。
  *
- * @return 打开历史模式的 Scriptable 链接
+ * @param month 可选的目标月份，格式为 yyyy-MM
+ * @return 考勤月历链接
  * @author Kai
- * @date 2026/11/24 16:34
+ * @date 2026/11/25 11:47
  */
-function getWeeklyAttendanceUrl() {
+function getWeeklyAttendanceUrl(month) {
     const runUrl = URLScheme.forRunningScript()
     return runUrl + (runUrl.includes("?") ? "&" : "?") + "mode=week"
+        + (month ? "&month=" + encodeURIComponent(month) : "")
 }
 
 // ==================== 大号组件 ====================
@@ -3019,6 +3117,7 @@ function renderWidgetAttendanceStats(widget, data, count, standalone) {
     const days = dates.map(date => buildAttendanceHistoryDay(date, holidays, checked))
     const normal = days.filter(day => day.state === "normal").length
     const warnings = days.filter(day => day.state === "warning").length
+    const pending = days.filter(day => day.workday && day.state === "neutral").length
     const settled = days.filter(day => day.workday && day.workedMs !== null)
     const average = settled.length
         ? formatShortDuration(settled.reduce((sum, day) => sum + day.workedMs, 0) / settled.length)
@@ -3061,120 +3160,128 @@ function renderWidgetAttendanceStats(widget, data, count, standalone) {
 }
 
 /**
- * 在大号组件中用完整打卡明细填充纵向空间
+ * 保存翻月动作指定的目标月份，供组件自动重绘时读取。
+ *
+ * @param actionId Scriptable 传入的交互动作标识
+ * @return 是否处理了日历翻月动作
+ * @author Kai
+ * @date 2026/11/25 11:47
+ */
+function saveWidgetCalendarAction(actionId) {
+    const match = /^attendance-month:(\d{4}-(?:0[1-9]|1[0-2]))$/.exec(String(actionId || ""))
+    if (!match || attendanceMonth(match[1]) > attendanceMonth()) return false
+    Keychain.set("attendance-widget-month:" + CONFIG.USERNAME, match[1])
+    return true
+}
+
+/**
+ * 绘制大号桌面组件的七列月历和翻月入口。
+ *
+ * @param widget 承载月历的组件容器
+ * @param data 本次刷新取得的今日考勤摘要
+ * @author Kai
+ * @date 2026/11/25 11:47
+ */
+function renderWidgetMonthCalendar(widget, data) {
+    const todayKey = formatDateKey(now)
+    const current = attendanceMonth()
+    const savedMonth = attendanceMonth(readKeychainValue("attendance-widget-month:" + CONFIG.USERNAME))
+    const month = savedMonth > current ? current : savedMonth
+    const year = month.getFullYear()
+    const monthIndex = month.getMonth()
+    const monthKey = formatDateKey(month).slice(0, 7)
+    const holidays = { [year]: readAttendanceRecord("attendance-history-calendar-" + year)?.holidays }
+    const checked = data.ok ? new Map([[todayKey, data]]) : new Map()
+    const weeks = attendanceMonthWeeks(month).map(week => week.map(date => {
+        if (!date) return null
+        const key = formatDateKey(date)
+        return key <= todayKey
+            ? buildAttendanceHistoryDay(date, holidays, checked)
+            : { key, workday: false, state: "future" }
+    }))
+    const days = weeks.flat().filter(Boolean)
+    const normal = days.filter(day => day.state === "normal").length
+    const warnings = days.filter(day => day.state === "warning").length
+
+    const header = widget.addStack()
+    header.centerAlignContent()
+    header.spacing = 8
+    const title = header.addText(monthKey + "  正常 " + normal + " · 异常 " + warnings + " · 待查 " + pending)
+    title.font = Font.boldSystemFont(12)
+    title.textColor = Color.white()
+    title.lineLimit = 1
+    title.minimumScaleFactor = 0.75
+    title.url = getWeeklyAttendanceUrl(monthKey)
+    header.addSpacer()
+    for (const [label, offset] of [["‹", -1], ["›", 1]]) {
+        const target = new Date(year, monthIndex + offset, 1)
+        if (target > current) continue
+        const key = formatDateKey(target).slice(0, 7)
+        const button = header.addStack()
+        button.setPadding(0, 6, 0, 6)
+        const symbol = button.addText(label)
+        symbol.font = Font.boldSystemFont(18)
+        symbol.textColor = new Color("#A4CAFF")
+        // 新版 Scriptable 直接在组件内翻页，旧版进入该月核查页。
+        if (typeof button.setAction === "function" && Number.parseInt(Device.systemVersion(), 10) >= 17) {
+            button.setAction(offset < 0 ? "上个月" : "下个月", { id: "attendance-month:" + key })
+        } else {
+            button.url = getWeeklyAttendanceUrl(key)
+        }
+    }
+
+    const width = Math.floor((mediumWidgetContentWidth() - 18) / 7)
+    const weekdays = widget.addStack()
+    weekdays.spacing = 3
+    for (const day of "一二三四五六日") {
+        const column = weekdays.addStack()
+        column.size = new Size(width, 13)
+        const label = column.addText(day)
+        label.font = Font.systemFont(9)
+        label.textColor = new Color("#AABCD2")
+    }
+
+    // 未来日期和月外空格只作占位，工作日按核查结果着色。
+    const colors = { normal: "#26715E", warning: "#A16530", active: "#2869B4", neutral: "#42556F" }
+    for (const week of weeks) {
+        widget.addSpacer(2)
+        const row = widget.addStack()
+        row.spacing = 3
+        for (const day of week) {
+            const tile = row.addStack()
+            tile.size = new Size(width, 15)
+            if (!day) continue
+            tile.cornerRadius = 4
+            tile.setPadding(0, 5, 0, 5)
+            tile.centerAlignContent()
+            tile.backgroundColor = new Color(day.workday ? colors[day.state] : "#263549")
+            const label = tile.addText(String(Number(day.key.slice(-2))))
+            label.font = Font.mediumSystemFont(10)
+            label.textColor = new Color(day.state === "future" ? "#8695A8" : "#FFFFFF")
+        }
+    }
+}
+
+/**
+ * 大号沿用中号今日布局，并在下方追加当月考勤日历。
  *
  * @param widget 大号桌面组件
  * @param data 今日打卡摘要
- * @param includeStats 是否在今日状态下方显示近七天统计
+ * @param includeStats 是否附加月历
  * @author Kai
- * @date 2026/11/25 11:28
+ * @date 2026/11/25 11:47
  */
 async function renderLargeWidget(widget, data, includeStats) {
-  addCompactHeader(widget, "今日打卡")
-
-  widget.addSpacer(10)
-
-  if (!data.ok) {
-    renderErrorBlock(widget, data)
-    return
-  }
-
-  const meta = getStatusMeta(data)
-
-    // 大号沿用中号的状态层级，并为多行说明留出空间。
-    const statusCard = addAttendanceStatusCard(widget, 14, 12, 12)
-
-  if (showsLiveCountdown(data)) {
-    const title = addLiveCountdown(statusCard, data, Font.boldSystemFont(22), meta.color)
-    title.minimumScaleFactor = 0.7
-  } else {
-    const title = statusCard.addText(meta.mainText)
-    title.font = Font.boldSystemFont(22)
-    title.textColor = new Color(meta.color)
-    title.lineLimit = 1
-    title.minimumScaleFactor = 0.7
-  }
-
-  statusCard.addSpacer(4)
-
-  const sub = statusCard.addText(meta.subText)
-  sub.font = Font.systemFont(12)
-  sub.textColor = new Color("#D1D5DB")
-  sub.lineLimit = 2
-  sub.minimumScaleFactor = 0.75
-
-  statusCard.addSpacer(8)
-
-    // 进度条宽度跟随大号组件，给外层和状态卡内边距留空间。
-    addProgressBar(statusCard, data, homeScreenWidgetWidth("large") - 52)
-
+    const today = widget.addStack()
+    today.layoutVertically()
+    await renderMediumWidget(today, data, true)
     if (includeStats) {
-        // 合并版保留上下班明细，给周统计留出固定的下半区。
-        addDetailRow(widget, "上班卡", data.hasClockIn ? formatTime(data.inTime) : "未打卡")
-        addDetailRow(widget, "下班卡", data.hasOutRecord ? formatTime(data.latestOutTime) : "待打卡")
         widget.addSpacer()
-        renderWidgetAttendanceStats(widget, data, 7, false)
-        return
+        renderWidgetMonthCalendar(widget, data)
     }
-
-    widget.addSpacer(8)
-    widget.addSpacer()
-
-  addDetailRow(
-      widget,
-      "上班卡",
-      data.hasClockIn
-          ? `${formatTime(data.inTime)} ${data.inStatusDesc || ""}`.trim()
-          : "未打卡"
-  )
-
-  addDetailRow(
-      widget,
-      "下班卡",
-      data.hasOutRecord
-          ? `${formatTime(data.latestOutTime)} ${data.outStatusDesc || ""}`.trim()
-          : "未打"
-  )
-
-  addDetailRow(
-      widget,
-      "当前工时",
-      data.hasOutRecord ? formatDuration(data.currentWorkMs) : "--"
-  )
-
-  addDetailRow(
-      widget,
-      "可下班",
-      data.hasClockIn ? formatTime(data.targetTime) : "--"
-  )
-
 }
-
 
 // ==================== 小组件公共 UI ====================
-
-/**
- * 绘制桌面组件的考勤状态卡
- *
- * @param parent 承载状态卡的组件容器
- * @param radius 卡片圆角
- * @param verticalPadding 上下内边距
- * @param horizontalPadding 左右内边距
- * @return 可容纳倒计时与状态说明的纵向卡片
- * @author Kai
- * @date 2026/11/25 11:09
- */
-function addAttendanceStatusCard(parent, radius, verticalPadding, horizontalPadding) {
-    const card = parent.addStack()
-    card.layoutVertically()
-    // 统一底色与描边，突出倒计时和考勤状态。
-    card.backgroundColor = new Color("#91ABC8", 0.14)
-    card.borderColor = new Color("#B0C8E1", 0.22)
-    card.borderWidth = 0.5
-    card.cornerRadius = radius
-    card.setPadding(verticalPadding, horizontalPadding, verticalPadding, horizontalPadding)
-    return card
-}
 
 function addCompactHeader(widget, titleText) {
   const row = widget.addStack()
@@ -3270,41 +3377,6 @@ function addInfoCell(parent, label, value, state, width) {
     detail.textColor = new Color(foreground)
     detail.lineLimit = 1
     detail.minimumScaleFactor = 0.65
-}
-
-/**
- * 在大号组件中渲染一行横向考勤明细
- *
- * @param widget 大号桌面组件
- * @param label 明细字段名称
- * @param value 明细字段值
- * @author Kai
- * @date 2026/11/24 17:47
- */
-function addDetailRow(widget, label, value) {
-    // 将可用高度分散到明细行之间，在大屏上保持均衡。
-    widget.addSpacer()
-  const row = widget.addStack()
-  row.layoutHorizontally()
-  row.centerAlignContent()
-    row.setPadding(10, 11, 10, 11)
-    row.cornerRadius = 9
-    row.backgroundColor = new Color("#B0C8E1", 0.09)
-
-  const l = row.addText(label)
-  l.font = Font.systemFont(12)
-  l.textColor = new Color("#9CA3AF")
-  l.lineLimit = 1
-
-  row.addSpacer()
-
-  const v = row.addText(value)
-  v.font = Font.boldSystemFont(13)
-  v.textColor = Color.white()
-  v.lineLimit = 1
-  v.minimumScaleFactor = 0.75
-
-    widget.addSpacer(4)
 }
 
 /**
