@@ -577,40 +577,182 @@ async function runWidgetUpdate(options) {
  * @date 2026/11/25 12:18
  */
 async function showMainMenu() {
-  const alert = new Alert()
-  alert.title = "打卡助手"
-  alert.message = "请选择要执行的操作"
-  alert.addAction("预览中号小组件")
-  alert.addAction("查看 Debug 信息")
-  alert.addAction("离开公司检查")
-  alert.addAction("预约 9 小时提醒")
-  alert.addAction("检查是否快满 9 小时")
-  alert.addAction("更新脚本")
-  alert.addAction("设置账号")
-  alert.addAction("预览大号月历组件")
-  alert.addCancelAction("取消")
+    const table = new UITable()
+    table.showSeparators = false
 
-  const index = await alert.presentSheet()
+    const colors = {
+        ink: "#183153",
+        muted: "#718096",
+        surface: "#F5F7FB",
+        paper: "#EDF3FA",
+        accent: "#3F7BCB",
+        white: "#FFFFFF"
+    }
 
-  if (index === 0) {
-    await runWidgetUpdate({ presentPreview: true })
-  } else if (index === 1) {
-    await handleDebug()
-  } else if (index === 2) {
-    await handleLeaveCompany()
-  } else if (index === 3) {
-    await handleScheduleNineHours()
-  } else if (index === 4) {
-    await handleNearNineHours()
-  } else if (index === 5) {
-    await handleUpdateScript()
-  } else if (index === 6) {
-    await promptAndSaveAccount()
-  } else if (index === 7) {
-    await runWidgetUpdate({ presentPreview: true, family: "large" })
-  }
+    const todayData = loadCachedAttendanceSummary()
+    const preferences = readAttendancePreferences()
+    const themeNames = { navy: "深海蓝", teal: "松石绿", slate: "岩灰" }
+    const reminderText = preferences.remindMinutes
+        ? "提前 " + preferences.remindMinutes + " 分钟提醒"
+        : "已关闭提前提醒"
+
+    const accountText = !CONFIG.USERNAME
+        ? "尚未设置"
+        : /^\d{7,}$/.test(CONFIG.USERNAME)
+            ? CONFIG.USERNAME.slice(0, 3) + "****" + CONFIG.USERNAME.slice(-4)
+            : "已配置"
+
+    const attendanceStatus = !todayData.ok
+        ? "今日考勤尚未同步"
+        : !todayData.hasClockIn
+            ? "等待上班打卡"
+            : todayData.targetReached
+                ? (todayData.hasOutRecord ? "今日工时已达标" : "已达到可下班时间")
+                : "距离可下班 " + (todayData.countdownText || "--")
+
+    /**
+     * 添加管理页分组标题。
+     *
+     * @param title 分组名称
+     * @param subtitle 分组说明
+     */
+    function addSection(title, subtitle) {
+        const row = new UITableRow()
+        row.height = subtitle ? 43 : 34
+        row.backgroundColor = new Color(colors.surface)
+        const cell = row.addText(title, subtitle || "")
+        cell.titleFont = Font.boldSystemFont(13)
+        cell.titleColor = new Color(colors.ink)
+        if (subtitle) {
+            cell.subtitleFont = Font.systemFont(10)
+            cell.subtitleColor = new Color(colors.muted)
+        }
+        table.addRow(row)
+    }
+
+    /**
+     * 添加可点击的管理入口。
+     *
+     * @param title 主标题
+     * @param subtitle 补充说明
+     * @param action 点击后的操作
+     */
+    function addActionRow(title, subtitle, action) {
+        const row = new UITableRow()
+        row.height = 58
+        row.backgroundColor = new Color(colors.white)
+        const cell = row.addText(title + "  ›", subtitle)
+        cell.titleFont = Font.semiboldSystemFont(15)
+        cell.titleColor = new Color(colors.ink)
+        cell.subtitleFont = Font.systemFont(11)
+        cell.subtitleColor = new Color(colors.muted)
+        row.onSelect = async () => {
+            try {
+                await action()
+            } catch (error) {
+                await presentMessage(title, String(error && error.message ? error.message : error))
+            }
+        }
+        table.addRow(row)
+    }
+
+    /**
+     * 添加两列快捷操作，减少长菜单的滚动距离。
+     *
+     * @param items 操作名称与回调
+     */
+    function addActionGrid(items) {
+        const row = new UITableRow()
+        row.height = 52
+        row.cellSpacing = 8
+        row.backgroundColor = new Color(colors.surface)
+
+        for (const item of items) {
+            const button = row.addButton(item.label)
+            button.widthWeight = 1
+            button.centerAligned()
+            button.titleFont = Font.semiboldSystemFont(12)
+            button.titleColor = new Color(item.color || colors.ink)
+            button.onTap = async () => {
+                try {
+                    await item.action()
+                } catch (error) {
+                    await presentMessage(item.title || item.label, String(error && error.message ? error.message : error))
+                }
+            }
+        }
+        table.addRow(row)
+    }
+
+    // 顶部主视觉：深色标题区与清晰的页面定位。
+    const hero = new UITableRow()
+    hero.height = 88
+    hero.backgroundColor = new Color(colors.ink)
+    const heroText = hero.addText("考勤管理中心", "iGroup  ·  " + formatDateKey(now) + "  ·  Attendance Helper")
+    heroText.titleFont = Font.boldSystemFont(24)
+    heroText.titleColor = Color.white()
+    heroText.subtitleFont = Font.systemFont(11)
+    heroText.subtitleColor = new Color("#C4D1E0")
+    table.addRow(hero)
+
+    addSection("今日概览", todayData.ok
+        ? "本机考勤快照 · 最近更新 " + getSnapshotUpdatedText(todayData)
+        : "尚无今日快照 · 可通过下方入口刷新")
+
+    const overview = new UITableRow()
+    overview.height = 82
+    overview.backgroundColor = new Color(colors.paper)
+    const overviewTitle = todayData.ok
+        ? (todayData.personName || CONFIG.COMPANY_NAME || "今日考勤")
+        : "今日考勤尚未同步"
+    const overviewSubtitle = todayData.ok
+        ? "上班 " + (todayData.hasClockIn ? formatTime(todayData.inTime) : "未打卡")
+            + "   ·   下班 " + (todayData.hasOutRecord ? formatTime(todayData.latestOutTime) : "未打卡")
+            + "\n" + attendanceStatus
+        : (todayData.error || "点击「刷新中号组件」获取最新打卡数据")
+    const overviewText = overview.addText(overviewTitle, overviewSubtitle)
+    overviewText.titleFont = Font.boldSystemFont(17)
+    overviewText.titleColor = new Color(colors.ink)
+    overviewText.subtitleFont = Font.systemFont(11)
+    overviewText.subtitleColor = new Color(colors.muted)
+    table.addRow(overview)
+
+    addSection("考勤工具", "常用操作集中在这里，点击即可执行")
+    addActionGrid([
+        { label: "↻  刷新中号组件", title: "刷新中号组件", action: () => runWidgetUpdate({ presentPreview: true }) },
+        { label: "▦  大号月历预览", title: "大号月历预览", action: () => runWidgetUpdate({ presentPreview: true, family: "large" }) }
+    ])
+    addActionGrid([
+        { label: "▤  月历考勤核查", title: "月历考勤核查", action: () => presentAttendanceHistory() },
+        { label: "✓  离开公司检查", title: "离开公司检查", action: () => handleLeaveCompany() }
+    ])
+    addActionGrid([
+        { label: "◷  预约 9 小时提醒", title: "预约 9 小时提醒", action: () => handleScheduleNineHours() },
+        { label: "⌁  检查提醒状态", title: "检查提醒状态", action: () => handleNearNineHours() }
+    ])
+
+    addSection("账户与偏好", "账号凭据保存在 iOS 钥匙串，偏好设置保存在本机")
+    addActionRow("登录账号", accountText + " · 管理账号、密码和设备 ID", () => promptAndSaveAccount())
+    addActionRow("组件外观与提醒", (themeNames[preferences.theme] || "深海蓝") + " · " + reminderText,
+        () => presentAttendanceHistory(undefined, true))
+
+    addSection("系统维护", "调试接口数据或更新脚本")
+    addActionGrid([
+        { label: "⌁  Debug 信息", title: "Debug 信息", action: () => handleDebug(), color: "#52657A" },
+        { label: "⇧  检查脚本更新", title: "检查脚本更新", action: () => handleUpdateScript(), color: colors.accent }
+    ])
+
+    const footer = new UITableRow()
+    footer.height = 40
+    footer.backgroundColor = new Color(colors.surface)
+    const footerText = footer.addText("本机管理 · 考勤记录与偏好不会上传到额外的管理服务")
+    footerText.titleFont = Font.systemFont(10)
+    footerText.titleColor = new Color(colors.muted)
+    footerText.centerAligned()
+    table.addRow(footer)
+
+    await table.present(true)
 }
-
 
 // ==================== 从 GitHub 更新脚本 ====================
 
@@ -2037,9 +2179,21 @@ function readAttendancePreferences() {
  */
 function attendancePalette() {
     const palettes = {
-        navy: { ink: "#213C62", accent: "#528AD9", paper: "#EEF4FC" },
-        teal: { ink: "#184C49", accent: "#3A9D90", paper: "#E9F6F3" },
-        slate: { ink: "#414450", accent: "#868A9F", paper: "#F0F0F5" }
+        navy: {
+            ink: "#203B5D", accent: "#4B83CE", paper: "#EDF3FB",
+            surface: "#F7F9FC", muted: "#738197", normal: "#16836A",
+            warning: "#B85C35", active: "#3977C5", neutral: "#7C8CA2"
+        },
+        teal: {
+            ink: "#194D4A", accent: "#37998E", paper: "#EAF5F2",
+            surface: "#F6FAF9", muted: "#718985", normal: "#16836A",
+            warning: "#B85C35", active: "#2F8E83", neutral: "#7C918D"
+        },
+        slate: {
+            ink: "#3D4656", accent: "#7B8798", paper: "#EFF1F5",
+            surface: "#F8F9FB", muted: "#7B8493", normal: "#16836A",
+            warning: "#B85C35", active: "#66758B", neutral: "#8993A2"
+        }
     }
     return palettes[readAttendancePreferences().theme]
 }
@@ -2931,8 +3085,9 @@ function addAttendanceMonthlyStats(table, days, palette) {
     }
     const duration = mean(workdays.map(day => day.workedMs).filter(Number.isFinite))
     const row = new UITableRow()
-    row.height = 57
+    row.height = 68
     row.cellSpacing = 0
+    row.backgroundColor = new Color(palette.paper)
     for (const [value, label] of [
         [duration === null ? "—" : formatShortDuration(duration), "平均工时"],
         [formatAverageClock("clockInAt"), "平均上班"],
@@ -2943,6 +3098,8 @@ function addAttendanceMonthlyStats(table, days, palette) {
         item.centerAligned()
         item.titleColor = new Color(palette.accent)
         item.titleFont = Font.boldSystemFont(17)
+        item.subtitleColor = new Color(palette.muted)
+        item.subtitleFont = Font.systemFont(10)
     }
     table.addRow(row)
 }
@@ -2954,7 +3111,7 @@ function addAttendanceMonthlyStats(table, days, palette) {
  * @author Kai
  * @date 2026/11/25 12:57
  */
-async function presentAttendanceHistory(initialMonth) {
+async function presentAttendanceHistory(initialMonth, openSettings) {
     const table = new UITable()
     const todayKey = formatDateKey(now)
     const current = attendanceMonth()
@@ -2971,7 +3128,7 @@ async function presentAttendanceHistory(initialMonth) {
     let monthChanged = false
     // 按日期保存选中项，自动补查后仍停留在用户正在看的那天。
     // 配置面板随当前月份保留展开状态，便于连续调节。
-    let settingsOpen = false
+    let settingsOpen = !!openSettings
     let settingsMessage = ""
     let selectedKey = month.getTime() === current.getTime() ? todayKey : formatDateKey(month)
 
@@ -2990,27 +3147,38 @@ async function presentAttendanceHistory(initialMonth) {
         const normal = days.filter(day => day.state === "normal").length
         const pending = days.filter(day => day.workday && day.state === "neutral").length
         const selected = days.find(day => day.key === selectedKey)
+
         table.removeAllRows()
-        // 统一页首、汇总和日期区配色，配置返回时重新读取主题。
         const palette = attendancePalette()
         table.showSeparators = false
 
+        // 页面标题卡片。
         const heading = new UITableRow()
-        heading.height = 76
-        heading.backgroundColor = new Color(palette.paper)
-        const title = heading.addText(month.getFullYear() + " 年 " + (month.getMonth() + 1) + " 月", "考勤核查")
-        title.titleFont = Font.boldSystemFont(23)
-        title.titleColor = new Color(palette.ink)
-        title.subtitleColor = new Color("#657386")
+        heading.height = 82
+        heading.backgroundColor = new Color(palette.ink)
+        const title = heading.addText(
+            month.getFullYear() + " 年 " + (month.getMonth() + 1) + " 月",
+            "考勤月历  ·  工时统计与异常核查"
+        )
+        title.titleFont = Font.boldSystemFont(24)
+        title.titleColor = Color.white()
+        title.subtitleFont = Font.systemFont(11)
+        title.subtitleColor = new Color("#D2DCE8")
         table.addRow(heading)
 
-        // 整行处理点击并在页内展开，避免从原生表格叠开系统弹窗。
+        // 配置入口采用独立卡片，默认收起，避免干扰月历浏览。
         const settingsRow = new UITableRow()
-        settingsRow.height = 44
+        settingsRow.height = 48
+        settingsRow.backgroundColor = new Color(palette.surface)
         settingsRow.dismissOnSelect = false
-        const settings = settingsRow.addText(settingsOpen ? "收起考勤配置" : "考勤配置")
+        const settings = settingsRow.addText(
+            settingsOpen ? "⚙  考勤偏好设置  ·  收起" : "⚙  考勤偏好设置  ·  展开",
+            "组件主题与提前下班提醒"
+        )
+        settings.titleFont = Font.semiboldSystemFont(14)
         settings.titleColor = new Color(palette.ink)
-        settings.centerAligned()
+        settings.subtitleFont = Font.systemFont(10)
+        settings.subtitleColor = new Color(palette.muted)
         settingsRow.onSelect = () => {
             settingsOpen = !settingsOpen
             draw()
@@ -3021,33 +3189,31 @@ async function presentAttendanceHistory(initialMonth) {
             const preferences = readAttendancePreferences()
 
             /**
-             * 将设置项绘制成等宽选项，选中项用字重和强调色标识。
+             * 将设置项绘制成等宽选项，选中项使用勾选符号和强调色。
              *
              * @param field 设置字段
              * @param options 值与名称列表
-             * @author Kai
-             * @date 2026/11/25 13:01
              */
             function addOptions(field, options) {
                 const row = new UITableRow()
-                row.height = 43
-                row.cellSpacing = 0
+                row.height = 42
+                row.cellSpacing = 4
                 row.backgroundColor = new Color(palette.paper)
                 for (const [value, label] of options) {
-                    const choice = row.addButton(label)
+                    const active = preferences[field] === value
+                    const choice = row.addButton((active ? "✓ " : "") + label)
                     choice.widthWeight = 1
                     choice.centerAligned()
                     choice.dismissOnTap = false
-                    const active = preferences[field] === value
-                    choice.titleFont = active ? Font.boldSystemFont(14) : Font.systemFont(14)
-                    choice.titleColor = new Color(active ? palette.ink : "#657386")
+                    choice.titleFont = active ? Font.boldSystemFont(13) : Font.systemFont(12)
+                    choice.titleColor = new Color(active ? palette.accent : palette.muted)
                     choice.onTap = async () => {
                         const previous = readAttendancePreferences()
                         settingsMessage = ""
                         try {
                             await saveAttendancePreferences({ ...previous, [field]: value }, previous)
                         } catch (error) {
-                            settingsMessage = "更新配置时发生错误：" + String(error.message || error)
+                            settingsMessage = "保存失败：" + String(error.message || error)
                         }
                         draw()
                     }
@@ -3055,44 +3221,77 @@ async function presentAttendanceHistory(initialMonth) {
                 table.addRow(row)
             }
 
-            const label = new UITableRow()
-            label.height = 36
-            label.addText("组件主题")
-            table.addRow(label)
+            const appearance = new UITableRow()
+            appearance.height = 38
+            appearance.backgroundColor = new Color(palette.surface)
+            const appearanceText = appearance.addText("组件主题", "选择桌面组件的强调色")
+            appearanceText.titleFont = Font.semiboldSystemFont(13)
+            appearanceText.titleColor = new Color(palette.ink)
+            appearanceText.subtitleFont = Font.systemFont(10)
+            appearanceText.subtitleColor = new Color(palette.muted)
+            table.addRow(appearance)
             addOptions("theme", [["navy", "深海蓝"], ["teal", "松石绿"], ["slate", "岩灰"]])
+
             const reminder = new UITableRow()
-            reminder.height = 36
-            reminder.addText("提前下班提醒", settingsMessage)
+            reminder.height = 38
+            reminder.backgroundColor = new Color(palette.surface)
+            const reminderText = reminder.addText("提前下班提醒", settingsMessage || "达到目标工时前收到通知")
+            reminderText.titleFont = Font.semiboldSystemFont(13)
+            reminderText.titleColor = new Color(palette.ink)
+            reminderText.subtitleFont = Font.systemFont(10)
+            reminderText.subtitleColor = new Color(palette.muted)
             table.addRow(reminder)
             addOptions("remindMinutes", [[5, "5 分钟"], [15, "15 分钟"], [30, "30 分钟"]])
             addOptions("remindMinutes", [[45, "45 分钟"], [60, "60 分钟"], [0, "关闭"]])
         }
 
+        // 月度状态概览。
+        const metricsTitle = new UITableRow()
+        metricsTitle.height = 34
+        metricsTitle.backgroundColor = new Color(palette.surface)
+        const metricsLabel = metricsTitle.addText("本月概况", "按已获取的工作日记录统计")
+        metricsLabel.titleFont = Font.semiboldSystemFont(13)
+        metricsLabel.titleColor = new Color(palette.ink)
+        metricsLabel.subtitleFont = Font.systemFont(10)
+        metricsLabel.subtitleColor = new Color(palette.muted)
+        table.addRow(metricsTitle)
+
         const metrics = new UITableRow()
-        metrics.height = 55
+        metrics.height = 66
         metrics.cellSpacing = 0
         metrics.backgroundColor = new Color(palette.paper)
         for (const [count, label, tint] of [
-            [normal, "正常", "#146A56"], [warnings.length, "异常", "#9C4B21"], [pending, "待查", palette.ink]
+            [normal, "正常", palette.normal],
+            [warnings.length, "异常", palette.warning],
+            [pending, "待查", palette.neutral]
         ]) {
             const metric = metrics.addText(String(count), label)
+            metric.widthWeight = 1
             metric.centerAligned()
-            metric.titleFont = Font.boldSystemFont(19)
+            metric.titleFont = Font.boldSystemFont(21)
             metric.titleColor = new Color(tint)
-            metric.subtitleColor = new Color("#495465")
+            metric.subtitleFont = Font.systemFont(10)
+            metric.subtitleColor = new Color(palette.muted)
         }
         table.addRow(metrics)
 
+        // 月份切换。
         const controls = new UITableRow()
-        controls.height = 40
+        controls.height = 46
+        controls.cellSpacing = 6
+        controls.backgroundColor = new Color(palette.surface)
         for (const [label, date] of [
             ["‹ 上月", new Date(month.getFullYear(), month.getMonth() - 1, 1)],
-            ["本月", current],
+            ["回到本月", current],
             ["下月 ›", new Date(month.getFullYear(), month.getMonth() + 1, 1)]
         ]) {
-            const cell = date > current ? controls.addText("") : controls.addButton(label)
+            const canNavigate = date <= current
+            const cell = canNavigate ? controls.addButton(label) : controls.addText(label)
+            cell.widthWeight = 1
             cell.centerAligned()
-            if (date > current) continue
+            cell.titleFont = Font.semiboldSystemFont(12)
+            cell.titleColor = new Color(canNavigate ? palette.accent : "#B7C0CC")
+            if (!canNavigate) continue
             cell.dismissOnTap = false
             cell.onTap = () => {
                 if (date.getTime() === month.getTime()) return
@@ -3110,39 +3309,80 @@ async function presentAttendanceHistory(initialMonth) {
         }
         table.addRow(controls)
 
-        // 沿用 Month Grid 的七列居中排版，日期使用原生按钮承接核查操作。
+        const calendarTitle = new UITableRow()
+        calendarTitle.height = 36
+        calendarTitle.backgroundColor = new Color(palette.surface)
+        const calendarLabel = calendarTitle.addText("每日考勤", "点击日期查看工卡和核查记录")
+        calendarLabel.titleFont = Font.semiboldSystemFont(13)
+        calendarLabel.titleColor = new Color(palette.ink)
+        calendarLabel.subtitleFont = Font.systemFont(10)
+        calendarLabel.subtitleColor = new Color(palette.muted)
+        table.addRow(calendarTitle)
+
+        // 状态图例。
+        const legend = new UITableRow()
+        legend.height = 30
+        legend.cellSpacing = 0
+        legend.backgroundColor = new Color(palette.surface)
+        for (const [label, tint] of [
+            ["● 正常", palette.normal],
+            ["● 异常", palette.warning],
+            ["● 进行中", palette.active],
+            ["● 待查", palette.neutral]
+        ]) {
+            const item = legend.addText(label)
+            item.widthWeight = 1
+            item.centerAligned()
+            item.titleFont = Font.systemFont(9)
+            item.titleColor = new Color(tint)
+        }
+        table.addRow(legend)
+
         const weekdays = new UITableRow()
         weekdays.cellSpacing = 0
-        weekdays.height = 30
+        weekdays.height = 31
         weekdays.backgroundColor = new Color(palette.paper)
         for (const weekday of "一二三四五六日") {
             const label = weekdays.addText(weekday)
-            label.titleFont = Font.mediumSystemFont(12)
-            label.titleColor = new Color(palette.ink)
+            label.titleFont = Font.semiboldSystemFont(11)
+            label.titleColor = new Color(palette.muted)
             label.centerAligned()
         }
         table.addRow(weekdays)
 
-        // 日期列等宽，选中日期在月历下方展开完整记录。
-        const dateColors = { normal: "#148267", warning: "#BA5A25", active: palette.accent, neutral: "#738197" }
+        // 日期按状态着色，当前选中周使用浅色底突出。
         for (const week of weeks) {
             const row = new UITableRow()
             row.height = 45
             row.cellSpacing = 0
-            if (week.some(day => day?.key === selectedKey)) row.backgroundColor = new Color(palette.paper)
+            if (week.some(day => day?.key === selectedKey)) {
+                row.backgroundColor = new Color(palette.paper)
+            } else {
+                row.backgroundColor = Color.white()
+            }
+
             for (const day of week) {
                 if (!day || !day.key) {
                     const empty = row.addText(day ? String(day.getDate()) : "")
                     empty.widthWeight = 1
                     empty.centerAligned()
+                    empty.titleColor = new Color("#C2CAD4")
                     continue
                 }
-                // 日期只显示数字，正常和异常保留自己的颜色，选中只改变字重与底色。
+
                 const cell = row.addButton(String(Number(day.key.slice(-2))))
                 cell.widthWeight = 1
                 cell.centerAligned()
-                cell.titleFont = day.key === selectedKey ? Font.boldSystemFont(18) : Font.mediumSystemFont(15)
-                cell.titleColor = new Color(day.workday ? dateColors[day.state] : "#738197")
+                cell.titleFont = day.key === selectedKey
+                    ? Font.boldSystemFont(18)
+                    : Font.mediumSystemFont(14)
+                const dateColors = {
+                    normal: palette.normal,
+                    warning: palette.warning,
+                    active: palette.active,
+                    neutral: palette.neutral
+                }
+                cell.titleColor = new Color(day.workday ? (dateColors[day.state] || palette.neutral) : "#A0AAB8")
                 cell.dismissOnTap = false
                 cell.onTap = () => {
                     selectedKey = day.key
@@ -3153,18 +3393,29 @@ async function presentAttendanceHistory(initialMonth) {
         }
 
         addAttendanceMonthlyStats(table, days, palette)
+
         if (selected) {
             const detail = new UITableRow()
-            detail.height = 61
+            detail.height = 70
             detail.backgroundColor = new Color(palette.paper)
-            const text = detail.addText(selected.key + "　" + selected.status,
-                "上班 " + selected.clockIn + "　下班 " + selected.clockOut + "　工时 " + selected.worked)
+            const text = detail.addText(
+                selected.key + "  ·  " + selected.status,
+                "上班 " + selected.clockIn + "   ·   下班 " + selected.clockOut
+                    + "   ·   工时 " + selected.worked
+            )
+            text.titleFont = Font.semiboldSystemFont(14)
             text.titleColor = new Color(palette.ink)
-            text.subtitleFont = Font.systemFont(12)
+            text.subtitleFont = Font.systemFont(11)
+            text.subtitleColor = new Color(palette.muted)
             table.addRow(detail)
+
             const action = new UITableRow()
-            const check = action.addButton("查看打卡明细与核查")
+            action.height = 44
+            action.backgroundColor = new Color(palette.surface)
+            const check = action.addButton("查看原始工卡与核查记录  ›")
             check.centerAligned()
+            check.titleFont = Font.semiboldSystemFont(12)
+            check.titleColor = new Color(palette.accent)
             check.dismissOnTap = false
             check.onTap = async () => {
                 if (await reviewAttendanceDay(selected)) draw()
@@ -3173,27 +3424,37 @@ async function presentAttendanceHistory(initialMonth) {
         }
 
         const notice = new UITableRow()
-        notice.height = 49
-        notice.backgroundColor = new Color(palette.paper)
-        const noticeText = notice.addText("异常待核查", syncing ? "正在补查本月考勤"
-            : syncFailed ? "补查中断，重新打开可重试"
-                : warnings.length ? "点日期查看原判、登记请假或确认正常"
-                    : pending ? "仍有日期等待补查" : "本月暂无待核查异常")
+        notice.height = 56
+        notice.backgroundColor = new Color(palette.surface)
+        const noticeText = notice.addText(
+            "异常与待核查",
+            syncing ? "正在补查本月考勤记录…"
+                : syncFailed ? "补查中断，重新打开页面可重试"
+                    : warnings.length ? warnings.length + " 个日期需要核查，点击下方项目处理"
+                        : pending ? pending + " 个工作日等待补查"
+                            : "本月暂无待核查异常"
+        )
+        noticeText.titleFont = Font.semiboldSystemFont(13)
         noticeText.titleColor = new Color(palette.ink)
-        noticeText.subtitleColor = new Color("#495465")
+        noticeText.subtitleFont = Font.systemFont(10)
+        noticeText.subtitleColor = new Color(palette.muted)
         table.addRow(notice)
 
         for (const day of warnings) {
             const row = new UITableRow()
             row.height = 46
-            const check = row.addButton(day.key.slice(5) + "　" + day.status)
+            row.backgroundColor = new Color("#FFF7F2")
+            const check = row.addButton(day.key.slice(5) + "  ·  " + day.status + "  ›")
             check.leftAligned()
+            check.titleFont = Font.mediumSystemFont(12)
+            check.titleColor = new Color(palette.warning)
             check.dismissOnTap = false
             check.onTap = async () => {
                 if (await reviewAttendanceDay(day)) draw()
             }
             table.addRow(row)
         }
+
         if (presented) table.reload()
     }
 
