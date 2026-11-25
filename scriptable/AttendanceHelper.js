@@ -3139,21 +3139,67 @@ function renderRecentHeatmapRow(widget, data, width, p, tileHeight = 30) {
     row.spacing = 3
     const tileWidth = Math.max(14, Math.floor((width - 18) / 7))
     const stateColors = { normal: p.good, warning: p.warning, active: p.accent, neutral: p.neutral }
+    const todayKey = formatDateKey(now)
+    const showTodayProgress = tileHeight >= 44
     for (const day of days) {
+        const isToday = day.key === todayKey
         const tile = row.addStack()
         tile.layoutVertically()
         tile.centerAlignContent()
         tile.cornerRadius = 5
-        tile.backgroundColor = new Color(!day.workday ? p.cell : stateColors[day.state] || p.neutral)
+        tile.backgroundColor = new Color(isToday
+            ? p.background2
+            : !day.workday ? p.cell : stateColors[day.state] || p.neutral)
         tile.size = new Size(tileWidth, tileHeight)
-        const number = tile.addText(String(Number(day.key.slice(-2))))
+        if (isToday) {
+            // 今日格不再只是普通状态色块：描边标识今天，底部进度条展示当日工时进度。
+            tile.borderColor = new Color(p.accent)
+            tile.borderWidth = 1.5
+        }
+
+        // 每一行都占满格子宽度，并用左右弹性留白确保日期与状态符号真正居中。
+        tile.addSpacer()
+        const numberLine = tile.addStack()
+        numberLine.layoutHorizontally()
+        numberLine.centerAlignContent()
+        numberLine.size = new Size(tileWidth, 12)
+        numberLine.addSpacer()
+        const number = numberLine.addText(String(Number(day.key.slice(-2))))
         number.font = Font.mediumSystemFont(8)
-        number.textColor = new Color(p.text)
+        number.textColor = new Color(isToday ? p.accent2 : p.text)
         number.centerAlignText()
-        const mark = tile.addText(!day.workday ? "—" : day.state === "normal" ? "✓" : day.state === "warning" ? "!" : day.state === "active" ? "●" : "·")
+        numberLine.addSpacer()
+
+        const markLine = tile.addStack()
+        markLine.layoutHorizontally()
+        markLine.centerAlignContent()
+        markLine.size = new Size(tileWidth, 11)
+        markLine.addSpacer()
+        const mark = markLine.addText(!day.workday ? "—" : day.state === "normal" ? "✓" : day.state === "warning" ? "!" : day.state === "active" ? "●" : "·")
         mark.font = Font.boldSystemFont(8)
-        mark.textColor = new Color(p.text)
+        mark.textColor = new Color(isToday ? p.accent : p.text)
         mark.centerAlignText()
+        markLine.addSpacer()
+
+        if (isToday && showTodayProgress) {
+            tile.addSpacer(2)
+            const trackWidth = Math.max(8, tileWidth - 12)
+            const track = tile.addStack()
+            track.layoutHorizontally()
+            track.backgroundColor = new Color(p.track)
+            track.cornerRadius = 2
+            track.size = new Size(trackWidth, 3)
+            const progress = data && data.ok ? widgetWorkProgress(data) : 0
+            const fillWidth = Math.max(0, Math.min(trackWidth, Math.round(trackWidth * progress)))
+            if (fillWidth > 0) {
+                const fill = track.addStack()
+                fill.backgroundColor = new Color(p.accent2)
+                fill.cornerRadius = 2
+                fill.size = new Size(fillWidth, 3)
+            }
+            if (fillWidth < trackWidth) track.addSpacer(trackWidth - fillWidth)
+        }
+        tile.addSpacer()
     }
 }
 
