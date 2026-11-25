@@ -12,7 +12,7 @@ export const RefreshAttendanceIntent = AppIntentManager.register({
     const workday = await isChinaWorkday(new Date());
     if (data.ok) {
       await syncAttendanceLiveActivity(data);
-      if (workday && getPreferences().remindMinutes > 0 && data.hasClockIn && !data.hasOutRecord) await handleScheduleNineHours();
+      if (workday && data.hasClockIn) await handleScheduleNineHours();
     }
     Widget.reloadAll();
     console.log(data.ok ? "考勤已刷新" : (data.error || "考勤刷新失败"));

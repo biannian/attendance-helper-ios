@@ -13,6 +13,8 @@ import {
 } from "./rules";
 import {
   getAccount,
+  isMissedCheckoutConfirmed,
+  setMissedCheckoutConfirmed,
   readHistorySnapshot,
   readReview,
   getTodaySnapshot,
@@ -58,6 +60,7 @@ export function loadCachedTodaySummary(now = new Date()) {
       outStatusDesc: snapshot.outStatusDesc
     };
     const data = normalizeAttendanceData(raw, snapshot.date, now);
+    data.missedConfirmed = !data.hasOutRecord && isMissedCheckoutConfirmed(snapshot.date);
     data.snapshotUpdatedAt = snapshot.savedAt;
     data.isCached = true;
     return data;
@@ -74,6 +77,8 @@ export async function getAttendanceSummary(day = new Date()) {
     const current = getAccount();
     if (!owner.username || owner.username !== current.username || owner.password !== current.password || owner.deviceId !== current.deviceId) throw new Error("账号已切换，请重新刷新");
     const data = normalizeAttendanceData(raw, dateKey, new Date());
+    if (data.ok && data.hasOutRecord && data.targetReached && isMissedCheckoutConfirmed(dateKey)) setMissedCheckoutConfirmed(dateKey, false);
+    data.missedConfirmed = !data.hasOutRecord && isMissedCheckoutConfirmed(dateKey);
     if (String(data.date).replace(/\//g, "-").slice(0, 10) !== dateKey) {
       throw new Error("考勤返回日期与查询日期不一致");
     }
@@ -159,7 +164,7 @@ function holidayForDate(date, holidays) {
 export function getCachedHistoryDay(date, holidays = {}) {
   const key = formatDateKey(date);
   const record = readHistorySnapshot(key);
-  return buildAttendanceHistoryDay(date, record, readReview(key), holidayForDate(date, holidays));
+  return buildAttendanceHistoryDay(date, record, readReview(key), holidayForDate(date, holidays), new Date(), isMissedCheckoutConfirmed(key));
 }
 
 function average(values) {
@@ -226,7 +231,7 @@ export async function getAttendanceMonth(monthDate = new Date(), options = {}) {
     const key = formatDateKey(date);
     if (key > todayKey) return { key, future: true, status: "未到该日期", workday: false, state: "future" };
     const record = checked.has(key) ? checked.get(key) : readHistorySnapshot(key);
-    const day = buildAttendanceHistoryDay(date, record, readReview(key), holidayForDate(date, holidays), now);
+    const day = buildAttendanceHistoryDay(date, record, readReview(key), holidayForDate(date, holidays), now, isMissedCheckoutConfirmed(key));
     return { ...day, ...(checked.has(key) && !record && !day.review ? { state: "warning", status: "查询失败 · 待核对" } : {}), reviewed: !!day.review, decision: day.review?.decision || "auto" };
   });
 
@@ -277,7 +282,7 @@ export function getRecentAttendanceDays(count = 7) {
     const yearHolidays = readHolidayYear(date.getFullYear())?.holidays || {};
     const holiday = yearHolidays[key.slice(5)] || readHolidayDay(key);
     const record = readHistorySnapshot(key);
-    days.push(buildAttendanceHistoryDay(date, record, readReview(key), holiday, today));
+    days.push(buildAttendanceHistoryDay(date, record, readReview(key), holiday, today, isMissedCheckoutConfirmed(key)));
   }
   return days;
 }

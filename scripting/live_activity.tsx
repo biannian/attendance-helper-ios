@@ -13,6 +13,7 @@ import {
 
 export type AttendanceActivityState = {
   phase: "working" | "ready" | "finished";
+  missedConfirmed?: boolean;
   startedAt: number;
   targetAt: number;
   clockInText: string;
@@ -36,7 +37,7 @@ function ActivityDetails(state: AttendanceActivityState) {
             showsHours={true}
           />
         : <Text font="title2" foregroundStyle={state.phase === "ready" ? "systemRed" : "secondaryLabel"}>
-            {state.phase === "ready" ? "未打下班卡，请立即打卡" : "今日考勤已结束"}
+            {state.phase === "ready" ? (state.missedConfirmed ? "已漏卡 · 待补卡" : "⚠ 未打下班卡，请立即打卡") : "今日考勤已结束"}
           </Text>}
       <HStack spacing={12}>
         <VStack spacing={2} alignment="leading">
@@ -72,7 +73,7 @@ const builder: LiveActivityUIBuilder<AttendanceActivityState> = (state) => (
     compactTrailing={
       state.phase === "working"
         ? <TimerIntervalLabel from={state.startedAt} to={state.targetAt} countsDown={true} showsHours={true} />
-        : <Text foregroundStyle={state.phase === "ready" ? "systemRed" : "secondaryLabel"}>{state.phase === "ready" ? "漏卡" : "完成"}</Text>
+        : <Text foregroundStyle={state.phase === "ready" ? "systemRed" : "secondaryLabel"}>{state.phase === "ready" ? (state.missedConfirmed ? "待补卡" : "⚠ 漏卡") : "完成"}</Text>
     }
     minimal={<Image systemName="clock.fill" foregroundStyle={state.phase === "ready" ? "systemRed" : "#7CC7FF"} />}
     keylineTint={state.phase === "ready" ? "systemRed" : "#7CC7FF"}
@@ -81,7 +82,7 @@ const builder: LiveActivityUIBuilder<AttendanceActivityState> = (state) => (
       <ActivityDetails {...state} />
     </LiveActivityUIExpandedCenter>
     <LiveActivityUIExpandedBottom>
-      <Text font="caption2" foregroundStyle="secondaryLabel">达到目标后请记得完成下班打卡</Text>
+      <Text font="caption2" foregroundStyle="secondaryLabel">{state.missedConfirmed ? "请按公司流程申请补卡" : "达到目标后请记得完成下班打卡"}</Text>
     </LiveActivityUIExpandedBottom>
   </LiveActivityUI>
 );

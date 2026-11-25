@@ -25,12 +25,13 @@ import {
   debugSummary,
   isChinaWorkday
 } from "./core/attendance";
-import { formatDateKey, formatRemainText, formatShortDuration, formatTime } from "./core/rules";
+import { formatDateKey, formatRemainText, formatShortDuration, formatTime, missingCheckout, checkoutWarningTitle } from "./core/rules";
 import {
   getAccount,
   getPreferences,
   saveAccount,
-  savePreferences
+  savePreferences,
+  setMissedCheckoutConfirmed
 } from "./core/store";
 import {
   handleLeaveCompany,
@@ -77,7 +78,7 @@ function StatusBadge({ text, color }) {
   return <Text font="caption" foregroundStyle={color}>{text}</Text>;
 }
 
-function TodayTab({ data, palette, loading, onRefresh, statusMessage, isWorkday }) {
+function TodayTab({ data, palette, loading, onRefresh, statusMessage, isWorkday, onConfirmMissed }) {
   if (!isWorkday) return <VStack spacing={12} alignment="leading"><Card><Text font="caption" foregroundStyle="secondaryLabel">{formatDateKey(new Date())} · 今日考勤</Text><Text font="title2">今天是休息日</Text><Text font="caption" foregroundStyle="secondaryLabel">法定节假日和周末不显示考勤状态，调休补班日会自动恢复。</Text><Button title="仍然刷新数据" buttonStyle="bordered" action={onRefresh} /></Card></VStack>;
   const progress = !data?.hasClockIn ? 0 : Math.max(0, Math.min(1,
     (data.hasOutRecord ? data.currentWorkMs : Date.now() - data.inTime.getTime()) /
@@ -89,28 +90,28 @@ function TodayTab({ data, palette, loading, onRefresh, statusMessage, isWorkday 
   const status = !data?.ok ? "等待同步" :
     !data.hasClockIn ? "等待上班卡" :
     data.hasOutRecord ? (data.targetReached ? "考勤正常" : "工时不足") :
-    data.targetReached ? "未打下班卡" : "正在工作";
+    missingCheckout(data) ? checkoutWarningTitle(data) : "正在工作";
 
   return <VStack spacing={14} alignment="leading">
     <Card>
       <HStack>
         <VStack spacing={3} alignment="leading">
           <Text font="caption" foregroundStyle="secondaryLabel">{formatDateKey(new Date())} · 今日考勤</Text>
-          <Text font="largeTitle">{elapsed}</Text>
+          <Text font="largeTitle" foregroundStyle={missingCheckout(data) ? "systemRed" : "primaryLabel"}>{missingCheckout(data) ? checkoutWarningTitle(data) : elapsed}</Text>
           <Text font="caption" foregroundStyle={palette.accent}>累计工时 / 目标 {CONFIG.TARGET_HOURS} 小时</Text>
         </VStack>
         <Spacer />
         <VStack spacing={3} alignment="trailing">
-          <StatusBadge text={status} color={data?.targetReached && !data.hasOutRecord || data?.hasOutRecord && !data.targetReached ? "systemRed" : data?.hasOutRecord ? palette.normal : palette.accent} />
+          <StatusBadge text={status} color={missingCheckout(data) || (data?.hasOutRecord && !data.targetReached) ? "systemRed" : data?.hasOutRecord && data.targetReached ? palette.normal : palette.accent} />
           <Button title={loading ? "同步中…" : "刷新"} buttonStyle="bordered" action={onRefresh} disabled={loading} />
         </VStack>
       </HStack>
-      <ProgressView value={progress} total={1} tint={data?.targetReached && !data.hasOutRecord ? "systemRed" : palette.accent} />
+      <ProgressView value={progress} total={1} tint={missingCheckout(data) ? "systemRed" : palette.accent} />
       {data?.hasClockIn && !data.hasOutRecord && data.targetTime
         ? <VStack spacing={3} alignment="leading">
             <Text font="caption" foregroundStyle="secondaryLabel">距离可下班</Text>
-            {data.targetReached
-              ? <Text font="title2" foregroundStyle="systemRed">⚠ 未打下班卡，请立即打卡</Text>
+            {missingCheckout(data)
+              ? <VStack alignment="leading" spacing={6}><Text font="title2" foregroundStyle="systemRed">{data.missedConfirmed ? "已确认漏卡，请申请补卡" : "工时已满，请立即打下班卡"}</Text><Button title={data.missedConfirmed ? "撤销漏卡确认" : "已无法返回 · 确认漏卡"} buttonStyle="bordered" action={onConfirmMissed} /></VStack>
               : <TimerIntervalLabel from={data.inTime.getTime()} to={data.targetTime.getTime()} countsDown={true} showsHours={true} />}
           </VStack>
         : null}
@@ -128,7 +129,7 @@ function TodayTab({ data, palette, loading, onRefresh, statusMessage, isWorkday 
         <Spacer />
         <VStack spacing={3} alignment="leading">
           <Text font="caption2" foregroundStyle="secondaryLabel">下班卡</Text>
-          <Text font="headline" foregroundStyle={data?.targetReached && !data.hasOutRecord ? "systemRed" : "primaryLabel"}>{data?.hasOutRecord ? formatTime(data.latestOutTime) : "未打"}</Text>
+          <Text font="headline" foregroundStyle={missingCheckout(data) ? "systemRed" : "primaryLabel"}>{data?.hasOutRecord ? formatTime(data.latestOutTime) : "未打"}</Text>
         </VStack>
       </HStack>
       {data?.refreshError
@@ -343,6 +344,18 @@ export function AppView({ initialTab = "today" }) {
   const [leaveHours, setLeaveHours] = useState("0");
   const [debugText, setDebugText] = useState("");
 
+  async function confirmMissed() {
+    if (!missingCheckout(today)) return;
+    const next = !today.missedConfirmed;
+    setMissedCheckoutConfirmed(today.date, next);
+    const updated = { ...today, missedConfirmed: next };
+    setToday(updated);
+    setMessage(next ? "已标记待补卡，请按公司流程申请补卡" : "已撤销漏卡确认");
+    try { await syncAttendanceLiveActivity(updated); } catch (_) {}
+    Widget.reloadAll();
+    await loadMonth(monthDate);
+  }
+
   async function refreshToday() {
     if (!getAccount().configured) { setMessage("请先配置账号"); return; }
     setLoading(true);
@@ -354,7 +367,7 @@ export function AppView({ initialTab = "today" }) {
       if (data.ok) {
         const live = await syncAttendanceLiveActivity(data);
         setMessage(live.message || "同步完成");
-        if (workday && preferences.remindMinutes > 0 && data.hasClockIn && !data.hasOutRecord) {
+        if (workday && data.hasClockIn) {
           await handleScheduleNineHours();
         }
       } else {
@@ -489,7 +502,7 @@ export function AppView({ initialTab = "today" }) {
         </HStack>
 
         {tab === "today"
-          ? <TodayTab data={today} palette={palette} loading={loading} onRefresh={refreshToday} statusMessage={message} isWorkday={todayIsWorkday} />
+          ? <TodayTab data={today} palette={palette} loading={loading} onRefresh={refreshToday} statusMessage={message} isWorkday={todayIsWorkday} onConfirmMissed={confirmMissed} />
           : tab === "calendar"
             ? <CalendarTab
                 monthData={monthData}

@@ -169,7 +169,7 @@ export function normalizeAttendanceData(raw, dateHint = formatDateKey(new Date()
     hasOutRecord ? currentWorkMs >= targetMs : !!(targetTime && now.getTime() >= targetTime.getTime())
   );
   const remainingMinutes = remainingMs > 0 ? Math.ceil(remainingMs / 60000) : 0;
-  const countdownText = !hasClockIn ? "--" : remainingMs > 0 ? formatRemainText(remainingMinutes) : "已达标";
+  const countdownText = !hasClockIn ? "--" : remainingMs > 0 ? formatRemainText(remainingMinutes) : hasOutRecord ? "考勤正常" : "未打下班卡";
 
   return {
     ok: true, raw, personName, orgName, shiftName, date,
@@ -194,7 +194,7 @@ export function monthWeeks(month) {
   return weeks;
 }
 
-export function buildAttendanceHistoryDay(date, record, review, holiday, now = new Date()) {
+export function buildAttendanceHistoryDay(date, record, review, holiday, now = new Date(), confirmedMissed = false) {
   const key = formatDateKey(date);
   const today = key === formatDateKey(now);
   const holidayFlag = holiday?.holiday;
@@ -258,8 +258,12 @@ export function buildAttendanceHistoryDay(date, record, review, holiday, now = n
     state = "warning";
   }
 
+  const corrected = !!(clockIn && (clockOut || (workedMs !== null ? outSwipe : null)) && workedMs !== null && workedMs >= requiredMs);
+  const checkoutMissing = !!(workday && clockIn && requiredMs > 0 && ((!clockOut && workedMs === null) || (confirmedMissed && !corrected)) && (!today || now.getTime() >= clockIn.getTime() + requiredMs));
+  const missedConfirmed = checkoutMissing && confirmedMissed;
+  if (checkoutMissing && (today || missedConfirmed)) { status = missedConfirmed ? "已漏卡 · 待补卡" : "未打下班卡"; state = "warning"; }
   return {
-    key, kind, label, workday, status, state, workedMs,
+    key, kind, label, workday, status, state, workedMs, checkoutMissing, missedConfirmed,
     clockInAt: clockIn,
     clockOutAt: clockOut || (workedMs !== null ? outSwipe : null),
     originalStatus, review: review || null, leaveHours, requiredMs,
@@ -271,3 +275,8 @@ export function buildAttendanceHistoryDay(date, record, review, holiday, now = n
     worked: workedMs === null ? "—" : formatShortDuration(workedMs)
   };
 }
+
+export function missingCheckout(data, now = new Date()) {
+  return !!(data?.ok && data.hasClockIn && !data.hasOutRecord && (data.targetReached || (data.targetTime && now.getTime() >= data.targetTime.getTime())));
+}
+export function checkoutWarningTitle(data) { return data?.missedConfirmed ? "已漏卡·待补卡" : "未打下班卡"; }

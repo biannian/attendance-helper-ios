@@ -1,18 +1,19 @@
 import { LiveActivity } from "scripting";
 import { getPreferences, getLiveActivityId, setLiveActivityId } from "./store";
-import { formatShortDuration, formatTime } from "./rules";
+import { formatShortDuration, formatTime, missingCheckout, checkoutWarningTitle } from "./rules";
 import { AttendanceCountdownActivity } from "../live_activity";
 import { isChinaWorkday } from "./attendance";
 
 function activityState(data) {
-  const phase = data.hasOutRecord ? "finished" : data.targetReached ? "ready" : "working";
+  const phase = data.hasOutRecord ? "finished" : missingCheckout(data) ? "ready" : "working";
   return {
     phase,
+    missedConfirmed: !!data.missedConfirmed,
     startedAt: data.inTime.getTime(),
     targetAt: data.targetTime.getTime(),
     clockInText: formatTime(data.inTime),
     targetText: formatTime(data.targetTime),
-    statusText: phase === "working" ? "正在工作" : phase === "ready" ? "未打下班卡" : "已打下班卡",
+    statusText: phase === "working" ? "正在工作" : phase === "ready" ? checkoutWarningTitle(data) : "已打下班卡",
     workedText: data.hasOutRecord
       ? formatShortDuration(data.currentWorkMs)
       : formatShortDuration(Math.max(0, Date.now() - data.inTime.getTime()))
