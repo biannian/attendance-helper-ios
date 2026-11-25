@@ -4934,6 +4934,7 @@ function renderWidgetMonthCalendar(widget, data, contentWidth, style = "heatmap"
                 ? (colors[day.state] || colors.future)
                 : colors.rest)
             // 左右使用等量弹性留白，让 1 位和 2 位日期都严格落在色块中心。
+            tile.addSpacer()
             const label = tile.addText(String(Number(day.key.slice(-2))))
             label.font = Font.mediumSystemFont(fontSize)
             label.textColor = new Color(day.state === "future" ? stylePalette.muted : tileText)
