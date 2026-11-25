@@ -4004,18 +4004,35 @@ async function presentAttendanceHistory(initialMonth) {
         throw new Error(managementErrorText(loadError || "页面脚本未初始化"))
     }
     try {
+        // 由桌面小组件 URL Scheme 唤起时，Scriptable 可能仍在切换到前台。
+        // 先让 WebView 挂载到可见窗口，再加载页面，避免在未呈现的 WKWebView
+        // 中提前执行脚本和注入首屏数据后出现白屏。
+        const launchedFromWidget = args.queryParameters?.mode === "week"
+        if (launchedFromWidget) {
+            stage = "打开管理窗口"
+            closed = Promise.resolve(view.present(true)).then(() => { open=false }, e => { failure=e;open=false })
+            await pause(500)
+            if (!open) return
+        }
+
         fm.writeString(path, html)
         stage = "加载本地 HTML"
         try { await loadPage(true) }
         catch (_) {
             stage = "加载 HTML 备用方式"
-            view = new WebView()
+            if (!launchedFromWidget) view = new WebView()
             await loadPage(false)
         }
         stage = "初始化数据"
         await draw()
-        stage = "展示管理页面"
-        closed = Promise.resolve(view.present(true)).then(() => { open=false }, e => { failure=e;open=false })
+        if (!closed) {
+            stage = "展示管理页面"
+            closed = Promise.resolve(view.present(true)).then(() => { open=false }, e => { failure=e;open=false })
+        } else {
+            // 首次可见后再触发一次布局刷新，确保首屏在前台窗口完成绘制。
+            await pause(120)
+            await evaluateAck("window.dispatchEvent(new Event('resize'));document.body.style.webkitTransform='translateZ(0)'", "页面首屏重绘")
+        }
         stage = "操作桥接"
         while (open) {
             // 不使用 completion、浏览器异步回调或 Promise.race；一次读取一个动作。
