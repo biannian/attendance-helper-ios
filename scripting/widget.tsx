@@ -12,7 +12,7 @@ import {
 } from "scripting";
 import { CONFIG } from "./core/config";
 import { getTodaySummary, getAttendanceMonth, getRecentAttendanceDays, isChinaWorkday } from "./core/attendance";
-import { formatDateKey, formatRemainText, formatShortDuration, formatTime } from "./core/rules";
+import { formatDateKey, formatRemainText, formatShortDuration, formatTime, missingCheckout, checkoutWarningTitle } from "./core/rules";
 import { getPreferences } from "./core/store";
 import {
   CheckAttendanceIntent,
@@ -38,7 +38,7 @@ function statusText(data) {
   if (!data?.ok) return "暂无考勤数据";
   if (!data.hasClockIn) return "等待上班卡";
   if (data.hasOutRecord) return data.targetReached ? "考勤正常" : "工时不足";
-  return data.targetReached ? "已到下班时间" : "正在工作";
+  return missingCheckout(data) ? checkoutWarningTitle(data) : "正在工作";
 }
 
 function Countdown({ data, palette }) {
@@ -46,10 +46,10 @@ function Countdown({ data, palette }) {
     return <Text font="title2" foregroundStyle={palette.text}>等待上班卡</Text>;
   }
   if (data.hasOutRecord) {
-    return <Text font="title2" foregroundStyle={palette.accent2}>已打下班卡</Text>;
+    return <Text font="title2" foregroundStyle={data.targetReached ? "#22C55E" : "#F0A45D"}>{data.targetReached ? "考勤正常" : "工时不足"}</Text>;
   }
-  if (data.targetReached) {
-    return <Text font="title2" foregroundStyle={palette.accent2}>已到下班时间</Text>;
+  if (missingCheckout(data)) {
+    return <Text font="title2" foregroundStyle="#EF4444">{checkoutWarningTitle(data)}</Text>;
   }
   return <VStack spacing={2} alignment="leading">
     <Text font="caption" foregroundStyle={palette.muted}>距离可下班</Text>
@@ -71,7 +71,7 @@ function TodayPanel({ data, palette, style }) {
       <HStack>
         <Text font="caption" foregroundStyle={palette.muted}>今日考勤</Text>
         <Spacer />
-        <Text font="caption" foregroundStyle={palette.accent}>{statusText(data)}</Text>
+        <Text font="caption" foregroundStyle={missingCheckout(data) ? "#EF4444" : palette.accent}>{statusText(data)}</Text>
       </HStack>
       <Text font="largeTitle" foregroundStyle={palette.text}>{data?.hasClockIn ? formatShortDuration(data.hasOutRecord ? data.currentWorkMs : Date.now() - data.inTime.getTime()) : "--"}</Text>
       <Countdown data={data} palette={palette} />
@@ -89,10 +89,10 @@ function TodayPanel({ data, palette, style }) {
         <Image systemName="waveform.path.ecg" foregroundStyle={palette.accent} />
         <Text font="caption" foregroundStyle={palette.accent}>今日考勤</Text>
         <Spacer />
-        <Text font="caption2" foregroundStyle={palette.muted}>{statusText(data)}</Text>
+        <Text font="caption2" foregroundStyle={missingCheckout(data) ? "#EF4444" : palette.muted}>{statusText(data)}</Text>
       </HStack>
       <Countdown data={data} palette={palette} />
-      <ProgressView value={progress} tint={palette.accent2} />
+      <ProgressView value={progress} tint={missingCheckout(data) ? "#EF4444" : palette.accent2} />
       <HStack>
         <VStack alignment="leading" spacing={2}>
           <Text font="caption2" foregroundStyle={palette.muted}>上班卡</Text>
@@ -115,7 +115,7 @@ function TodayPanel({ data, palette, style }) {
   if (style === "fitness") {
     return <HStack spacing={12} alignment="center">
       <VStack spacing={4} alignment="center">
-        <ProgressView value={progress} tint={palette.accent2} />
+        <ProgressView value={progress} tint={missingCheckout(data) ? "#EF4444" : palette.accent2} />
         <Text font="caption2" foregroundStyle={palette.muted}>{Math.round(progress * 100)}%</Text>
       </VStack>
       <VStack spacing={5} alignment="leading">
@@ -134,7 +134,7 @@ function TodayPanel({ data, palette, style }) {
       <Text font="caption" foregroundStyle={palette.accent}>{statusText(data)}</Text>
     </HStack>
     <Countdown data={data} palette={palette} />
-    <ProgressView value={progress} tint={palette.accent} />
+    <ProgressView value={progress} tint={missingCheckout(data) ? "#EF4444" : palette.accent} />
     <HStack>
       <Text font="caption2" foregroundStyle={palette.muted}>上班 {inText}</Text>
       <Spacer />
@@ -147,7 +147,7 @@ function DayCell({ day, palette, selected }) {
   if (!day) return <Text font="caption2"> </Text>;
   if (day.future) return <Text font="caption2" foregroundStyle={palette.muted}>{Number(day.key.slice(-2))}</Text>;
   const color = day.state === "normal" ? "#55C69B" :
-    day.state === "warning" ? "#F0A45D" :
+    day.state === "warning" ? (day.checkoutMissing ? "#EF4444" : "#F0A45D") :
     day.state === "active" ? palette.accent : palette.muted;
   return <VStack spacing={2} alignment="center" padding={3} background={selected ? palette.card : "clear"}>
     <Text font="caption" foregroundStyle={color}>{Number(day.key.slice(-2))}</Text>
@@ -199,7 +199,7 @@ function WidgetView({ data, monthData, recent, style, palette, family, layout })
   if (family.startsWith("accessory")) return <Accessory data={data} family={family} />;
   const large = family.startsWith("systemExtraLarge") || family === "systemLarge";
   const small = family === "systemSmall";
-  const background = style === "minimal" ? "#F4F5F7" : palette.bg;
+  const background = missingCheckout(data) ? (style === "minimal" ? "#FDE8E7" : "#481D24") : style === "minimal" ? "#F4F5F7" : palette.bg;
   const textPalette = style === "minimal"
     ? { ...palette, bg: "#F4F5F7", card: "#FFFFFF", text: "#172033", muted: "#687487", accent: "#315FBD", accent2: "#087B5B" }
     : palette;
@@ -211,6 +211,7 @@ function WidgetView({ data, monthData, recent, style, palette, family, layout })
     frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
     alignment="leading"
   >
+    {missingCheckout(data) && layout === "stats" && !large && !small ? <Text font="headline" foregroundStyle="#EF4444">⚠ {checkoutWarningTitle(data)}</Text> : null}
     {!(layout === "stats" && !large && !small) ? <TodayPanel data={data} palette={textPalette} style={style} /> : null}
     {!small
       ? <Button
@@ -240,8 +241,8 @@ function WidgetView({ data, monthData, recent, style, palette, family, layout })
 }
 
 function Accessory({ data, family }) {
-  const status = data?.isRestDay ? "休息日" : !data?.ok ? "待刷新" : !data.hasClockIn ? "待上班" : data.hasOutRecord ? "已打卡" : data.targetReached ? "可下班" : null;
-  const countdown = status ? <Text font="caption">{status}</Text> : <TimerIntervalLabel from={data.inTime.getTime()} to={data.targetTime.getTime()} countsDown={true} showsHours={true} />;
+  const status = data?.isRestDay ? "休息日" : !data?.ok ? "待刷新" : !data.hasClockIn ? "待上班" : data.hasOutRecord ? "已打卡" : missingCheckout(data) ? (data.missedConfirmed ? "待补卡" : "⚠ 漏卡") : null;
+  const countdown = status ? <Text font="caption" foregroundStyle={missingCheckout(data) ? "#EF4444" : "primaryLabel"}>{status}</Text> : <TimerIntervalLabel from={data.inTime.getTime()} to={data.targetTime.getTime()} countsDown={true} showsHours={true} />;
   if (family === "accessoryInline") return <HStack><Image systemName="clock" />{countdown}</HStack>;
   if (family === "accessoryCircular") return <VStack spacing={1}><Image systemName="clock" />{countdown}</VStack>;
   return <VStack alignment="leading" spacing={2}><Text font="caption">今日考勤</Text>{countdown}<Text font="caption2">上班 {data?.inTime ? formatTime(data.inTime) : "--"} · 可下班 {data?.targetTime ? formatTime(data.targetTime) : "--"}</Text></VStack>;
@@ -251,6 +252,7 @@ function nextRefresh(data, family) {
   start.setHours(8,0,0,0); end.setHours(11,0,0,0); tomorrow.setDate(now.getDate()+1); tomorrow.setHours(8,0,0,0);
   if (data?.isRestDay) return tomorrow;
   if (data?.ok && data.hasClockIn && !data.targetReached && !data.hasOutRecord) return new Date(Math.max(now.getTime()+1000, Math.min(data.targetTime.getTime(), now.getTime()+30*60000)));
+  if (missingCheckout(data)) { const midnight = new Date(now); midnight.setHours(24,0,0,0); return new Date(Math.min(now.getTime()+10*60000,midnight.getTime())); }
   if (data?.ok && data.hasClockIn) return tomorrow;
   if (now < start) return start;
   return now < end ? new Date(now.getTime()+10*60000) : tomorrow;
