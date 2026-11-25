@@ -2786,15 +2786,26 @@ function addWidgetMonthNavigation(widget, model, width, p, label) {
     addArrow(1)
 }
 
-function widgetDayProgress(day, data) {
+function widgetDayProgress(day, data, at = Date.now()) {
     if (!day || !day.workday) return 0
-    const required = Number(day.requiredMs) > 0 ? Number(day.requiredMs) : CONFIG.TARGET_HOURS * 3600000
-    if (Number.isFinite(day.workedMs)) {
-        return Math.max(0, Math.min(1, day.workedMs / Math.max(1, required)))
+    const required = Number.isFinite(day.requiredMs) && day.requiredMs >= 0 ? day.requiredMs : CONFIG.TARGET_HOURS * 3600000
+    const ratio = elapsed => Math.max(0, Math.min(1, elapsed / Math.max(1, required)))
+    if (Number.isFinite(day.workedMs)) return required === 0 ? 1 : ratio(day.workedMs)
+    if (day.key === formatDateKey(now)) {
+        // 工时进度独立于考勤判定。到点未打下班卡时不能从 100% 掉回 0%。
+        const start = day.clockInAt instanceof Date ? day.clockInAt.getTime() : NaN
+        if (Number.isFinite(start)) return required === 0 ? 1 : ratio(at - start)
+        return day.state === "normal" ? 1 : 0
     }
-    if (day.state === "normal") return 1
-    if (day.state === "active" && day.key === formatDateKey(now)) return widgetWorkProgress(data)
-    return 0
+    // 历史缺失下班卡不能虚构实际工时。
+    return day.state === "normal" ? 1 : 0
+}
+
+function widgetDayBarColor(day, p, activeColor) {
+    if (day.checkoutMissing) return "#EF4444"
+    if (day.state === "normal") return p.good
+    if (day.state === "warning") return p.warning
+    return day.state === "active" || day.key === formatDateKey(now) ? activeColor : p.neutral
 }
 
 function addCyberTimelineEvent(parent, index, label, value, color, p) {
@@ -2837,18 +2848,16 @@ function renderCyberWeekStrip(widget, data, width, p) {
         weekday.textColor = new Color(p.muted)
         const track = cell.addStack()
         track.layoutVertically()
+        track.spacing = 0
         track.backgroundColor = new Color(p.track)
         track.cornerRadius = 4
         track.size = new Size(Math.max(12, cellWidth - 8), barHeight)
         const progress = widgetDayProgress(day, data)
         const fillHeight = progress > 0 ? Math.max(3, Math.round(barHeight * progress)) : 0
         if (fillHeight > 0) {
-            track.addSpacer(barHeight - fillHeight)
+            if (fillHeight < barHeight) track.addSpacer(barHeight - fillHeight)
             const fill = track.addStack()
-            fill.backgroundColor = new Color(day.state === "normal" ? p.good
-                : day.state === "warning" ? p.warning
-                : day.state === "active" ? p.accent
-                : p.neutral)
+            fill.backgroundColor = new Color(widgetDayBarColor(day, p, p.accent))
             fill.cornerRadius = 4
             fill.size = new Size(Math.max(12, cellWidth - 8), fillHeight)
         } else {
@@ -2856,7 +2865,7 @@ function renderCyberWeekStrip(widget, data, width, p) {
         }
         const date = cell.addText(day.key.slice(-2))
         date.font = Font.mediumSystemFont(8)
-        date.textColor = new Color(p.text)
+        date.textColor = new Color(day.key === formatDateKey(now) ? widgetDayBarColor(day, p, p.accent) : p.text)
     }
 }function addLargeAttendanceLine(parent, label, value, color, p, width) {
     const row = parent.addStack()
@@ -3001,17 +3010,15 @@ function renderFitnessWeekBars(widget, data, width, p, barHeightOverride = 72) {
         const progress = widgetDayProgress(day, data)
         const track = column.addStack()
         track.layoutVertically()
+        track.spacing = 0
         track.backgroundColor = new Color(p.track)
         track.cornerRadius = 5
         track.size = new Size(barWidth, barHeight)
         const fillHeight = progress > 0 ? Math.max(3, Math.round(barHeight * progress)) : 0
         if (fillHeight > 0) {
-            track.addSpacer(barHeight - fillHeight)
+            if (fillHeight < barHeight) track.addSpacer(barHeight - fillHeight)
             const fill = track.addStack()
-            fill.backgroundColor = new Color(day.state === "normal" ? p.good
-                : day.state === "warning" ? p.warning
-                : day.state === "active" ? p.accent2
-                : p.neutral)
+            fill.backgroundColor = new Color(widgetDayBarColor(day, p, p.accent2))
             fill.cornerRadius = 5
             fill.size = new Size(barWidth, fillHeight)
         } else {
@@ -3019,7 +3026,7 @@ function renderFitnessWeekBars(widget, data, width, p, barHeightOverride = 72) {
         }
         const date = column.addText(String(Number(day.key.slice(-2))))
         date.font = Font.mediumSystemFont(8)
-        date.textColor = new Color(p.text)
+        date.textColor = new Color(day.key === formatDateKey(now) ? widgetDayBarColor(day, p, p.accent2) : p.text)
         const weekday = column.addText(weekdays[day.weekday] || "·")
         weekday.font = Font.systemFont(7)
         weekday.textColor = new Color(p.muted)
@@ -3406,7 +3413,7 @@ function renderRecentHeatmapRow(widget, data, width, p, tileHeight = 30) {
         tile.size = new Size(tileWidth, tileHeight)
         if (isToday) {
             // 今日格不再只是普通状态色块：描边标识今天，底部进度条展示当日工时进度。
-            tile.borderColor = new Color(p.accent)
+            tile.borderColor = new Color(day.checkoutMissing ? "#EF4444" : p.accent)
             tile.borderWidth = 1.5
         }
 
@@ -3430,7 +3437,7 @@ function renderRecentHeatmapRow(widget, data, width, p, tileHeight = 30) {
         markLine.addSpacer()
         const mark = markLine.addText(!day.workday ? "—" : day.state === "normal" ? "✓" : day.state === "warning" ? "!" : day.state === "active" ? "●" : "·")
         mark.font = Font.boldSystemFont(8)
-        mark.textColor = new Color(isToday ? p.accent : p.text)
+        mark.textColor = new Color(isToday ? widgetDayBarColor(day,p,p.accent) : p.text)
         mark.centerAlignText()
         markLine.addSpacer()
 
@@ -3442,11 +3449,11 @@ function renderRecentHeatmapRow(widget, data, width, p, tileHeight = 30) {
             track.backgroundColor = new Color(p.track)
             track.cornerRadius = 2
             track.size = new Size(trackWidth, 3)
-            const progress = data && data.ok ? widgetWorkProgress(data) : 0
+            const progress = widgetDayProgress(day, data)
             const fillWidth = Math.max(0, Math.min(trackWidth, Math.round(trackWidth * progress)))
             if (fillWidth > 0) {
                 const fill = track.addStack()
-                fill.backgroundColor = new Color(p.accent2)
+                fill.backgroundColor = new Color(widgetDayBarColor(day, p, p.accent2))
                 fill.cornerRadius = 2
                 fill.size = new Size(fillWidth, 3)
             }
@@ -6051,10 +6058,10 @@ function getNextWidgetRefreshDate(data, refreshProgress = false) {
   const start = morningRefreshOn(now)
   const end = clockOn(now, CONFIG.MORNING_REFRESH_END)
 
-    // 带进度条的布局每半小时请求刷新，最晚在目标时刻请求刷新。
+    // 带进度条的布局每 15 分钟请求刷新，最晚在目标时刻请求刷新；实际时间由 WidgetKit 决定。
     if (showsLiveCountdown(data)) {
         return refreshProgress
-            ? new Date(Math.min(data.targetTime.getTime(), now.getTime() + 30 * 60000))
+            ? new Date(Math.min(data.targetTime.getTime(), now.getTime() + 15 * 60000))
             : data.targetTime
     }
 
