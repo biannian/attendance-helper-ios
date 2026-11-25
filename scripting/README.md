@@ -55,7 +55,7 @@ Scripting 和 Scriptable 是两个独立 App，系统 Keychain / 本地存储命
 - `core/live_activity_service.js`：创建、更新和结束考勤 Live Activity。
 - `live_activity.tsx`：锁屏与灵动岛 UI。计时由系统时间标签推进，不依赖 JavaScript 每秒轮询。
 - `widget.tsx`：小号、中号、大号组件和四种主题。
-- `index.tsx`：今日、月历、配置和工具管理界面。
+- `index.tsx`：正常 App 启动入口；`app_view.tsx`：今日、月历、配置和工具管理界面，供 App 和前台 Intent 共用。
 - `app_intents.tsx`：组件刷新、提醒安排和工时检查的 App Intents。
 
 ## 4. 考勤规则
@@ -114,6 +114,11 @@ scripting://run/AttendanceHelper?action=refresh
 自动化仍由 iOS 快捷指令触发。建议沿用早上刷新、工作日定时检查等已有节奏；iOS 不保证精确到分钟执行自动化。
 
 ### 快捷指令识别与启动诊断
+
+- 查看管理页：使用 Scripting 的「在 App 中运行脚本」，选择 AttendanceHelper，传入文本 `manage`；`week` 打开月历。
+- 自动刷新、离开检查和提醒：使用「运行脚本」后台动作，传入 `refresh`、`leave`、`schedule9`、`near9`，这些动作不会呈现管理界面。
+- 如需验证前台 Intent 界面，使用「在 App 中运行脚本」，传入 `diagnostic`。若仍无法显示，检查编辑器日志。
+- 也可直接使用快捷指令的「打开 URL」打开 `scripting://run/AttendanceHelper?action=manage`，它走正常 App 入口而非 Intent。
 
 首次导入或更新后，请打开脚本编辑器，点击顶部项目名称，进入 Intent Settings，确认 Text（文本）已勾选。回到快捷指令，添加 Scripting 的 Run Script（运行脚本）动作，再选择 AttendanceHelper / 考勤助手。若列表仍未刷新，重新打开两个 App。不要删除已有脚本或清空钥匙串。
 
