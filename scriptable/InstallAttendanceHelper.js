@@ -41,7 +41,7 @@ async function installAttendanceScript() {
     try {
         const code = await downloadAttendanceScript()
         const path = await writeAttendanceScript(code)
-        message = "已安装到 " + path + "。小组件请选择 AttendanceHelper。以后再运行本安装器即可更新。"
+        message = "已安装 AttendanceHelper 和 AttendanceCheck。小组件仍选 AttendanceHelper；检查、刷新及提醒快捷指令改用 AttendanceCheck，并关闭运行时显示。账号无需重新设置。以后再次运行安装器即可同时更新。特定路径：" + path
     } catch (error) {
         message = String(error && error.message ? error.message : error)
     }
@@ -130,5 +130,8 @@ async function writeAttendanceScript(code) {
     }
 
     files.writeString(path, code)
+    const workerPath = files.joinPath(files.documentsDirectory(), "AttendanceCheck.js")
+    if (files.fileExists(workerPath)) await files.downloadFileFromiCloud(workerPath)
+    files.writeString(workerPath, code)
     return path
 }
