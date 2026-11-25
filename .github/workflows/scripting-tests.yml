@@ -1,0 +1,25 @@
+name: Scripting migration tests
+
+on:
+  push:
+    branches:
+      - scripting-migration
+    paths:
+      - "scripting/**"
+  pull_request:
+    paths:
+      - "scripting/**"
+
+jobs:
+  attendance-rules:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run attendance rule tests
+        working-directory: scripting
+        run: npm test

@@ -1,0 +1,103 @@
+name: Scripting preview release
+
+on:
+  push:
+    branches: [scripting-migration]
+    paths:
+      - 'scripting/**'
+      - '.github/workflows/scripting-release.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scripting-preview-release
+  cancel-in-progress: false
+
+jobs:
+  package:
+    if: github.ref == 'refs/heads/scripting-migration'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Test attendance rules and intent parameters
+        working-directory: scripting
+        run: npm test
+      - name: Build and verify runtime archive
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          from zipfile import ZipFile, ZIP_DEFLATED
+
+          root = Path("scripting")
+          manifest = json.loads((root / "script.json").read_text())
+          assert manifest["name"] == "AttendanceHelper"
+          assert manifest["version"]
+          required = {"script.json", "index.tsx", "widget.tsx", "intent.tsx",
+                      "app_intents.tsx", "live_activity.tsx", "app_view.tsx"}
+          core = {"core/api.js", "core/attendance.js", "core/config.js",
+                  "core/crypto.js", "core/launch.js", "core/live_activity_service.js",
+                  "core/reminders.js", "core/rules.js", "core/store.js"}
+          files = required | core
+          for name in files:
+              path = root / name
+              assert path.is_file() and not path.is_symlink(), name
+          output = Path("dist/AttendanceHelper-Scripting.zip")
+          output.parent.mkdir(exist_ok=True)
+          with ZipFile(output, "w", compression=ZIP_DEFLATED) as archive:
+              for name in sorted(files):
+                  archive.write(root / name, name)
+          with ZipFile(output) as archive:
+              assert set(archive.namelist()) == files
+              assert archive.testzip() is None
+              assert json.loads(archive.read("script.json")) == manifest
+          print(f"Built {output} version {manifest['version']}: {len(files)} files")
+          PY
+          cd dist
+          sha256sum AttendanceHelper-Scripting.zip > AttendanceHelper-Scripting.zip.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AttendanceHelper-Scripting
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: package
+    if: github.ref == 'refs/heads/scripting-migration'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: AttendanceHelper-Scripting
+          path: dist
+      - name: Publish fixed preview channel
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          cd dist
+          sha256sum --check AttendanceHelper-Scripting.zip.sha256
+          # Do not publish a queued build if a newer commit is already on the branch.
+          head="$(gh api "repos/$GH_REPO/git/ref/heads/scripting-migration" --jq .object.sha)"
+          if [ "$head" != "$SOURCE_SHA" ]; then
+            echo "Skipping stale build: $SOURCE_SHA"
+            exit 0
+          fi
+          tag=scripting-preview
+          notes="Scripting V11 preview channel. Source commit: $SOURCE_SHA. Physical iPhone validation is pending. The tag identifies the channel; assets are updated in place after tests pass."
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" AttendanceHelper-Scripting.zip AttendanceHelper-Scripting.zip.sha256 --clobber
+            gh release edit "$tag" --title "Scripting V11 Preview" --notes "$notes" --prerelease --latest=false
+          else
+            gh release create "$tag" AttendanceHelper-Scripting.zip AttendanceHelper-Scripting.zip.sha256 --target "$SOURCE_SHA" --title "Scripting V11 Preview" --notes "$notes" --prerelease --latest=false
+          fi
