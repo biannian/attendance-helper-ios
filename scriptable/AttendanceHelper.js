@@ -179,6 +179,7 @@ const AES_RCON = [0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x
 let now = new Date()
 // 独立的快捷指令入口由安装器/更新器从同一份源码生成，无额外账号配置。
 const isCheckWorker = /(?:^|\/)AttendanceCheck\.js$/.test(String(module.filename || ""))
+let quietForegroundCheck = false
 
 // 小组件样式配置必须在主入口执行前初始化。
 // 主入口会在文件继续向下解析前 await 渲染流程，不能把这些 const 放在渲染器后面。
@@ -637,6 +638,7 @@ async function handleUpdateScript() {
   }
 
   await notify(message.indexOf("已更新") !== -1 ? "打卡脚本" : "更新脚本", message)
+  if (isCheckWorker || isLaunchedFromShortcut()) { Script.setShortcutOutput(message); return }
 
   const alert = new Alert()
   alert.title = "更新脚本"
@@ -972,8 +974,8 @@ function openLoginHeaders(extra) {
  * @date 2026/11/24 14:50
  */
 async function collectCaptchaParam() {
-  if (config.runsInWidget) {
-    throw new Error("新设备需要安全验证，请在 Scriptable 里打开脚本运行一次")
+  if (config.runsInWidget || isCheckWorker || isLaunchedFromShortcut() || quietForegroundCheck) {
+    throw new Error("新设备需要安全验证，请手动打开 AttendanceHelper 并同步考勤")
   }
 
   const html = `<!DOCTYPE html>
@@ -2094,30 +2096,29 @@ async function saveAttendancePreferences(next, previous) {
  * @date 2026/11/24 17:55
  */
 async function handleScheduleNineHours() {
+    now = new Date()
     const minutes = readAttendancePreferences().remindMinutes
-    if (!(await isChinaWorkday(now))) {
-    return
-  }
+    if (!(await isChinaWorkday(now))) return {ok:true,isRestDay:true}
 
   const data = await getAttendanceSummary()
 
   if (!data.ok) {
     await notify("工时提醒失败", data.error)
-    return
+    return data
   }
 
   if (!data.hasClockIn) {
     await notifyBrief("未打卡", "今天还没有上班记录")
-    return
+    return data
   }
 
   if (data.hasOutRecord) {
     await Notification.removePending(["attendance-helper-checkout-due"])
-    return
+    return data
   }
   if (missingCheckout(data)) {
-    await handleNearNineHours()
-    return
+    await handleNearNineHours(data)
+    return data
   }
   // 到点提醒独立于提前提醒开关；仅提示检查，不假定实时接口结果。
   const due = new Notification()
@@ -2127,7 +2128,7 @@ async function handleScheduleNineHours() {
   due.sound = "default"
   due.setTriggerDate(data.targetTime)
   await due.schedule()
-  if (!minutes) return
+  if (!minutes) return data
 
   const remindTime = new Date(
       data.inTime.getTime() +
@@ -2137,7 +2138,7 @@ async function handleScheduleNineHours() {
   const key = "schedule9-" + formatDateKey(now)
 
   if (Keychain.contains(key)) {
-    return
+    return data
   }
 
   if (remindTime <= new Date()) {
@@ -2156,6 +2157,7 @@ async function handleScheduleNineHours() {
   }
 
   Keychain.set(key, "1")
+  return data
 }
 
 
@@ -4239,13 +4241,14 @@ async function presentAttendanceHistory(initialMonth) {
         nextForegroundCheck = Date.now() + 60000
         try {
             if (!notifyResult && !(await isChinaWorkday(new Date()))) return
+            quietForegroundCheck = !notifyResult
             const data = await queryDate(new Date())
             if (notifyResult) await handleLeaveCompany(data)
             else if (data.ok) await handleNearNineHours(data)
             syncText = data.ok ? "已检查 · " + formatTime(new Date()) + " · " + widgetStatusText(data) : "检查失败 · " + managementErrorText(data.error)
             if (notifyResult) await toast(data.ok ? widgetStatusText(data) : syncText)
         } catch (e) { syncText = "检查失败 · " + managementErrorText(e); if(notifyResult) await toast(syncText) }
-        finally { busy=false; nextForegroundCheck=Date.now()+60000; if(open) await draw() }
+        finally { quietForegroundCheck=false; busy=false; nextForegroundCheck=Date.now()+60000; if(open) await draw() }
     }
     async function syncMonth() {
         if(!canSync()) throw new Error("请先配置账号")
