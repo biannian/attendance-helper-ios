@@ -61,53 +61,54 @@ async function installAttendanceScript() {
  * @date 2026/11/24 17:02
  */
 async function downloadAttendanceScript() {
-    const url = "https://raw.githubusercontent.com/" +
-        INSTALL.repo +
-        "/" +
-        encodeURIComponent(INSTALL.ref) +
-        "/" +
-        INSTALL.path +
-        "?_update=" + Date.now()
-    const request = new Request(url)
-    request.method = "GET"
-    request.timeoutInterval = 20
-    request.headers = {
-        "Accept": "text/plain",
-        "Cache-Control": "no-cache",
-        "User-Agent": "AttendanceHelper"
-    }
+    return await downloadVerifiedAttendanceSource(INSTALL.repo,INSTALL.ref,INSTALL.path)
+}
 
-    let text = ""
-    let status = 0
-
-    try {
-        text = await request.loadString()
-        status = request.response ? request.response.statusCode : 0
-    } catch (error) {
-        status = request.response ? request.response.statusCode : 0
-        if (!status || status === 200) {
-            throw new Error("下载连接失败：" + String(error.message || error))
+async function downloadVerifiedAttendanceSource(repo, ref, path) {
+    const encodedPath = path.split("/").map(encodeURIComponent).join("/")
+    const suffix = "?ref=" + encodeURIComponent(ref) + "&_update=" + Date.now()
+    const sources = [
+        {name:"GitHub Raw",url:"https://raw.githubusercontent.com/"+repo+"/"+encodeURIComponent(ref)+"/"+encodedPath+"?_update="+Date.now(),accept:"text/plain"},
+        {name:"GitHub API",url:"https://api.github.com/repos/"+repo+"/contents/"+encodedPath+suffix,accept:"application/vnd.github.raw+json"}
+    ]
+    const errors=[]
+    for (const source of sources) {
+        try {
+            const req=new Request(source.url)
+            req.method="GET"
+            req.timeoutInterval=20
+            req.headers={"Accept":source.accept,"Cache-Control":"no-cache","User-Agent":"AttendanceHelper"}
+            const raw=await req.loadString()
+            const status=req.response?.statusCode||0
+            if(status && status!==200) throw new Error("HTTP "+status)
+            let code=String(raw||"").replace(/^\uFEFF/,"")
+            // API 某些代理会忽略 raw Accept，返回标准 JSON/base64 文件对象。
+            if(code.trimStart().startsWith("{")) {
+                const obj=JSON.parse(code)
+                if(obj.encoding!=="base64" || obj.path!==path || typeof obj.content!=="string") throw new Error("非预期的 API 文件响应")
+                const decoded=Data.fromBase64String(obj.content.replace(/\s/g,""))
+                if(!decoded) throw new Error("Base64 解码失败")
+                code=decoded.toRawString().replace(/^\uFEFF/,"")
+            }
+            const valid=code.length>=500
+                && /^\s*\/\*\s*\* Copyright \(c\) iGroup(?: China)?\./.test(code)
+                && /^const CONFIG\s*=\s*\{/m.test(code)
+                && /^async function fetchAttendance\(/m.test(code)
+                && /^async function getAttendanceSummary\(/m.test(code)
+                && /(?:^|\n)async function notify\(/.test(code)
+            if(!valid) {
+                const type=/^\s*</.test(code)?"HTML 网页":"非完整脚本"
+                throw new Error(type+"，"+code.length+" 字符")
+            }
+            // 只编译，不执行，拒绝意外截断或语法错误的内容。
+            const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor
+            new AsyncFunction(code)
+            return code
+        } catch(error) {
+            errors.push(source.name+": "+String(error?.message||error).replace(/\s+/g," ").slice(0,160))
         }
     }
-
-    if (status === 404) {
-        throw new Error("下载失败：仓库还不是公开的，或脚本路径不对")
-    }
-
-    if (status && status !== 200) {
-        throw new Error("下载失败：" + status)
-    }
-
-    // 校验源码头和必要声明，通过后才覆盖手机上的脚本。
-    if (!text || text.length < 500
-        || !/^\s*\/\*\s*\* Copyright \(c\) iGroup(?: China)?\./.test(text)
-        || !/^const CONFIG = \{/m.test(text)
-        || !/^async function fetchAttendance\(/m.test(text)
-        || !/^async function getAttendanceSummary\(/m.test(text)) {
-        throw new Error("下载内容不是打卡脚本")
-    }
-
-    return text
+    throw new Error("下载验证失败，未覆盖现有脚本。\n"+errors.join("\n"))
 }
 
 /**
