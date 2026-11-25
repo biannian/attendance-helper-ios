@@ -2824,7 +2824,7 @@ function renderLargeTodayPanel(widget, data, width, p) {
     addLargeAttendanceLine(details, "下班打卡",
         data && data.ok && data.hasOutRecord
             ? formatTime(data.latestOutTime)
-            : data && data.ok && data.targetReached ? "请检查漏卡" : "待打卡",
+            : missingCheckout(data) ? checkoutWarningTitle(data) : "待打卡",
         data && data.ok && data.hasOutRecord ? p.good
             : data && data.ok && data.targetReached ? "#EF4444" : p.muted,
         p, detailWidth)
@@ -5429,7 +5429,7 @@ async function handleDebug() {
         `离场时工时：${data.hasOutRecord ? formatDuration(data.latestOutWorkMs) : "--"}\n` +
         `可下班：${data.hasClockIn ? formatTime(data.targetTime) : "--"}\n` +
         `是否已满：${data.targetReached ? "是" : "否"}\n` +
-        `还差：${data.targetReached ? "已达标" : formatRemainText(data.remainingMinutes)}\n` +
+        `还差：${missingCheckout(data) ? checkoutWarningTitle(data) : data.targetReached ? "考勤正常" : formatRemainText(data.remainingMinutes)}\n` +
         `倒计时：${data.countdownText}`
   }
 
