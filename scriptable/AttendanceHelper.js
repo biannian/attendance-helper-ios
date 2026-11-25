@@ -2198,20 +2198,22 @@ async function handleNearNineHours() {
  * @param data 今日打卡摘要
  * @return 已配置外观、点击链接和刷新时间的小组件
  * @author Kai
- * @date 2026/11/24 17:45
+ * @date 2026/11/25 12:06
  */
 async function createWidget(data) {
   const family = config.widgetFamily || "medium"
   const isAccessory = family.indexOf("accessory") === 0
     // 小号和锁屏按系统分配的尺寸渲染，统计仅用于有足够空间的桌面组件。
     const layout = config.runsInWidget ? readWidgetLayout(args.widgetParameter) : null
-    const statsOnly = layout === "stats" && (family === "medium" || family === "large")
+    // 大号与很大号均在今日区域下方追加月历。
+    const hasCalendar = family === "large" || family === "extraLarge"
+    const statsOnly = layout === "stats" && (family === "medium" || hasCalendar)
 
   const widget = new ListWidget()
 
     // 大号月历和统计专用布局在休息日仍可查看历史。
     const workday = statsOnly || await isChinaWorkday(now)
-    const calendarOnly = statsOnly || (!workday && family === "large" && layout !== "today")
+    const calendarOnly = statsOnly || (!workday && hasCalendar)
   if (!workday && !calendarOnly) {
     widget.refreshAfterDate = morningRefreshOn(addDays(now, 1))
     return widget
@@ -2244,21 +2246,21 @@ async function createWidget(data) {
     await renderSmallWidget(widget, data)
   } else if (calendarOnly) {
     widget.setPadding(16, 10, 16, 10)
-    if (family === "large") renderWidgetMonthCalendar(widget, data)
+    if (hasCalendar) renderWidgetMonthCalendar(widget, data)
     else renderWidgetAttendanceStats(widget, data, 7, true)
-  } else if (family === "large") {
-    widget.setPadding(20, 10, 20, 10)
-    await renderLargeWidget(widget, data, layout !== "today")
+  } else if (hasCalendar) {
+    widget.setPadding(15, 10, 15, 10)
+    await renderLargeWidget(widget, data)
   } else {
     widget.setPadding(15, 10, 15, 10)
     await renderMediumWidget(widget, data)
   }
 
     // 展示统计的组件可直接打开完整历史。
-    const opensHistory = statsOnly || family === "medium" || (family === "large" && layout !== "today")
+    const opensHistory = statsOnly || family === "medium" || hasCalendar
     widget.url = opensHistory ? getWeeklyAttendanceUrl() : getWidgetUrl()
     widget.refreshAfterDate = getNextWidgetRefreshDate(
-        data, !calendarOnly && (family === "medium" || family === "large")
+        data, !calendarOnly && (family === "medium" || hasCalendar)
     )
 
   return widget
@@ -2542,11 +2544,10 @@ async function renderSmallWidget(widget, data) {
  *
  * @param widget 中号桌面组件
  * @param data 今日打卡摘要
- * @param embedded 是否在大号组件的固定上半区内绘制
  * @author Kai
- * @date 2026/11/25 11:28
+ * @date 2026/11/25 12:06
  */
-async function renderMediumWidget(widget, data, embedded = false) {
+async function renderMediumWidget(widget, data) {
     addCompactHeader(widget, "今日打卡")
     widget.addSpacer(4)
     if (!data.ok) {
@@ -2577,8 +2578,7 @@ async function renderMediumWidget(widget, data, embedded = false) {
     addProgressBar(widget, data, mediumWidgetContentWidth())
 
     // 当天短暂外出已在摘要里过滤，只有有效下班卡才能点亮下班格。
-    if (embedded) widget.addSpacer(7)
-    else widget.addSpacer()
+    widget.addSpacer()
     const row = widget.addStack()
     row.spacing = 6
     const width = Math.floor((mediumWidgetContentWidth() - 12) / 3)
@@ -3267,18 +3267,20 @@ function renderWidgetMonthCalendar(widget, data) {
  *
  * @param widget 大号桌面组件
  * @param data 今日打卡摘要
- * @param includeStats 是否附加月历
  * @author Kai
- * @date 2026/11/25 11:47
+ * @date 2026/11/25 12:06
  */
-async function renderLargeWidget(widget, data, includeStats) {
+async function renderLargeWidget(widget, data) {
     const today = widget.addStack()
     today.layoutVertically()
-    await renderMediumWidget(today, data, true)
-    if (includeStats) {
-        widget.addSpacer()
-        renderWidgetMonthCalendar(widget, data)
-    }
+    // 用中号双列宽度估算其单行高度，扣除上下各 15 点的共同留白。
+    // 固定此区域后，中号自己的弹性间距只在今日区域内分配。
+    const width = mediumWidgetContentWidth()
+    today.size = new Size(width, Math.max(120, Math.round(width / 2) - 30))
+    await renderMediumWidget(today, data)
+    widget.addSpacer(12)
+    renderWidgetMonthCalendar(widget, data)
+    widget.addSpacer()
 }
 
 // ==================== 小组件公共 UI ====================
