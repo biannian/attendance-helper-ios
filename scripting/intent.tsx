@@ -34,12 +34,12 @@ async function main() {
     case "account": result = { ok: !!getAccount().configured }; break;
     case "refresh": case "widget": {
       const data = await getTodaySummary({ force: true });
-      if (data.ok) { try { await syncAttendanceLiveActivity(data); } catch (_) {} }
-      result = { ok: data.ok, message: data.ok ? "考勤已刷新" : "考勤刷新失败，请打开管理页" }; break;
+      if (data.ok) { try { await syncAttendanceLiveActivity(data); } catch (_) {} try { await handleScheduleNineHours(); } catch (_) {} }
+      result = { ok: data.ok, message: data.ok ? (data.targetReached && !data.hasOutRecord ? (data.missedConfirmed ? "已漏卡 · 待补卡" : "⚠ 未打下班卡") : "考勤已刷新") : "考勤刷新失败，请打开管理页" }; break;
     }
-    case "leave": result = await handleLeaveCompany(); break;
+    case "leave": { const data = await handleLeaveCompany(); if (data?.ok) { try { await syncAttendanceLiveActivity(data); } catch (_) {} } result = { ok: data?.ok, message: data?.hasOutRecord ? "已检测到下班卡" : data?.missedConfirmed ? "已漏卡 · 待补卡" : "未确认下班卡，请检查" }; break; }
     case "schedule9": result = await handleScheduleNineHours(); break;
-    case "near9": result = await handleNearNineHours(); break;
+    case "near9": result = await handleNearNineHours(); if (result?.data?.ok) { try { await syncAttendanceLiveActivity(result.data); } catch (_) {} } break;
     case "debug": Script.exit(Intent.text(debugSummary(await getTodaySummary({ force: true })))); return;
     default: throw new Error("请在 Scripting App 内打开管理、更新或预览功能");
   }
