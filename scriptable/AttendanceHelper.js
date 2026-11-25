@@ -2045,57 +2045,22 @@ function attendancePalette() {
 }
 
 /**
- * 打开考勤配置，修改后保存到本机并重新预约当天提醒
+ * 保存考勤配置，并在提醒时间变化时重排通知。
  *
+ * @param next 更新后的本机偏好
+ * @param previous 保存前的偏好
  * @author Kai
- * @date 2026/11/24 17:55
+ * @date 2026/11/25 13:01
  */
-async function presentAttendancePreferences() {
-    const themeValues = ["navy", "teal", "slate"]
-    const themeLabels = ["深海蓝", "松石绿", "岩灰"]
-    const minuteValues = [30, 15, 5, 45, 60, 0]
+async function saveAttendancePreferences(next, previous) {
+    Keychain.set("attendance-helper-preferences-v1", JSON.stringify(next))
+    if (next.remindMinutes === previous.remindMinutes) return
 
-    while (true) {
-        const preferences = readAttendancePreferences()
-        const menu = new Alert()
-        menu.title = "考勤配置"
-        menu.message = "每日目标 " + CONFIG.TARGET_HOURS + " 小时。提醒使用 iOS 通知。"
-        menu.addAction("组件主题 · " + themeLabels[themeValues.indexOf(preferences.theme)])
-        menu.addAction("提前提醒 · " + (preferences.remindMinutes ? preferences.remindMinutes + " 分钟" : "关闭"))
-        menu.addCancelAction("完成")
-        const section = await menu.presentSheet()
-        if (section < 0) return
-
-        const choice = new Alert()
-        const labels = [
-            themeLabels,
-            minuteValues.map(minutes => minutes ? "提前 " + minutes + " 分钟" : "关闭提前提醒")
-        ][section]
-        choice.title = ["组件主题", "提前提醒"][section]
-        for (const label of labels) choice.addAction(label)
-        choice.addCancelAction("返回")
-        const selected = await choice.presentSheet()
-        if (selected < 0) continue
-
-        const next = { ...preferences }
-        if (section === 0) next.theme = themeValues[selected]
-        if (section === 1) next.remindMinutes = minuteValues[selected]
-        Keychain.set("attendance-helper-preferences-v1", JSON.stringify(next))
-
-        if (next.remindMinutes !== preferences.remindMinutes) {
-            // 只取消本脚本使用固定标识预约的提前通知。
-            try {
-                await Notification.removePending(["attendance-helper-upcoming-work"])
-                const key = "schedule9-" + formatDateKey(now)
-                if (Keychain.contains(key)) Keychain.remove(key)
-                if (next.remindMinutes) {
-                    await handleScheduleNineHours()
-                }
-            } catch (error) {
-                await presentMessage("提前提醒", "设置已保存，今日提醒预约失败：" + String(error.message || error))
-            }
-        }
-    }
+    // 清理同一业务日的预约，然后按新的提前量安排提醒。
+    await Notification.removePending(["attendance-helper-upcoming-work"])
+    const key = "schedule9-" + formatDateKey(now)
+    if (Keychain.contains(key)) Keychain.remove(key)
+    if (next.remindMinutes) await handleScheduleNineHours()
 }
 
 /**
@@ -3003,6 +2968,9 @@ async function presentAttendanceHistory(initialMonth) {
     let syncFailed = false
     let monthChanged = false
     // 按日期保存选中项，自动补查后仍停留在用户正在看的那天。
+    // 配置面板随当前月份保留展开状态，便于连续调节。
+    let settingsOpen = false
+    let settingsMessage = ""
     let selectedKey = month.getTime() === current.getTime() ? todayKey : formatDateKey(month)
 
     /**
@@ -3026,25 +2994,77 @@ async function presentAttendanceHistory(initialMonth) {
         table.showSeparators = false
 
         const heading = new UITableRow()
-        heading.height = 70
-        heading.backgroundColor = new Color(palette.ink)
+        heading.height = 76
+        heading.backgroundColor = new Color(palette.paper)
         const title = heading.addText(month.getFullYear() + " 年 " + (month.getMonth() + 1) + " 月", "考勤核查")
         title.titleFont = Font.boldSystemFont(23)
-        title.titleColor = Color.white()
-        title.subtitleColor = new Color("#E0E7EF")
+        title.titleColor = new Color(palette.ink)
+        title.subtitleColor = new Color("#657386")
         table.addRow(heading)
 
-        // 操作采用整行按钮，避免窄屏上右侧次要列被系统挤出。
+        // 整行处理点击并在页内展开，避免从原生表格叠开系统弹窗。
         const settingsRow = new UITableRow()
-        settingsRow.height = 48
-        const settings = settingsRow.addButton("考勤配置")
+        settingsRow.height = 44
+        settingsRow.dismissOnSelect = false
+        const settings = settingsRow.addText(settingsOpen ? "收起考勤配置" : "考勤配置")
+        settings.titleColor = new Color(palette.ink)
         settings.centerAligned()
-        settings.dismissOnTap = false
-        settings.onTap = async () => {
-            await presentAttendancePreferences()
+        settingsRow.onSelect = () => {
+            settingsOpen = !settingsOpen
             draw()
         }
         table.addRow(settingsRow)
+
+        if (settingsOpen) {
+            const preferences = readAttendancePreferences()
+
+            /**
+             * 将设置项绘制成等宽选项，选中项用字重和强调色标识。
+             *
+             * @param field 设置字段
+             * @param options 值与名称列表
+             * @author Kai
+             * @date 2026/11/25 13:01
+             */
+            function addOptions(field, options) {
+                const row = new UITableRow()
+                row.height = 43
+                row.cellSpacing = 0
+                row.backgroundColor = new Color(palette.paper)
+                for (const [value, label] of options) {
+                    const choice = row.addButton(label)
+                    choice.widthWeight = 1
+                    choice.centerAligned()
+                    choice.dismissOnTap = false
+                    const active = preferences[field] === value
+                    choice.titleFont = active ? Font.boldSystemFont(14) : Font.systemFont(14)
+                    choice.titleColor = new Color(active ? palette.ink : "#657386")
+                    choice.onTap = async () => {
+                        const previous = readAttendancePreferences()
+                        settingsMessage = ""
+                        try {
+                            await saveAttendancePreferences({ ...previous, [field]: value }, previous)
+                        } catch (error) {
+                            settingsMessage = "更新配置时发生错误：" + String(error.message || error)
+                        }
+                        draw()
+                    }
+                }
+                table.addRow(row)
+            }
+
+            const label = new UITableRow()
+            label.height = 36
+            label.addText("组件主题")
+            table.addRow(label)
+            addOptions("theme", [["navy", "深海蓝"], ["teal", "松石绿"], ["slate", "岩灰"]])
+            const reminder = new UITableRow()
+            reminder.height = 36
+            reminder.addText("提前下班提醒", settingsMessage)
+            table.addRow(reminder)
+            addOptions("remindMinutes", [[5, "5 分钟"], [15, "15 分钟"], [30, "30 分钟"]])
+            addOptions("remindMinutes", [[45, "45 分钟"], [60, "60 分钟"], [0, "关闭"]])
+        }
 
         const metrics = new UITableRow()
         metrics.height = 55
@@ -3102,13 +3122,12 @@ async function presentAttendanceHistory(initialMonth) {
         table.addRow(weekdays)
 
         // 日期列等宽，选中日期在月历下方展开完整记录。
-        const symbols = { normal: "·", warning: "!", active: "·", neutral: "?" }
         const dateColors = { normal: "#148267", warning: "#BA5A25", active: palette.accent, neutral: "#738197" }
         for (const week of weeks) {
             const row = new UITableRow()
             row.height = 45
             row.cellSpacing = 0
-            row.backgroundColor = new Color(palette.paper)
+            if (week.some(day => day?.key === selectedKey)) row.backgroundColor = new Color(palette.paper)
             for (const day of week) {
                 if (!day || !day.key) {
                     const empty = row.addText(day ? String(day.getDate()) : "")
@@ -3116,13 +3135,12 @@ async function presentAttendanceHistory(initialMonth) {
                     empty.centerAligned()
                     continue
                 }
-                const marker = day.workday ? symbols[day.state] : "—"
-                const cell = row.addButton(Number(day.key.slice(-2)) + (day.key === selectedKey ? "◦" : marker))
+                // 日期只显示数字，正常和异常保留自己的颜色，选中只改变字重与底色。
+                const cell = row.addButton(String(Number(day.key.slice(-2))))
                 cell.widthWeight = 1
                 cell.centerAligned()
-                cell.titleFont = day.key === selectedKey ? Font.boldSystemFont(17) : Font.systemFont(14)
-                cell.titleColor = new Color(day.key === selectedKey ? palette.ink
-                    : day.workday ? dateColors[day.state] : "#738197")
+                cell.titleFont = day.key === selectedKey ? Font.boldSystemFont(18) : Font.mediumSystemFont(15)
+                cell.titleColor = new Color(day.workday ? dateColors[day.state] : "#738197")
                 cell.dismissOnTap = false
                 cell.onTap = () => {
                     selectedKey = day.key
