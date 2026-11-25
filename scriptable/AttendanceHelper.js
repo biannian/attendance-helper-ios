@@ -2363,67 +2363,497 @@ function addFitnessRing(parent, data, size) {
     image.centerAlignImage()
 }
 
+
+function getWidgetMonthModel(data) {
+    const todayKey = formatDateKey(now)
+    const current = attendanceMonth()
+    const savedMonth = attendanceMonth(readKeychainValue("attendance-widget-month:" + CONFIG.USERNAME))
+    const month = savedMonth > current ? current : savedMonth
+    const year = month.getFullYear()
+    const monthKey = formatDateKey(month).slice(0, 7)
+    const holidays = { [year]: readAttendanceRecord("attendance-history-calendar-" + year)?.holidays }
+    const checked = data && data.ok ? new Map([[todayKey, data]]) : new Map()
+    const weeks = attendanceMonthWeeks(month).map(week => week.map(date => {
+        if (!date) return null
+        const key = formatDateKey(date)
+        return key <= todayKey
+            ? buildAttendanceHistoryDay(date, holidays, checked)
+            : { key, workday: false, state: "future", workedMs: null, requiredMs: CONFIG.TARGET_HOURS * 3600000 }
+    }))
+    const days = weeks.flat().filter(Boolean)
+    const workdays = days.filter(day => day.workday)
+    const settled = workdays.filter(day => Number.isFinite(day.workedMs))
+    return {
+        month, monthKey, weeks, days, workdays,
+        normal: workdays.filter(day => day.state === "normal").length,
+        warnings: workdays.filter(day => day.state === "warning").length,
+        pending: workdays.filter(day => day.state === "neutral").length,
+        active: workdays.filter(day => day.state === "active").length,
+        average: settled.length
+            ? formatShortDuration(settled.reduce((sum, day) => sum + day.workedMs, 0) / settled.length)
+            : "—"
+    }
+}
+
+function addWidgetMonthNavigation(widget, model, width, p, label) {
+    const header = widget.addStack()
+    header.layoutHorizontally()
+    header.centerAlignContent()
+    header.size = new Size(width, 22)
+    const current = attendanceMonth()
+
+    function addArrow(offset) {
+        const button = header.addStack()
+        button.centerAlignContent()
+        button.size = new Size(22, 22)
+        const target = new Date(model.month.getFullYear(), model.month.getMonth() + offset, 1)
+        if (target.getFullYear() < 2000 || target > current) return
+        const key = formatDateKey(target).slice(0, 7)
+        const symbol = button.addText(offset < 0 ? "‹" : "›")
+        symbol.font = Font.boldSystemFont(18)
+        symbol.textColor = new Color(p.accent)
+        if (typeof button.setAction === "function" && Number.parseInt(Device.systemVersion(), 10) >= 17) {
+            button.setAction(offset < 0 ? "上个月" : "下个月", { id: "attendance-month:" + key })
+        } else {
+            button.url = getWeeklyAttendanceUrl(key)
+        }
+    }
+
+    addArrow(-1)
+    const center = header.addStack()
+    center.layoutHorizontally()
+    center.centerAlignContent()
+    center.size = new Size(Math.max(90, width - 44), 22)
+    const title = center.addText(model.monthKey.replace("-", " / "))
+    title.font = Font.boldSystemFont(11)
+    title.textColor = new Color(p.text)
+    title.lineLimit = 1
+    title.url = getWeeklyAttendanceUrl(model.monthKey)
+    center.addSpacer()
+    const meta = center.addText(label || (model.normal + "/" + model.workdays.length + " OK"))
+    meta.font = Font.mediumSystemFont(8)
+    meta.textColor = new Color(p.muted)
+    meta.lineLimit = 1
+    addArrow(1)
+}
+
+function widgetDayProgress(day, data) {
+    if (!day || !day.workday) return 0
+    const required = Number(day.requiredMs) > 0 ? Number(day.requiredMs) : CONFIG.TARGET_HOURS * 3600000
+    if (Number.isFinite(day.workedMs)) {
+        return Math.max(0, Math.min(1, day.workedMs / Math.max(1, required)))
+    }
+    if (day.state === "normal") return 1
+    if (day.state === "active" && day.key === formatDateKey(now)) return widgetWorkProgress(data)
+    return 0
+}
+
+function addCyberTimelineEvent(parent, index, label, value, color, p) {
+    const row = parent.addStack()
+    row.layoutHorizontally()
+    row.centerAlignContent()
+    const dot = row.addStack()
+    dot.backgroundColor = new Color(color)
+    dot.cornerRadius = 3
+    dot.size = new Size(6, 6)
+    row.addSpacer(6)
+    const title = row.addText(index + " / " + label)
+    title.font = Font.mediumSystemFont(9)
+    title.textColor = new Color(p.muted)
+    title.lineLimit = 1
+    row.addSpacer()
+    const detail = row.addText(value)
+    detail.font = Font.boldSystemFont(11)
+    detail.textColor = new Color(p.text)
+    detail.lineLimit = 1
+    detail.minimumScaleFactor = 0.65
+}
+
+function renderCyberWeekStrip(widget, data, width, p) {
+    const days = getRecentWidgetDays(data, 7)
+    const heading = widget.addStack()
+    heading.layoutHorizontally()
+    const title = heading.addText("LAST 7 DAYS")
+    title.font = Font.boldSystemFont(8)
+    title.textColor = new Color(p.muted)
+    const note = heading.addText("  /  DAILY TRACE")
+    note.font = Font.systemFont(8)
+    note.textColor = new Color(p.muted)
+    const row = widget.addStack()
+    row.layoutHorizontally()
+    row.spacing = 4
+    const cellWidth = Math.max(18, Math.floor((width - 24) / 7))
+    const weekdays = ["一", "二", "三", "四", "五", "六", "日"]
+    for (const day of days) {
+        const cell = row.addStack()
+        cell.layoutVertically()
+        cell.centerAlignContent()
+        cell.size = new Size(cellWidth, 45)
+        const weekday = cell.addText(weekdays[day.weekday] || "·")
+        weekday.font = Font.systemFont(8)
+        weekday.textColor = new Color(p.muted)
+        const bar = cell.addStack()
+        bar.backgroundColor = new Color(!day.workday ? p.track
+            : day.state === "normal" ? p.good
+            : day.state === "warning" ? p.warning
+            : day.state === "active" ? p.accent
+            : p.neutral)
+        bar.cornerRadius = 3
+        bar.size = new Size(Math.max(12, cellWidth - 8), 5)
+        const date = cell.addText(day.key.slice(-2))
+        date.font = Font.mediumSystemFont(8)
+        date.textColor = new Color(p.text)
+    }
+}
+
+function renderCyberLargeWidget(widget, data, width, p) {
+    const model = getWidgetMonthModel(data)
+    addWidgetMonthNavigation(widget, model, width, p, "COMMAND LOG")
+    widget.addSpacer(8)
+
+    const panel = widget.addStack()
+    panel.layoutHorizontally()
+    panel.spacing = 10
+    const heroWidth = Math.max(126, Math.floor((width - 10) * 0.46))
+    const hero = panel.addStack()
+    hero.layoutVertically()
+    hero.backgroundColor = new Color(p.cell)
+    hero.cornerRadius = 12
+    hero.setPadding(9, 10, 9, 10)
+    hero.size = new Size(heroWidth, 126)
+
+    const kicker = hero.addText("TIME TO RELEASE")
+    kicker.font = Font.boldSystemFont(8)
+    kicker.textColor = new Color(p.muted)
+    const countdown = hero.addText(!data.hasClockIn ? "--:--"
+        : data.targetReached ? "READY"
+        : formatRemainCompact(data.remainingMinutes))
+    countdown.font = Font.boldSystemFont(30)
+    countdown.textColor = new Color(p.accent)
+    countdown.lineLimit = 1
+    countdown.minimumScaleFactor = 0.55
+    const state = hero.addText(data.targetReached ? "TARGET REACHED" : "9H WORK CYCLE")
+    state.font = Font.mediumSystemFont(8)
+    state.textColor = new Color(p.muted)
+    state.lineLimit = 1
+    hero.addSpacer(4)
+    addStyledProgress(hero, data, heroWidth - 20, p, 6)
+    hero.addSpacer(5)
+    const target = hero.addText("TARGET  " + (data.targetTime ? formatTime(data.targetTime) : "--"))
+    target.font = Font.boldSystemFont(9)
+    target.textColor = new Color(p.text)
+    target.lineLimit = 1
+
+    const timeline = panel.addStack()
+    timeline.layoutVertically()
+    timeline.spacing = 13
+    timeline.size = new Size(width - heroWidth - 10, 126)
+    addCyberTimelineEvent(timeline, "01", "CLOCK IN", data.hasClockIn ? formatTime(data.inTime) : "--", p.accent, p)
+    addCyberTimelineEvent(timeline, "02", "TARGET", data.targetTime ? formatTime(data.targetTime) : "--", p.accent2, p)
+    addCyberTimelineEvent(timeline, "03", "CLOCK OUT", data.hasOutRecord ? formatTime(data.latestOutTime) : "WAITING", data.hasOutRecord ? p.good : p.warning, p)
+
+    widget.addSpacer(9)
+    renderCyberWeekStrip(widget, data, width, p)
+}
+
+function renderFitnessWeekBars(widget, data, width, p) {
+    const days = getRecentWidgetDays(data, 7)
+    const heading = widget.addText("LAST 7 DAYS  /  WORK-HOUR LOAD")
+    heading.font = Font.boldSystemFont(8)
+    heading.textColor = new Color(p.muted)
+    widget.addSpacer(5)
+    const row = widget.addStack()
+    row.layoutHorizontally()
+    row.spacing = 6
+    const barWidth = Math.max(12, Math.floor((width - 36) / 7))
+    const barHeight = 54
+    const weekdays = ["一", "二", "三", "四", "五", "六", "日"]
+    for (const day of days) {
+        const column = row.addStack()
+        column.layoutVertically()
+        column.centerAlignContent()
+        column.size = new Size(barWidth, 78)
+        const track = column.addStack()
+        track.layoutVertically()
+        track.backgroundColor = new Color(p.track)
+        track.cornerRadius = 5
+        track.size = new Size(barWidth, barHeight)
+        const progress = widgetDayProgress(day, data)
+        const fillHeight = progress > 0 ? Math.max(3, Math.round(barHeight * progress)) : 0
+        if (fillHeight > 0) {
+            track.addSpacer(barHeight - fillHeight)
+            const fill = track.addStack()
+            fill.backgroundColor = new Color(day.state === "normal" ? p.good
+                : day.state === "warning" ? p.warning
+                : day.state === "active" ? p.accent2
+                : p.neutral)
+            fill.cornerRadius = 5
+            fill.size = new Size(barWidth, fillHeight)
+        } else {
+            track.addSpacer(barHeight)
+        }
+        const date = column.addText(String(Number(day.key.slice(-2))))
+        date.font = Font.mediumSystemFont(8)
+        date.textColor = new Color(p.text)
+        const weekday = column.addText(weekdays[day.weekday] || "·")
+        weekday.font = Font.systemFont(7)
+        weekday.textColor = new Color(p.muted)
+    }
+}
+
+function renderFitnessLargeWidget(widget, data, width, p) {
+    const model = getWidgetMonthModel(data)
+    addWidgetMonthNavigation(widget, model, width, p, "MONTHLY ACTIVITY")
+    widget.addSpacer(7)
+    const summary = widget.addStack()
+    summary.layoutHorizontally()
+    summary.centerAlignContent()
+    addFitnessRing(summary, data, 94)
+    summary.addSpacer(12)
+    const stats = summary.addStack()
+    stats.layoutVertically()
+    const score = stats.addText(model.normal + " / " + model.workdays.length)
+    score.font = Font.boldSystemFont(29)
+    score.textColor = new Color(p.text)
+    score.lineLimit = 1
+    const label = stats.addText("DAYS ON TARGET")
+    label.font = Font.boldSystemFont(8)
+    label.textColor = new Color(p.accent)
+    stats.addSpacer(4)
+    const average = stats.addText("AVG  " + model.average)
+    average.font = Font.mediumSystemFont(10)
+    average.textColor = new Color(p.text)
+    const review = stats.addText("TO REVIEW  " + model.warnings)
+    review.font = Font.systemFont(9)
+    review.textColor = new Color(p.muted)
+    widget.addSpacer(8)
+    renderFitnessWeekBars(widget, data, width, p)
+}
+
+function renderMinimalLargeWidget(widget, data, width, p) {
+    const model = getWidgetMonthModel(data)
+    addWidgetMonthNavigation(widget, model, width, p, "TIMESHEET")
+    widget.addSpacer(9)
+
+    const summary = widget.addStack()
+    summary.layoutHorizontally()
+    summary.centerAlignContent()
+    const count = summary.addText(String(model.normal).padStart(2, "0"))
+    count.font = Font.boldSystemFont(43)
+    count.textColor = new Color(p.text)
+    count.lineLimit = 1
+    const slash = summary.addText(" / " + model.workdays.length)
+    slash.font = Font.mediumSystemFont(19)
+    slash.textColor = new Color(p.muted)
+    const side = summary.addStack()
+    side.layoutVertically()
+    side.addSpacer(4)
+    const caption = side.addText("DAYS ON TARGET")
+    caption.font = Font.boldSystemFont(8)
+    caption.textColor = new Color(p.muted)
+    const average = side.addText("AVG  " + model.average)
+    average.font = Font.mediumSystemFont(10)
+    average.textColor = new Color(p.text)
+    const pending = side.addText("待核查  " + model.warnings)
+    pending.font = Font.systemFont(9)
+    pending.textColor = new Color(p.muted)
+
+    widget.addSpacer(8)
+    const divider = widget.addStack()
+    divider.backgroundColor = new Color(p.track)
+    divider.size = new Size(width, 1)
+    widget.addSpacer(6)
+    const heading = widget.addText("RECENT ENTRIES")
+    heading.font = Font.boldSystemFont(8)
+    heading.textColor = new Color(p.muted)
+    const records = model.workdays.filter(day => day.clockInAt || Number.isFinite(day.workedMs)).slice(-4).reverse()
+    if (!records.length) {
+        widget.addSpacer(5)
+        const empty = widget.addText("暂无本月打卡快照")
+        empty.font = Font.systemFont(10)
+        empty.textColor = new Color(p.muted)
+        return
+    }
+    const weekdays = ["一", "二", "三", "四", "五", "六", "日"]
+    for (let index = 0; index < records.length; index++) {
+        const day = records[index]
+        const row = widget.addStack()
+        row.layoutHorizontally()
+        row.centerAlignContent()
+        const date = row.addText(day.key.slice(5).replace("-", "/") + " 周" + weekdays[day.weekday])
+        date.font = Font.mediumSystemFont(9)
+        date.textColor = new Color(p.muted)
+        date.lineLimit = 1
+        row.addSpacer(7)
+        const times = row.addText(day.clockIn + "  —  " + day.clockOut)
+        times.font = Font.mediumSystemFont(9)
+        times.textColor = new Color(p.text)
+        times.lineLimit = 1
+        times.minimumScaleFactor = 0.65
+        row.addSpacer()
+        const worked = row.addText(day.worked)
+        worked.font = Font.boldSystemFont(9)
+        worked.textColor = new Color(p.accent2)
+        worked.lineLimit = 1
+        if (index < records.length - 1) {
+            widget.addSpacer(3)
+            const rule = widget.addStack()
+            rule.backgroundColor = new Color(p.track)
+            rule.size = new Size(width, 1)
+            widget.addSpacer(3)
+        }
+    }
+}
+
+function widgetHeatmapCellColor(day, data) {
+    if (!day || day.state === "future") return "#172A3B"
+    if (!day.workday) return "#1B2B3B"
+    if (day.state === "normal") return "#2F9D75"
+    if (day.state === "active") return "#2F9CC7"
+    if (day.state === "warning") {
+        const progress = widgetDayProgress(day, data)
+        if (progress >= 0.75) return "#B77B37"
+        if (progress >= 0.4) return "#80552F"
+        return "#583D2A"
+    }
+    return "#3A5066"
+}
+
+function addWidgetHeatmapLegendItem(parent, color, label, p) {
+    const item = parent.addStack()
+    item.layoutHorizontally()
+    item.centerAlignContent()
+    const swatch = item.addStack()
+    swatch.backgroundColor = new Color(color)
+    swatch.cornerRadius = 2
+    swatch.size = new Size(7, 7)
+    item.addSpacer(3)
+    const text = item.addText(label)
+    text.font = Font.systemFont(8)
+    text.textColor = new Color(p.muted)
+    text.lineLimit = 1
+}
+
+function renderHeatmapLargeWidget(widget, data, width, p) {
+    const model = getWidgetMonthModel(data)
+    addWidgetMonthNavigation(widget, model, width, p, "CONTRIBUTION MAP")
+    widget.addSpacer(5)
+    const summary = widget.addText(model.normal + " 达标  ·  " + model.warnings + " 待核查  ·  " + model.workdays.length + " 个应出勤日")
+    summary.font = Font.mediumSystemFont(9)
+    summary.textColor = new Color(p.muted)
+    summary.lineLimit = 1
+
+    widget.addSpacer(6)
+    const grid = widget.addStack()
+    grid.layoutVertically()
+    grid.spacing = 3
+    const weekdayWidth = 16
+    const gap = 3
+    const weekCount = model.weeks.length
+    const cellSize = Math.max(22, Math.min(34, Math.floor((width - weekdayWidth - gap * weekCount) / Math.max(1, weekCount))))
+    const weekdays = ["一", "二", "三", "四", "五", "六", "日"]
+    for (let weekday = 0; weekday < 7; weekday++) {
+        const row = grid.addStack()
+        row.layoutHorizontally()
+        row.spacing = gap
+        row.size = new Size(width, cellSize)
+        const dayLabel = row.addStack()
+        dayLabel.centerAlignContent()
+        dayLabel.size = new Size(weekdayWidth, cellSize)
+        const label = dayLabel.addText(weekdays[weekday])
+        label.font = Font.systemFont(8)
+        label.textColor = new Color(p.muted)
+        label.centerAlignText()
+        for (let week = 0; week < weekCount; week++) {
+            const day = model.weeks[week][weekday]
+            const tile = row.addStack()
+            tile.layoutVertically()
+            tile.centerAlignContent()
+            tile.cornerRadius = 6
+            tile.size = new Size(cellSize, cellSize)
+            tile.backgroundColor = new Color(widgetHeatmapCellColor(day, data))
+            if (day) {
+                const number = tile.addText(String(Number(day.key.slice(-2))))
+                number.font = Font.mediumSystemFont(8)
+                number.textColor = new Color(day.workday ? "#F3F7FB" : "#7D91A4")
+                number.centerAlignText()
+            }
+        }
+    }
+
+    widget.addSpacer(7)
+    const legend = widget.addStack()
+    legend.layoutHorizontally()
+    legend.spacing = 9
+    addWidgetHeatmapLegendItem(legend, "#3A5066", "未记录", p)
+    addWidgetHeatmapLegendItem(legend, "#2F9CC7", "进行中", p)
+    addWidgetHeatmapLegendItem(legend, "#B77B37", "待核查", p)
+    addWidgetHeatmapLegendItem(legend, "#2F9D75", "达标", p)
+}
+
+
 function renderCyberWidget(widget, data, family, width) {
     const p = widgetStylePalette("cyber")
     const large = family === "large" || family === "extraLarge"
     const small = family === "small"
-    addStyledHeader(widget, large ? "CYBER / MONTHLY CONTROL" : "CYBER / ATTENDANCE", p)
+    addStyledHeader(widget, large ? "CYBER / COMMAND CENTER" : "CYBER / ATTENDANCE", p)
     if (!data || !data.ok) {
         widget.addSpacer(8)
         renderErrorBlock(widget, data || { error: "暂无考勤数据" })
+        return
+    }
+    if (large) {
+        renderCyberLargeWidget(widget, data, width, p)
         return
     }
 
     const headline = widget.addText(data.hasClockIn
         ? (data.targetReached ? "TARGET REACHED" : formatRemainCompact(data.remainingMinutes))
         : "NO CLOCK-IN")
-    headline.font = Font.boldSystemFont(small ? 24 : large ? 36 : 31)
+    headline.font = Font.boldSystemFont(small ? 24 : 31)
     headline.textColor = new Color(p.accent)
     headline.lineLimit = 1
     headline.minimumScaleFactor = 0.62
 
     const status = widget.addText(widgetStatusText(data).toUpperCase())
-    status.font = Font.mediumSystemFont(large ? 10 : 9)
+    status.font = Font.mediumSystemFont(9)
     status.textColor = new Color(p.muted)
     status.lineLimit = 1
     status.minimumScaleFactor = 0.65
 
     widget.addSpacer(large ? 7 : 6)
-    addStyledProgress(widget, data, width, p, large ? 6 : 4)
-    widget.addSpacer(large ? 8 : 6)
+    addStyledProgress(widget, data, width, p, 4)
+    widget.addSpacer(6)
     addStyledInfoRow(widget, [
         ["CLOCK IN", data.hasClockIn ? formatTime(data.inTime) : "--"],
         ["TARGET", data.targetTime ? formatTime(data.targetTime) : "--"],
         ["CLOCK OUT", data.hasOutRecord ? formatTime(data.latestOutTime) : "--"]
-    ], width, p, large ? 46 : small ? 34 : 40)
-
-    if (large) {
-        widget.addSpacer(7)
-        renderWidgetMonthCalendar(widget, data, width, "cyber", { height: 158, gap: 4, fontSize: 11 })
-    }
-}
-
-function renderFitnessWidget(widget, data, family, width) {
+    ], width, p, small ? 34 : 40)
+}function renderFitnessWidget(widget, data, family, width) {
     const p = widgetStylePalette("fitness")
     const large = family === "large" || family === "extraLarge"
     const small = family === "small"
-    addStyledHeader(widget, large ? "ACTIVITY / MONTHLY RINGS" : "ACTIVITY / WORK RINGS", p)
+    addStyledHeader(widget, large ? "ACTIVITY / MONTHLY PERFORMANCE" : "ACTIVITY / WORK RINGS", p)
     if (!data || !data.ok) {
         widget.addSpacer(8)
         renderErrorBlock(widget, data || { error: "暂无考勤数据" })
+        return
+    }
+    if (large) {
+        renderFitnessLargeWidget(widget, data, width, p)
         return
     }
 
     const row = widget.addStack()
     row.layoutHorizontally()
     row.centerAlignContent()
-    const ringSize = small ? 58 : large ? 108 : 76
+    const ringSize = small ? 58 : 76
     addFitnessRing(row, data, ringSize)
-    row.addSpacer(large ? 14 : 10)
+    row.addSpacer(10)
     const info = row.addStack()
     info.layoutVertically()
     const elapsed = info.addText(widgetElapsedText(data))
-    elapsed.font = Font.boldSystemFont(small ? 19 : large ? 31 : 26)
+    elapsed.font = Font.boldSystemFont(small ? 19 : 26)
     elapsed.textColor = new Color(p.text)
     elapsed.lineLimit = 1
     elapsed.minimumScaleFactor = 0.62
@@ -2433,25 +2863,10 @@ function renderFitnessWidget(widget, data, family, width) {
     caption.lineLimit = 1
     info.addSpacer(4)
     const remain = info.addText(widgetStatusText(data))
-    remain.font = Font.systemFont(large ? 11 : 9)
+    remain.font = Font.systemFont(9)
     remain.textColor = new Color(p.muted)
-    remain.lineLimit = large ? 2 : 2
+    remain.lineLimit = 2
     remain.minimumScaleFactor = 0.68
-    if (large) {
-        const inLine = info.addText("IN  " + (data.hasClockIn ? formatTime(data.inTime) : "--"))
-        inLine.font = Font.mediumSystemFont(10)
-        inLine.textColor = new Color(p.text)
-        inLine.lineLimit = 1
-        const outLine = info.addText("OUT " + (data.hasOutRecord ? formatTime(data.latestOutTime) : "--"))
-        outLine.font = Font.mediumSystemFont(10)
-        outLine.textColor = new Color(p.text)
-        outLine.lineLimit = 1
-        widget.addSpacer(6)
-        addStyledProgress(widget, data, width, p, 5)
-        widget.addSpacer(7)
-        renderWidgetMonthCalendar(widget, data, width, "fitness", { height: 151, gap: 4, fontSize: 11 })
-        return
-    }
 
     if (small) {
         widget.addSpacer(4)
@@ -2471,9 +2886,7 @@ function renderFitnessWidget(widget, data, family, width) {
         ["可下班", data.targetTime ? formatTime(data.targetTime) : "--"],
         ["下班", data.hasOutRecord ? formatTime(data.latestOutTime) : "--"]
     ], width, p, 38)
-}
-
-function addMinimalMetricRow(widget, items, width, p, height = 42) {
+}function addMinimalMetricRow(widget, items, width, p, height = 42) {
     const row = widget.addStack()
     row.layoutHorizontally()
     row.size = new Size(width, height)
@@ -2510,7 +2923,7 @@ function renderMinimalWidget(widget, data, family, width) {
     const p = widgetStylePalette("minimal")
     const large = family === "large" || family === "extraLarge"
     const small = family === "small"
-    addStyledHeader(widget, large ? "ATTENDANCE / MONTH" : "ATTENDANCE", p)
+    addStyledHeader(widget, large ? "ATTENDANCE / TIMESHEET" : "ATTENDANCE", p)
     if (!data || !data.ok) {
         widget.addSpacer(8)
         const error = widget.addText(data && data.cacheMiss ? "需要更新" : "暂时不可用")
@@ -2523,34 +2936,26 @@ function renderMinimalWidget(widget, data, family, width) {
         detail.lineLimit = 3
         return
     }
+    if (large) {
+        renderMinimalLargeWidget(widget, data, width, p)
+        return
+    }
 
-    widget.addSpacer(large ? 6 : 8)
+    widget.addSpacer(8)
     const headline = widget.addText(data.hasClockIn
         ? (data.targetReached ? "已达标" : formatRemainCompact(data.remainingMinutes))
         : "未打卡")
-    headline.font = Font.boldSystemFont(small ? 25 : large ? 39 : 35)
+    headline.font = Font.boldSystemFont(small ? 25 : 35)
     headline.textColor = new Color(p.text)
     headline.lineLimit = 1
     headline.minimumScaleFactor = 0.62
 
     const subtitle = widget.addText(data.hasClockIn
-        ? (large ? "REMAINING TO 9 HOURS" : "距目标工时")
+        ? "距目标工时"
         : getStatusMeta(data).subText)
-    subtitle.font = Font.systemFont(large ? 10 : 9)
+    subtitle.font = Font.systemFont(9)
     subtitle.textColor = new Color(p.muted)
     subtitle.lineLimit = 1
-
-    if (large) {
-        widget.addSpacer(8)
-        addMinimalMetricRow(widget, [
-            ["CLOCK IN", data.hasClockIn ? formatTime(data.inTime) : "--"],
-            ["TARGET", data.targetTime ? formatTime(data.targetTime) : "--"],
-            ["CLOCK OUT", data.hasOutRecord ? formatTime(data.latestOutTime) : "--"]
-        ], width, p, 43)
-        widget.addSpacer(7)
-        renderWidgetMonthCalendar(widget, data, width, "minimal", { height: 158, gap: 4, fontSize: 11 })
-        return
-    }
 
     if (small) {
         widget.addSpacer(5)
@@ -2567,9 +2972,7 @@ function renderMinimalWidget(widget, data, family, width) {
         ["目标", data.targetTime ? formatTime(data.targetTime) : "--"],
         ["下班", data.hasOutRecord ? formatTime(data.latestOutTime) : "--"]
     ], width, p, 48)
-}
-
-function getRecentWidgetDays(data, count) {
+}function getRecentWidgetDays(data, count) {
     const dates = Array.from({ length: count }, (_, index) => addDays(now, index - count + 1))
     const holidays = {}
     for (const year of new Set(dates.map(date => date.getFullYear()))) {
@@ -2608,33 +3011,14 @@ function renderHeatmapWidget(widget, data, family, width) {
     const p = widgetStylePalette("heatmap")
     const large = family === "large" || family === "extraLarge"
     const small = family === "small"
-    addStyledHeader(widget, large ? "MONTHLY HEATMAP" : "ATTENDANCE / LAST 7 DAYS", p)
+    addStyledHeader(widget, large ? "ATTENDANCE / CONTRIBUTION MAP" : "ATTENDANCE / LAST 7 DAYS", p)
     if (!data || !data.ok) {
         widget.addSpacer(8)
         renderErrorBlock(widget, data || { error: "暂无考勤数据" })
         return
     }
-
     if (large) {
-        const status = widget.addText(widgetStatusText(data))
-        status.font = Font.boldSystemFont(13)
-        status.textColor = new Color(p.text)
-        status.lineLimit = 1
-        status.minimumScaleFactor = 0.65
-        widget.addSpacer(6)
-        addStyledInfoRow(widget, [
-            ["TODAY", widgetElapsedText(data)],
-            ["CLOCK IN", data.hasClockIn ? formatTime(data.inTime) : "--"],
-            ["STATUS", data.targetReached ? "达标" : data.hasClockIn ? "计时中" : "未打卡"]
-        ], width, p, 38)
-        widget.addSpacer(6)
-        renderWidgetMonthCalendar(widget, data, width, "heatmap", { height: 190, gap: 4, fontSize: 11 })
-        widget.addSpacer(5)
-        const footer = widget.addText("TODAY  " + widgetElapsedText(data) + "   ·   IN  " + (data.hasClockIn ? formatTime(data.inTime) : "--"))
-        footer.font = Font.mediumSystemFont(9)
-        footer.textColor = new Color(p.muted)
-        footer.lineLimit = 1
-        footer.minimumScaleFactor = 0.65
+        renderHeatmapLargeWidget(widget, data, width, p)
         return
     }
 
@@ -2656,9 +3040,7 @@ function renderHeatmapWidget(widget, data, family, width) {
         widget.addSpacer(7)
         addStyledProgress(widget, data, width, p, 4)
     }
-}
-
-function renderStyledStatsWidget(widget, data, family, style, width) {
+}function renderStyledStatsWidget(widget, data, family, style, width) {
     const p = widgetStylePalette(style)
     const large = family === "large" || family === "extraLarge"
     const count = large ? 14 : 7
@@ -3739,7 +4121,7 @@ async function presentAttendanceSettings() {
         const menu = new Alert()
         menu.title = "考勤设置"
         menu.message = "组件主题：" + themeName + "\n提前提醒：" + reminderName + "\n\n选择要调整的项目"
-        const styleLabels = { cyber: "赛博仪表盘", fitness: "Fitness 环", minimal: "极简电子墨水", heatmap: "月历热力图" }
+        const styleLabels = { cyber: "赛博控制台", fitness: "Fitness 活动环", minimal: "极简工时账本", heatmap: "贡献热力图" }
         menu.message += "\n小号：" + styleLabels[preferences.widgetStyleSmall]
             + "\n中号：" + styleLabels[preferences.widgetStyleMedium]
             + "\n大号：" + styleLabels[preferences.widgetStyleLarge]
@@ -3801,7 +4183,7 @@ async function presentAttendanceSettings() {
             const key = widgetStyleKey(family)
             const stylePicker = new Alert()
             stylePicker.title = families[familyIndex][1] + "组件样式"
-            const styleOptions = [["cyber", "赛博仪表盘"], ["fitness", "Fitness 环形进度"], ["minimal", "极简电子墨水"], ["heatmap", "月历热力图"]]
+            const styleOptions = [["cyber", "赛博控制台"], ["fitness", "Fitness 活动环"], ["minimal", "极简工时账本"], ["heatmap", "贡献热力图"]]
             styleOptions.forEach(item => stylePicker.addAction((preferences[key] === item[0] ? "✓  " : "") + item[1]))
             stylePicker.addCancelAction("返回")
             const styleIndex = await stylePicker.presentSheet()
