@@ -3,7 +3,6 @@ import {
   TimerIntervalLabel,
   Divider,
   HStack,
-  Storage,
   NavigationStack,
   ProgressView,
   ScrollView,
