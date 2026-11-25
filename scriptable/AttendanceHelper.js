@@ -3307,11 +3307,12 @@ async function createWidget(data, previewFamily, previewStyle) {
   } else if (family === "accessoryInline") {
     renderAccessoryInline(widget, data)
   } else if (family === "small") {
-    widget.setPadding(14, 10, 14, 10)
+    // 小号正方形：上下留白减半，避免内容被纵向 padding 挤压。
+    widget.setPadding(7, 10, 7, 10)
     await renderStyledWidget(widget, data, family, style, Math.floor(homeScreenWidgetWidth("medium") / 2 - 20), layout)
   } else if (hasCalendar) {
-    // 大号是近正方形：增加左右安全边距，同时用更高的日期格填满纵向空间。
-    widget.setPadding(10, 16, 10, 16)
+    // 大号 / 特大号月历：上下留白减半，保留左右安全边距，让日历和今日信息更舒展。
+    widget.setPadding(5, 16, 5, 16)
     const largeWidth = Math.max(250, homeScreenWidgetWidth("large") - 32)
     await renderStyledWidget(widget, data, family, style, largeWidth, layout, calendarOnly)
   } else if (statsOnly) {
