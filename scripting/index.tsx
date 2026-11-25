@@ -3,7 +3,6 @@ import {
   TimerIntervalLabel,
   Divider,
   HStack,
-  Image,
   Storage,
   Navigation,
   NavigationStack,
@@ -109,7 +108,7 @@ function TodayTab({ data, palette, loading, onRefresh, statusMessage, isWorkday 
           <Button title={loading ? "同步中…" : "刷新"} buttonStyle="bordered" action={onRefresh} disabled={loading} />
         </VStack>
       </HStack>
-      <ProgressView value={progress} tint={palette.accent} />
+      <ProgressView value={progress} total={1} tint={palette.accent} />
       {data?.hasClockIn && !data.hasOutRecord && data.targetTime
         ? <VStack spacing={3} alignment="leading">
             <Text font="caption" foregroundStyle="secondaryLabel">距离可下班</Text>
@@ -292,9 +291,9 @@ function SettingsTab({ preferences, account, onPreference, onSaveAccount, accoun
     </Card>
     <Card>
       <SectionTitle title="企业账号" subtitle="账号、密码、设备 ID 和 Token 只保存在 Scripting Keychain" />
-      <TextField title="账号 / 手机号" value={accountDraft.username} onChanged={value => setAccountDraft(current => ({ ...current, username: value }))} />
-      <SecureField title="密码" value={accountDraft.password} onChanged={value => setAccountDraft(current => ({ ...current, password: value }))} />
-      <TextField title="设备 ID" value={accountDraft.deviceId} onChanged={value => setAccountDraft(current => ({ ...current, deviceId: value }))} />
+      <TextField title="账号 / 手机号" value={accountDraft.username} onChanged={value => setAccountDraft({ ...accountDraft, username: value })} />
+      <SecureField title="密码" value={accountDraft.password} onChanged={value => setAccountDraft({ ...accountDraft, password: value })} />
+      <TextField title="设备 ID" value={accountDraft.deviceId} onChanged={value => setAccountDraft({ ...accountDraft, deviceId: value })} />
       <Button title="安全保存账号" buttonStyle="borderedProminent" action={onSaveAccount} />
       <Text font="caption2" foregroundStyle="secondaryLabel">
         {account.configured ? "当前账号已配置。更换账号会清除旧 Token 和今日快照。" : "首次使用需要填写完整账号资料。"}
@@ -328,14 +327,15 @@ function ToolsTab({ onRun, onDebug, onPreview }) {
 }
 
 function AppView({ initialTab = "today" }) {
-  const [tab, setTab] = useState(initialTab);
+  const [tab, setTab] = useState(initialTab === "today" && !getAccount().configured ? "settings" : initialTab);
   const [today, setToday] = useState(null);
   const [todayIsWorkday, setTodayIsWorkday] = useState(true);
   const [monthDate, setMonthDate] = useState(new Date());
   const [monthData, setMonthData] = useState(null);
   const [selectedDate, setSelectedDate] = useState(formatDateKey(new Date()));
   const [preferences, setPreferences] = useState(getPreferences());
-  const [account, setAccount] = useState(() => { const a = getAccount(); return { username: a.username, deviceId: a.deviceId, configured: a.configured }; });
+  const initialAccount = getAccount();
+  const [account, setAccount] = useState({ username: initialAccount.username, deviceId: initialAccount.deviceId, configured: initialAccount.configured });
   const [accountDraft, setAccountDraft] = useState({
     username: account.username,
     password: "",
@@ -347,6 +347,7 @@ function AppView({ initialTab = "today" }) {
   const [debugText, setDebugText] = useState("");
 
   async function refreshToday() {
+    if (!getAccount().configured) { setMessage("请先配置账号"); return; }
     setLoading(true);
     try {
       const workday = await isChinaWorkday(new Date());
@@ -371,6 +372,7 @@ function AppView({ initialTab = "today" }) {
   }
 
   async function loadMonth(date = monthDate) {
+    if (!getAccount().configured) { setMessage("请先配置账号"); return; }
     setLoading(true);
     try {
       const result = await getAttendanceMonth(date, { sync: true });
@@ -386,6 +388,8 @@ function AppView({ initialTab = "today" }) {
   }
 
   useEffect(() => {
+    // First render must not depend on enterprise or holiday network access.
+    if (!account.configured) return;
     void (async () => { await refreshToday(); await loadMonth(new Date()); })();
   }, []);
 
@@ -552,11 +556,18 @@ async function main() {
     Script.exit(result);
     return;
   }
-  await Navigation.present({ element: <AppView initialTab={action === "week" ? "calendar" : action === "account" ? "settings" : "today"} /> });
+  if (Script.queryParameters?.diagnostic === "ui") {
+    await Navigation.present({ element: <NavigationStack><VStack padding={16} navigationTitle="考勤助手诊断"><Text>基础界面渲染正常</Text><Text>请返回并尝试正常启动。</Text></VStack></NavigationStack> });
+  } else {
+    await Navigation.present({ element: <AppView initialTab={action === "week" ? "calendar" : action === "account" ? "settings" : "today"} /> });
+  }
   Script.exit();
 }
 
-main().catch(error => {
-  console.error("考勤助手启动失败", error);
-  Script.exit({ ok: false, error: String(error?.message || error) });
+main().catch(async error => {
+  // Do not expose raw exception contents: login errors may include account data.
+  const category = error instanceof TypeError ? "TypeError" : error instanceof ReferenceError ? "ReferenceError" : "RuntimeError";
+  console.error("考勤助手启动失败：" + category);
+  try { await Dialog.alert({ title: "考勤助手启动失败", message: "启动阶段：" + category + "。请使用诊断入口检查基础界面，或在编辑器查看报错（勿分享账号、密码或 Token）。" }); } catch (_) {}
+  Script.exit({ ok: false, error: category });
 });
