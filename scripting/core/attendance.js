@@ -77,7 +77,7 @@ export async function getAttendanceSummary(day = new Date()) {
     const current = getAccount();
     if (!owner.username || owner.username !== current.username || owner.password !== current.password || owner.deviceId !== current.deviceId) throw new Error("账号已切换，请重新刷新");
     const data = normalizeAttendanceData(raw, dateKey, new Date());
-    if (data.ok && data.hasOutRecord && isMissedCheckoutConfirmed(dateKey)) setMissedCheckoutConfirmed(dateKey, false);
+    if (data.ok && data.hasOutRecord && data.targetReached && isMissedCheckoutConfirmed(dateKey)) setMissedCheckoutConfirmed(dateKey, false);
     data.missedConfirmed = !data.hasOutRecord && isMissedCheckoutConfirmed(dateKey);
     if (String(data.date).replace(/\//g, "-").slice(0, 10) !== dateKey) {
       throw new Error("考勤返回日期与查询日期不一致");
