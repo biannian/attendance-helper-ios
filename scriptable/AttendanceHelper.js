@@ -2019,7 +2019,7 @@ function attendanceCheckResultText(data) {
 
 // 离开公司时只对已经到点且尚未打卡的情况升级提醒。
 function leaveCheckStatus(data) {
-  if (!data?.ok) return "check_failed"
+  if (!data?.ok) return confirmedMissedCheckout() ? "missed_confirmed" : "check_failed"
   if (data.isRestDay) return "rest_day"
   if (!data.hasClockIn) return "no_clock_in"
   if (missingCheckout(data)) return confirmedMissedCheckout() ? "missed_confirmed" : checkoutSnoozed() ? "snoozed" : "missing_checkout"
@@ -2071,6 +2071,7 @@ async function handleCheckoutDecision(action) {
     return {...data,decisionStatus:"missed_confirmed"}
   }
   const until=Date.now()+5*60000
+  if(formatDateKey(new Date(until))!==day) return {ok:false,error:"已接近午夜，请手动确认今日漏卡"}
   await cancelCheckoutEscalation()
   const n=new Notification()
   n.identifier="attendance-helper-leave-alert-snooze"
@@ -2267,7 +2268,7 @@ async function handleNearNineHours(existingData) {
   if (!data.ok || !data.hasClockIn) return data
 
   if (data.targetReached || missingCheckout(data)) {
-    if (missingCheckout(data) && checkoutSnoozed()) return data
+    if (missingCheckout(data) && (checkoutSnoozed() || confirmedMissedCheckout())) return data
     if (data.hasOutRecord) await Notification.removePending(["attendance-helper-checkout-due"])
     const key = "targetReached-" + CONFIG.USERNAME + ":" + formatDateKey(now) + (data.hasOutRecord ? "-done" : confirmedMissedCheckout() ? "-confirmed-missed" : "-missing")
 
