@@ -2677,7 +2677,7 @@ function renderLargeTodayPanel(widget, data, width, p) {
     hero.setPadding(7, 8, 7, 8)
     hero.size = new Size(heroWidth, panelHeight)
 
-    const kicker = hero.addText(data && data.ok && data.hasOutRecord && !data.targetReached ? "工时还差" : "距离可下班")
+    const kicker = hero.addText(!data || !data.ok || !data.hasClockIn ? "今日状态" : data.hasOutRecord && !data.targetReached ? "工时还差" : "距离可下班")
     kicker.font = Font.boldSystemFont(9)
     kicker.textColor = new Color(p.muted)
     kicker.lineLimit = 1
@@ -2693,7 +2693,7 @@ function renderLargeTodayPanel(widget, data, width, p) {
         countdown = hero.addText(data.targetReached ? "已达标" : formatRemainCompact(data.remainingMinutes))
     }
     countdown.font = Font.boldSystemFont(25)
-    countdown.textColor = new Color(p.accent)
+    countdown.textColor = new Color(data && data.ok && data.hasOutRecord && !data.targetReached ? p.warning : p.accent)
     countdown.lineLimit = 1
     countdown.minimumScaleFactor = 0.55
 
