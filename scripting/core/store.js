@@ -1,4 +1,4 @@
-import { Keychain, Storage } from "scripting";
+// Storage and Keychain are native runtime globals, not SDK exports.
 import {
   DEFAULT_PREFERENCES,
   KEYCHAIN_KEYS,
