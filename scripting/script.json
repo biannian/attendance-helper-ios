@@ -5,7 +5,7 @@
     "zh-Hant": "考勤助手",
     "en": "Attendance Helper"
   },
-  "version": "11.0.0",
+  "version": "11.0.1",
   "description": "iGroup attendance dashboard, widgets and Dynamic Island countdown.",
   "localizedDescriptions": {
     "zh-Hans": "考勤查询、月历核查、桌面小组件与灵动岛下班倒计时。",
@@ -15,5 +15,8 @@
   "color": "#315FBD",
   "author": {
     "name": "Kai"
-  }
+  },
+  "intentInputTypes": [
+    "Text"
+  ]
 }
