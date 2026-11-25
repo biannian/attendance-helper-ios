@@ -41,7 +41,7 @@ jobs:
           assert manifest["name"] == "AttendanceHelper"
           assert manifest["version"]
           required = {"script.json", "index.tsx", "widget.tsx", "intent.tsx",
-                      "app_intents.tsx", "live_activity.tsx"}
+                      "app_intents.tsx", "live_activity.tsx", "app_view.tsx"}
           core = {"core/api.js", "core/attendance.js", "core/config.js",
                   "core/crypto.js", "core/launch.js", "core/live_activity_service.js",
                   "core/reminders.js", "core/rules.js", "core/store.js"}
