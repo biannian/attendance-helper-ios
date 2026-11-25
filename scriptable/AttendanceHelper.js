@@ -2677,7 +2677,7 @@ function renderLargeTodayPanel(widget, data, width, p) {
     hero.setPadding(7, 8, 7, 8)
     hero.size = new Size(heroWidth, panelHeight)
 
-    const kicker = hero.addText("距离可下班")
+    const kicker = hero.addText(data && data.ok && data.hasOutRecord && !data.targetReached ? "工时还差" : "距离可下班")
     kicker.font = Font.boldSystemFont(9)
     kicker.textColor = new Color(p.muted)
     kicker.lineLimit = 1
@@ -2687,7 +2687,7 @@ function renderLargeTodayPanel(widget, data, width, p) {
         countdown = hero.addText(data && data.cacheMiss ? "需要更新" : "暂不可用")
     } else if (!data.hasClockIn) {
         countdown = hero.addText("等待上班卡")
-    } else if (showsLiveCountdown(data)) {
+    } else if (!data.hasOutRecord && showsLiveCountdown(data)) {
         countdown = addLiveCountdown(hero, data, Font.boldSystemFont(25), p.accent)
     } else {
         countdown = hero.addText(data.targetReached ? "已达标" : formatRemainCompact(data.remainingMinutes))
@@ -2741,11 +2741,13 @@ function renderLargeTodayPanel(widget, data, width, p) {
         p, detailWidth)
 }
 
-function renderCyberLargeWidget(widget, data, width, p) {
+function renderCyberLargeWidget(widget, data, width, p, showToday = true) {
     const model = getWidgetMonthModel(data)
     const scale = largeWidgetScale()
-    renderLargeTodayPanel(widget, data, width, p)
-    widget.addSpacer(6)
+    if (showToday) {
+        renderLargeTodayPanel(widget, data, width, p)
+        widget.addSpacer(6)
+    }
 
     renderCyberWeekStrip(widget, data, width, p)
     widget.addSpacer(5)
@@ -2797,11 +2799,13 @@ function renderFitnessWeekBars(widget, data, width, p, barHeightOverride = 72) {
         weekday.font = Font.systemFont(7)
         weekday.textColor = new Color(p.muted)
     }
-}function renderFitnessLargeWidget(widget, data, width, p) {
+}function renderFitnessLargeWidget(widget, data, width, p, showToday = true) {
     const model = getWidgetMonthModel(data)
     const scale = largeWidgetScale()
-    renderLargeTodayPanel(widget, data, width, p)
-    widget.addSpacer(6)
+    if (showToday) {
+        renderLargeTodayPanel(widget, data, width, p)
+        widget.addSpacer(6)
+    }
 
     const summary = widget.addStack()
     summary.layoutHorizontally()
@@ -2832,11 +2836,13 @@ function renderFitnessWeekBars(widget, data, width, p, barHeightOverride = 72) {
     renderLargeMonthStats(widget, model, width, p, Math.round(34 * scale))
 }
 
-function renderMinimalLargeWidget(widget, data, width, p) {
+function renderMinimalLargeWidget(widget, data, width, p, showToday = true) {
     const model = getWidgetMonthModel(data)
     const scale = largeWidgetScale()
-    renderLargeTodayPanel(widget, data, width, p)
-    widget.addSpacer(6)
+    if (showToday) {
+        renderLargeTodayPanel(widget, data, width, p)
+        widget.addSpacer(6)
+    }
 
     addWidgetMonthNavigation(widget, model, width, p, "本月概览")
     const summary = widget.addStack()
@@ -2899,12 +2905,14 @@ function addWidgetHeatmapLegendItem(parent, color, label, p) {
     text.lineLimit = 1
 }
 
-function renderHeatmapLargeWidget(widget, data, width, p) {
+function renderHeatmapLargeWidget(widget, data, width, p, showToday = true) {
     const scale = largeWidgetScale()
-    renderLargeTodayPanel(widget, data, width, p)
-    widget.addSpacer(6)
+    if (showToday) {
+        renderLargeTodayPanel(widget, data, width, p)
+        widget.addSpacer(6)
+    }
 
-    // 热力图主题保留整月矩阵；顶部固定显示今天的打卡与实时倒计时。
+    // 热力图保留整月矩阵；工作日顶部显示今天的打卡与实时倒计时。
     renderWidgetMonthCalendar(widget, data, width, "heatmap", {
         height: Math.round(145 * scale),
         fontSize: 9,
@@ -2912,18 +2920,18 @@ function renderHeatmapLargeWidget(widget, data, width, p) {
     })
 }
 
-function renderCyberWidget(widget, data, family, width) {
+function renderCyberWidget(widget, data, family, width, showToday = true) {
     const p = widgetStylePalette("cyber")
     const large = family === "large" || family === "extraLarge"
     const small = family === "small"
-    addStyledHeader(widget, "今日考勤", p)
+    addStyledHeader(widget, large && !showToday ? "本月考勤" : "今日考勤", p)
     if (!data || !data.ok) {
         widget.addSpacer(8)
         renderErrorBlock(widget, data || { error: "暂无考勤数据" })
         return
     }
     if (large) {
-        renderCyberLargeWidget(widget, data, width, p)
+        renderCyberLargeWidget(widget, data, width, p, showToday)
         return
     }
 
@@ -2949,18 +2957,18 @@ function renderCyberWidget(widget, data, family, width) {
         ["预计达标", data.targetTime ? formatTime(data.targetTime) : "—"],
         ["下班打卡", data.hasOutRecord ? formatTime(data.latestOutTime) : "—"]
     ], width, p, small ? 34 : 40)
-}function renderFitnessWidget(widget, data, family, width) {
+}function renderFitnessWidget(widget, data, family, width, showToday = true) {
     const p = widgetStylePalette("fitness")
     const large = family === "large" || family === "extraLarge"
     const small = family === "small"
-    addStyledHeader(widget, "今日考勤", p)
+    addStyledHeader(widget, large && !showToday ? "本月考勤" : "今日考勤", p)
     if (!data || !data.ok) {
         widget.addSpacer(8)
         renderErrorBlock(widget, data || { error: "暂无考勤数据" })
         return
     }
     if (large) {
-        renderFitnessLargeWidget(widget, data, width, p)
+        renderFitnessLargeWidget(widget, data, width, p, showToday)
         return
     }
 
@@ -3039,11 +3047,11 @@ function largeFontForMetric(height) {
     return height >= 44 ? 14 : 12
 }
 
-function renderMinimalWidget(widget, data, family, width) {
+function renderMinimalWidget(widget, data, family, width, showToday = true) {
     const p = widgetStylePalette("minimal")
     const large = family === "large" || family === "extraLarge"
     const small = family === "small"
-    addStyledHeader(widget, "今日考勤", p)
+    addStyledHeader(widget, large && !showToday ? "本月考勤" : "今日考勤", p)
     if (!data || !data.ok) {
         widget.addSpacer(8)
         const error = widget.addText(data && data.cacheMiss ? "需要更新" : "暂时不可用")
@@ -3057,7 +3065,7 @@ function renderMinimalWidget(widget, data, family, width) {
         return
     }
     if (large) {
-        renderMinimalLargeWidget(widget, data, width, p)
+        renderMinimalLargeWidget(widget, data, width, p, showToday)
         return
     }
 
@@ -3127,18 +3135,18 @@ function renderRecentHeatmapRow(widget, data, width, p, tileHeight = 30) {
     }
 }
 
-function renderHeatmapWidget(widget, data, family, width) {
+function renderHeatmapWidget(widget, data, family, width, showToday = true) {
     const p = widgetStylePalette("heatmap")
     const large = family === "large" || family === "extraLarge"
     const small = family === "small"
-    addStyledHeader(widget, large ? "今日考勤" : "近 7 天考勤", p)
+    addStyledHeader(widget, large ? (showToday ? "今日考勤" : "本月考勤") : "近 7 天考勤", p)
     if (!data || !data.ok) {
         widget.addSpacer(8)
         renderErrorBlock(widget, data || { error: "暂无考勤数据" })
         return
     }
     if (large) {
-        renderHeatmapLargeWidget(widget, data, width, p)
+        renderHeatmapLargeWidget(widget, data, width, p, showToday)
         return
     }
 
@@ -3160,7 +3168,7 @@ function renderHeatmapWidget(widget, data, family, width) {
         widget.addSpacer(7)
         addStyledProgress(widget, data, width, p, 4)
     }
-}function renderStyledStatsWidget(widget, data, family, style, width) {
+}function renderStyledStatsWidget(widget, data, family, style, width, showHeader = true) {
     const p = widgetStylePalette(style)
     const large = family === "large" || family === "extraLarge"
     const count = large ? 14 : 7
@@ -3168,7 +3176,8 @@ function renderHeatmapWidget(widget, data, family, width) {
     const normal = days.filter(day => day.workday && day.state === "normal").length
     const warnings = days.filter(day => day.workday && day.state === "warning").length
     const title = "近 " + count + " 天考勤记录"
-    addStyledHeader(widget, title, p)
+    if (showHeader) addStyledHeader(widget, title, p)
+    else addWidgetSectionTitle(widget, title, p)
     widget.addSpacer(large ? 8 : 6)
     if (style === "fitness") {
         const row = widget.addStack()
@@ -3225,21 +3234,39 @@ function renderHeatmapWidget(widget, data, family, width) {
     }
 }
 
-async function renderStyledWidget(widget, data, family, style, width, layout) {
+async function renderStyledWidget(widget, data, family, style, width, layout, calendarOnly = false) {
     const contentWidth = width || mediumWidgetContentWidth(10)
+    const large = family === "large" || family === "extraLarge"
+
+    if (large && layout === "stats") {
+        const p = widgetStylePalette(style)
+        if (!calendarOnly) {
+            addStyledHeader(widget, "今日考勤", p)
+            if (data && data.ok) {
+                renderLargeTodayPanel(widget, data, contentWidth, p)
+            } else {
+                renderErrorBlock(widget, data || { error: "暂无考勤数据" })
+            }
+            widget.addSpacer(6)
+            renderStyledStatsWidget(widget, data, family, style, contentWidth, false)
+        } else {
+            renderStyledStatsWidget(widget, data, family, style, contentWidth, true)
+        }
+        return
+    }
+
     if (layout === "stats") {
         renderStyledStatsWidget(widget, data, family, style, contentWidth)
     } else if (style === "cyber") {
-        renderCyberWidget(widget, data, family, contentWidth)
+        renderCyberWidget(widget, data, family, contentWidth, !calendarOnly)
     } else if (style === "fitness") {
-        renderFitnessWidget(widget, data, family, contentWidth)
+        renderFitnessWidget(widget, data, family, contentWidth, !calendarOnly)
     } else if (style === "heatmap") {
-        renderHeatmapWidget(widget, data, family, contentWidth)
+        renderHeatmapWidget(widget, data, family, contentWidth, !calendarOnly)
     } else {
-        renderMinimalWidget(widget, data, family, contentWidth)
+        renderMinimalWidget(widget, data, family, contentWidth, !calendarOnly)
     }
 }
-
 
 
 // ==================== 功能 4：桌面小组件 ====================
@@ -3259,7 +3286,7 @@ async function createWidget(data, previewFamily, previewStyle) {
   const isAccessory = family.indexOf("accessory") === 0
   const layout = config.runsInWidget ? readWidgetLayout(args.widgetParameter) : null
   const hasCalendar = family === "large" || family === "extraLarge"
-  const statsOnly = layout === "stats" && (family === "medium" || hasCalendar)
+  const statsOnly = layout === "stats" && family === "medium"
   const style = widgetStyleForFamily(family, previewStyle)
   const widget = new ListWidget()
   const isPreview = !!previewFamily && !config.runsInWidget
@@ -3286,7 +3313,7 @@ async function createWidget(data, previewFamily, previewStyle) {
     // 大号是近正方形：增加左右安全边距，同时用更高的日期格填满纵向空间。
     widget.setPadding(10, 16, 10, 16)
     const largeWidth = Math.max(250, homeScreenWidgetWidth("large") - 32)
-    await renderStyledWidget(widget, data, family, style, largeWidth, layout)
+    await renderStyledWidget(widget, data, family, style, largeWidth, layout, calendarOnly)
   } else if (statsOnly) {
     widget.setPadding(15, 12, 15, 12)
     renderStyledStatsWidget(widget, data, family, style, mediumWidgetContentWidth(12))
