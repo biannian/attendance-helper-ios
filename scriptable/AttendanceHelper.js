@@ -2545,7 +2545,7 @@ async function renderSmallWidget(widget, data) {
  * @date 2026/11/25 13:00
  */
 async function renderMediumWidget(widget, data, contentWidth = mediumWidgetContentWidth()) {
-    addCompactHeader(widget, "今日打卡")
+    addCompactHeader(widget, "今日打卡", contentWidth)
     widget.addSpacer(4)
     if (!data.ok) {
         renderErrorBlock(widget, data)
@@ -2577,6 +2577,8 @@ async function renderMediumWidget(widget, data, contentWidth = mediumWidgetConte
     // 当天短暂外出已在摘要里过滤，只有有效下班卡才能点亮下班格。
     widget.addSpacer()
     const row = widget.addStack()
+    // 标题、进度条和三张卡片采用同一宽度，限制原生横排的弹性展开。
+    row.size = new Size(contentWidth, 58)
     row.spacing = 6
     const width = Math.floor((contentWidth - 12) / 3)
     addInfoCell(row, "上班卡", data.hasClockIn ? formatTime(data.inTime) : "待打卡",
@@ -3472,10 +3474,21 @@ async function renderLargeWidget(widget, data, contentWidth) {
 
 // ==================== 小组件公共 UI ====================
 
-function addCompactHeader(widget, titleText) {
+/**
+ * 绘制组件标题和右侧更新时间。
+ *
+ * @param widget 标题行所在的容器
+ * @param titleText 组件标题
+ * @param contentWidth 需与下方内容对齐时传入宽度
+ * @author Kai
+ * @date 2026/11/25 13:04
+ */
+function addCompactHeader(widget, titleText, contentWidth) {
   const row = widget.addStack()
   row.layoutHorizontally()
   row.centerAlignContent()
+    // 约束标题横排的弹性间距，右侧时间不会单独延伸到卡片外。
+    if (contentWidth !== undefined) row.size = new Size(contentWidth, 17)
 
   const title = row.addText(titleText)
   title.font = Font.boldSystemFont(13)
