@@ -1,4 +1,5 @@
-import { Script, WebViewController } from "scripting";
+import { Script } from "scripting";
+// WebViewController is a native runtime global.
 import { CONFIG } from "./config";
 import { encryptLoginPassword } from "./crypto";
 import { getAccount, getToken, setToken } from "./store";
