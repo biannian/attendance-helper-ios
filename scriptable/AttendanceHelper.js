@@ -2000,7 +2000,7 @@ async function handleLeaveCompany() {
   }
 
   await notifyBrief(
-      data.hasOutRecord ? "已满 9 小时" : "已满，未打卡",
+      data.hasOutRecord ? "考勤正常" : "⚠ 未打下班卡，请立即打卡",
       formatNotifyTimes(data)
   )
 }
@@ -2255,11 +2255,15 @@ function widgetElapsedText(data) {
     return formatShortDuration(Math.max(0, end.getTime() - data.inTime.getTime()))
 }
 
+function missingCheckout(data) {
+    return !!(data && data.ok && data.hasClockIn && data.targetReached && !data.hasOutRecord)
+}
+
 function widgetStatusText(data) {
     if (!data || !data.ok) return data && data.cacheMiss ? "需要更新" : "数据暂不可用"
     if (!data.hasClockIn) return "等待上班卡"
     if (data.targetReached && data.hasOutRecord) return "今日工时已达标"
-    if (data.targetReached) return "已到可下班时间"
+    if (data.targetReached) return "未打下班卡"
     return "距离达标还差 " + formatRemainText(data.remainingMinutes || 0)
 }
 
@@ -2752,10 +2756,10 @@ function renderLargeTodayPanel(widget, data, width, p) {
     } else if (!data.hasOutRecord && showsLiveCountdown(data)) {
         countdown = addLiveCountdown(hero, data, Font.boldSystemFont(25), p.accent)
     } else {
-        countdown = hero.addText(data.targetReached ? "已达标" : formatRemainCompact(data.remainingMinutes))
+        countdown = hero.addText(missingCheckout(data) ? "未打下班卡" : data.targetReached ? "已达标" : formatRemainCompact(data.remainingMinutes))
     }
     countdown.font = Font.boldSystemFont(25)
-    countdown.textColor = new Color(data && data.ok && data.hasOutRecord && !data.targetReached ? p.warning : p.accent)
+    countdown.textColor = new Color(missingCheckout(data) ? "#F87171" : data && data.ok && data.hasOutRecord && !data.targetReached ? p.warning : p.accent)
     countdown.lineLimit = 1
     countdown.minimumScaleFactor = 0.55
 
@@ -2769,7 +2773,7 @@ function renderLargeTodayPanel(widget, data, width, p) {
                     ? "已到时间，请确认下班卡"
                     : "目标工时 " + CONFIG.TARGET_HOURS + " 小时")
     caption.font = Font.mediumSystemFont(8)
-    caption.textColor = new Color(p.muted)
+    caption.textColor = new Color(missingCheckout(data) ? "#F87171" : p.muted)
     caption.lineLimit = 1
     caption.minimumScaleFactor = 0.65
 
@@ -2797,9 +2801,9 @@ function renderLargeTodayPanel(widget, data, width, p) {
     addLargeAttendanceLine(details, "下班打卡",
         data && data.ok && data.hasOutRecord
             ? formatTime(data.latestOutTime)
-            : data && data.ok && data.targetReached ? "请检查漏卡" : "待打卡",
+            : data && data.ok && data.targetReached ? "未打下班卡" : "待打卡",
         data && data.ok && data.hasOutRecord ? p.good
-            : data && data.ok && data.targetReached ? p.warning : p.muted,
+            : data && data.ok && data.targetReached ? "#F87171" : p.muted,
         p, detailWidth)
 }
 
@@ -3017,16 +3021,16 @@ function renderCyberWidget(widget, data, family, width, showToday = true) {
     }
 
     const headline = widget.addText(data.hasClockIn
-        ? (data.targetReached ? "已达标" : formatRemainCompact(data.remainingMinutes))
+        ? (missingCheckout(data) ? "未打下班卡" : data.targetReached ? "已达标" : formatRemainCompact(data.remainingMinutes))
         : "未打卡")
     headline.font = Font.boldSystemFont(small ? 24 : 31)
-    headline.textColor = new Color(p.accent)
+    headline.textColor = new Color(missingCheckout(data) ? "#F87171" : p.accent)
     headline.lineLimit = 1
     headline.minimumScaleFactor = 0.62
 
     const status = widget.addText(widgetStatusText(data))
     status.font = Font.mediumSystemFont(9)
-    status.textColor = new Color(p.muted)
+    status.textColor = new Color(missingCheckout(data) ? "#F87171" : p.muted)
     status.lineLimit = 1
     status.minimumScaleFactor = 0.65
 
@@ -3075,9 +3079,9 @@ function renderCyberWidget(widget, data, family, width, showToday = true) {
         if (live) {
             addLiveCountdown(info, data, Font.boldSystemFont(15), p.text)
         } else {
-            const status = info.addText(data.targetReached ? "已达标" : data.hasClockIn ? "可下班" : "未打卡")
+            const status = info.addText(missingCheckout(data) ? "未打下班卡" : data.targetReached ? "已达标" : data.hasClockIn ? "可下班" : "未打卡")
             status.font = Font.boldSystemFont(15)
-            status.textColor = new Color(p.text)
+            status.textColor = new Color(missingCheckout(data) ? "#F87171" : p.text)
             status.lineLimit = 1
             status.minimumScaleFactor = 0.65
         }
@@ -3100,7 +3104,7 @@ function renderCyberWidget(widget, data, family, width, showToday = true) {
         } else {
             const status = countdownRow.addText(widgetStatusText(data))
             status.font = Font.boldSystemFont(19)
-            status.textColor = new Color(p.text)
+            status.textColor = new Color(missingCheckout(data) ? "#F87171" : p.text)
             status.lineLimit = 1
             status.minimumScaleFactor = 0.62
         }
@@ -3185,10 +3189,10 @@ function renderMinimalWidget(widget, data, family, width, showToday = true) {
 
     widget.addSpacer(8)
     const headline = widget.addText(data.hasClockIn
-        ? (data.targetReached ? "已达标" : formatRemainCompact(data.remainingMinutes))
+        ? (missingCheckout(data) ? "未打下班卡" : data.targetReached ? "已达标" : formatRemainCompact(data.remainingMinutes))
         : "未打卡")
     headline.font = Font.boldSystemFont(small ? 25 : 35)
-    headline.textColor = new Color(p.text)
+    headline.textColor = new Color(missingCheckout(data) ? "#F87171" : p.text)
     headline.lineLimit = 1
     headline.minimumScaleFactor = 0.62
 
@@ -3311,10 +3315,10 @@ function renderHeatmapWidget(widget, data, family, width, showToday = true) {
     }
 
     const headline = widget.addText(data.hasClockIn
-        ? (data.targetReached ? "工时已达标" : "还差 " + formatRemainText(data.remainingMinutes))
+        ? (missingCheckout(data) ? "未打下班卡" : data.targetReached ? "工时已达标" : "还差 " + formatRemainText(data.remainingMinutes))
         : "等待上班卡")
     headline.font = Font.boldSystemFont(small ? 17 : 22)
-    headline.textColor = new Color(p.text)
+    headline.textColor = new Color(missingCheckout(data) ? "#F87171" : p.text)
     headline.lineLimit = 1
     headline.minimumScaleFactor = 0.65
     const sub = widget.addText("今日 " + widgetElapsedText(data) + "  ·  " + (data.hasClockIn ? formatTime(data.inTime) : "未打卡"))
@@ -5311,17 +5315,17 @@ function getStatusMeta(data) {
 
   if (data.targetReached && !data.hasOutRecord) {
     return {
-      mainText: "已到应走时间",
-      shortText: "可下班",
-      subText: `应走 ${formatTime(data.targetTime)}`,
-      color: "#34D399"
+      mainText: "未打下班卡",
+      shortText: "漏卡",
+      subText: `工时已达标，请立即打下班卡（${formatTime(data.targetTime)}）`,
+      color: "#F87171"
     }
   }
 
   if (data.targetReached) {
     return {
-      mainText: "已满 9 小时",
-      shortText: "可下班",
+      mainText: "考勤正常",
+      shortText: "正常",
       subText: `上班卡 ${formatTime(data.inTime)}，已达标`,
       color: "#34D399"
     }
@@ -5368,7 +5372,7 @@ async function handleDebug() {
         `离场时工时：${data.hasOutRecord ? formatDuration(data.latestOutWorkMs) : "--"}\n` +
         `可下班：${data.hasClockIn ? formatTime(data.targetTime) : "--"}\n` +
         `是否已满：${data.targetReached ? "是" : "否"}\n` +
-        `还差：${data.targetReached ? "已达标" : formatRemainText(data.remainingMinutes)}\n` +
+        `还差：${missingCheckout(data) ? "未打下班卡" : data.targetReached ? "已达标" : formatRemainText(data.remainingMinutes)}\n` +
         `倒计时：${data.countdownText}`
   }
 
