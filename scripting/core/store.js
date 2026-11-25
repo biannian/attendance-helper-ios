@@ -179,3 +179,15 @@ export function getReminderFlag(name, dateKey) {
 export function setReminderFlag(name, dateKey) {
   Storage.set(STORAGE_KEYS.REMINDER_PREFIX + name + ":" + dateKey, true);
 }
+
+// Explicit local confirmation; account-scoped, never changes server attendance.
+export function isMissedCheckoutConfirmed(dateKey) {
+  const user = getAccount().username;
+  return !!user && Storage.get("attendance-missed-checkout:" + user + ":" + dateKey) === true;
+}
+export function setMissedCheckoutConfirmed(dateKey, value) {
+  const user = getAccount().username;
+  if (!user) throw new Error("请先配置账号");
+  const key = "attendance-missed-checkout:" + user + ":" + dateKey;
+  if (value) Storage.set(key, true); else Storage.remove(key);
+}
