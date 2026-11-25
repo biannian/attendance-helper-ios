@@ -7,7 +7,7 @@
  * 考勤助手
  *
  * @author Kai
- * @date 2026/11/24 16:12
+ * @date 2026/11/25 10:52
  * @description 展示今日打卡、多日历史并执行考勤提醒
  */
 // ==================================================
@@ -75,8 +75,17 @@ const CONFIG = {
   // 设备 ID 在钥匙串里的键名
   DEVICE_KEYCHAIN: "attendance-helper-device-id",
 
-  // 已登记的 deviceid。留空，由快捷指令写入钥匙串。换成本机没登记过的值会要求安全验证
+  // 已登记的 deviceid。留空，由快捷指令写入钥匙串。未登记时走短信安全验证
   DEVICE_ID: "",
+
+  // 密码登录返回这个业务码时，表示当前 deviceid 还没登记
+  NEW_DEVICE_CODE: 104004,
+
+  // 新设备发短信。请求体是手机号和滑块参数
+  SEND_MESSAGE_URL: "https://api.hikiot.com/api-saas/open/v3/sendMessage",
+
+  // 短信验证码登录。通过后 data.token 是新的 Bearer Token
+  CODE_LOGIN_URL: "https://api.hikiot.com/api-saas/open/v1/codeLogin",
 
   // 公司名称，用于通知文案
   COMPANY_NAME: "iGroup",
@@ -908,6 +917,200 @@ async function requestAttendance(token, dateKey) {
 }
 
 /**
+ * 登录、发短信、验证码登录共用的请求头
+ *
+ * @param extra 额外请求头
+ * @return 请求头
+ * @author Kai
+ * @date 2026/11/24 14:50
+ */
+function openLoginHeaders(extra) {
+  return Object.assign({
+    "Accept": "application/json, text/plain, */*",
+    "Content-Type": "application/json",
+    "Authorization": CONFIG.LOGIN_BASIC,
+    "deviceid": CONFIG.DEVICE_ID,
+    "STN-PhoneType": "Iphone",
+    "devicename": "unknow 0",
+    "terminal": "2",
+    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Html5Plus/1.0 (Immersed/47) uni-app"
+  }, extra || {})
+}
+
+/**
+ * 弹出与网页相同的滑块，取出发短信用的参数
+ *
+ * @return captchaVerifyParam
+ * @author Kai
+ * @date 2026/11/24 14:50
+ */
+async function collectCaptchaParam() {
+  if (config.runsInWidget) {
+    throw new Error("新设备需要安全验证，请在 Scriptable 里打开脚本运行一次")
+  }
+
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>
+window.AliyunCaptchaConfig={region:"cn",prefix:"1jgloq"};
+</script>
+<script src="https://o.alicdn.com/captcha-frontend/aliyunCaptcha/AliyunCaptcha.js"></script>
+</head>
+<body style="font-family:-apple-system,sans-serif;padding:16px;">
+<p>请完成下方验证。通过后关闭此页，脚本会发送短信验证码。</p>
+<div id="captcha-element"></div>
+<button id="captcha-button" style="display:none"></button>
+<p id="done"></p>
+<script>
+window.__captchaParam="";
+function boot(){
+  if(!window.initAliyunCaptcha){setTimeout(boot,200);return;}
+  initAliyunCaptcha({
+    SceneId:"1w0ysb3s",
+    mode:"embed",
+    element:"#captcha-element",
+    button:"#captcha-button",
+    success:function(value){
+      window.__captchaParam=String(value||"");
+      var done=document.getElementById("done");
+      if(done){done.textContent="验证通过，请关闭此页";}
+    },
+    fail:function(){},
+    getInstance:function(){
+      var timer=setInterval(function(){
+        var body=document.getElementById("aliyunCaptcha-captcha-body");
+        if(!body){return;}
+        body.dispatchEvent(new Event("click"));
+        clearInterval(timer);
+      },200);
+    }
+  });
+}
+boot();
+</script>
+</body>
+</html>`
+
+  const view = new WebView()
+  await view.loadHTML(html, "https://www.hikiot.com/")
+  await view.present()
+  const value = await view.evaluateJavaScript("window.__captchaParam")
+  return String(value || "").trim()
+}
+
+/**
+ * 向登录手机发送新设备验证码
+ *
+ * @param captchaParam 滑块返回的 captchaVerifyParam
+ * @author Kai
+ * @date 2026/11/24 14:50
+ */
+async function sendLoginSms(captchaParam) {
+  const req = new Request(CONFIG.SEND_MESSAGE_URL)
+  req.method = "POST"
+  req.timeoutInterval = 15
+  req.body = JSON.stringify({
+    phone: CONFIG.USERNAME,
+    captchaVerifyParam: captchaParam
+  })
+  req.headers = openLoginHeaders()
+  const json = await readLoginJson(req)
+  if (!json || Number(json.code) !== 0) {
+    throw new Error((json && (json.msg || json.message)) || "发送验证码失败")
+  }
+}
+
+/**
+ * 让用户填写短信验证码
+ *
+ * @return 6 位数字验证码
+ * @author Kai
+ * @date 2026/11/24 14:50
+ */
+async function askSmsCode() {
+  const alert = new Alert()
+  alert.title = "新设备安全验证"
+  alert.message = "验证码已发送到登录手机，请输入 6 位短信验证码"
+  alert.addTextField("6 位验证码")
+  alert.addAction("验证")
+  alert.addCancelAction("取消")
+  if (await alert.presentAlert() !== 0) {
+    throw new Error("已取消新设备验证")
+  }
+  const code = String(alert.textFieldValue(0) || "").replace(/\D/g, "")
+  if (code.length !== 6) {
+    throw new Error("没有填写 6 位短信验证码")
+  }
+  return code
+}
+
+/**
+ * 提交短信验证码，换取新设备的登录 Token
+ *
+ * @param smsCode 6 位短信验证码
+ * @return Bearer Token
+ * @author Kai
+ * @date 2026/11/24 14:50
+ */
+async function codeLogin(smsCode) {
+  const req = new Request(CONFIG.CODE_LOGIN_URL)
+  req.method = "POST"
+  req.timeoutInterval = 15
+  req.body = JSON.stringify({
+    phone: CONFIG.USERNAME,
+    code: smsCode,
+    isAuto: false
+  })
+  req.headers = openLoginHeaders({"login-source": "link-web"})
+  const json = await readLoginJson(req)
+  const token = json && json.data ? json.data.token : ""
+  if (!json || Number(json.code) !== 0 || !token) {
+    throw new Error((json && (json.msg || json.message)) || "设备验证失败")
+  }
+  return token
+}
+
+/**
+ * 读取登录相关接口的 JSON
+ *
+ * @param req 已填好地址和请求头的 Request
+ * @return 接口 JSON；解析失败时返回 null
+ * @author Kai
+ * @date 2026/11/24 14:50
+ */
+async function readLoginJson(req) {
+  const text = await req.loadString()
+  try {
+    return JSON.parse(text)
+  } catch (e) {
+    return null
+  }
+}
+
+/**
+ * 未登记设备时完成滑块、发短信和验证码登录
+ *
+ * @return 新的 Bearer Token
+ * @author Kai
+ * @date 2026/11/24 14:50
+ */
+async function verifyNewDevice() {
+  if (!CONFIG.USERNAME) {
+    throw new Error("新设备需要短信验证，但没有登录手机号")
+  }
+  const captchaParam = await collectCaptchaParam()
+  if (!captchaParam) {
+    throw new Error("已取消新设备验证")
+  }
+  await sendLoginSms(captchaParam)
+  const smsCode = await askSmsCode()
+  return codeLogin(smsCode)
+}
+
+/**
  * 用账号密码登录并保存新 Token
  *
  * @return 新的 Bearer Token
@@ -927,17 +1130,7 @@ async function refreshAccessToken() {
     password: encryptLoginPassword(CONFIG.PASSWORD),
     isAuto: false
   })
-  req.headers = {
-    "Accept": "application/json, text/plain, */*",
-    "Content-Type": "application/json",
-    "Authorization": CONFIG.LOGIN_BASIC,
-    "login-source": "link-web",
-    "deviceid": CONFIG.DEVICE_ID,
-    "STN-PhoneType": "Iphone",
-    "devicename": "unknow 0",
-    "terminal": "2",
-    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Html5Plus/1.0 (Immersed/47) uni-app"
-  }
+  req.headers = openLoginHeaders({"login-source": "link-web"})
 
   const text = await req.loadString()
   let json = null
@@ -945,6 +1138,13 @@ async function refreshAccessToken() {
     json = JSON.parse(text)
   } catch (e) {
     json = null
+  }
+
+  if (json && Number(json.code) === CONFIG.NEW_DEVICE_CODE) {
+    const verified = await verifyNewDevice()
+    writeStoredToken(verified)
+    await selectCurrentTeam(verified)
+    return verified
   }
 
   const token = json && json.data ? json.data.token : ""
@@ -1448,7 +1648,7 @@ async function getAttendanceSummary(day = now) {
  * @param data 标准化打卡摘要
  * @param day 快照对应的考勤业务日期
  * @author Kai
- * @date 2026/11/24 16:29
+ * @date 2026/11/25 10:53
  */
 function saveAttendanceSnapshot(data, day) {
   if (!data || !data.ok) {
@@ -1462,9 +1662,10 @@ function saveAttendanceSnapshot(data, day) {
     orgName: data.orgName || "",
     shiftName: data.shiftName || "",
     inTime: data.inTime ? data.inTime.toISOString() : null,
-    latestOutTime: data.latestOutTime ? data.latestOutTime.toISOString() : null,
+    // 保留原始离场记录，次日回看时仍可按原始工卡结算。
+    latestOutTime: data.outSwipeTime ? data.outSwipeTime.toISOString() : null,
     inStatusDesc: data.inStatusDesc || "",
-    outStatusDesc: data.outStatusDesc || ""
+    outStatusDesc: data.outSwipeStatus || ""
   }
 
   try {
@@ -1573,13 +1774,32 @@ function getSnapshotUpdatedText(data) {
 // ==================== 解析接口数据 ====================
 
 /**
+ * 判断离场刷脸是否可用于考勤结算
+ *
+ * @param inTime 首张上班卡时间
+ * @param outTime 接口返回的离场刷脸时间
+ * @param today 是否为今天的考勤
+ * @return 可用于结算的下班卡时间或 null
+ * @author Kai
+ * @date 2026/11/25 10:52
+ */
+function resolveAttendanceCheckout(inTime, outTime, today) {
+    if (!today || !inTime || !outTime) {
+        return outTime
+    }
+    // 目标时刻前的门禁刷脸也可能是短暂外出，不能结束今日考勤。
+    const targetTimeMs = inTime.getTime() + CONFIG.TARGET_HOURS * 3600000
+    return outTime.getTime() >= targetTimeMs && outTime <= now ? outTime : null
+}
+
+/**
  * 解析考勤响应，使用查询日补全只含时分秒的打卡时间
  *
  * @param raw 考勤接口响应或缓存还原的数据
  * @param dateHint 响应没有业务日期时使用的日期，格式为 yyyy-MM-dd
  * @return 标准化考勤摘要
  * @author Kai
- * @date 2026/11/24 16:26
+ * @date 2026/11/25 10:52
  */
 function normalizeAttendanceData(raw, dateHint = formatDateKey(now)) {
   const payload = unwrapPayload(raw)
@@ -1625,8 +1845,10 @@ function normalizeAttendanceData(raw, dateHint = formatDateKey(now)) {
     "signInTime"
   ])
 
-  // 接口里的下班卡时间。打卡之后工时停在这一刻，不再按当前时间累计。
-  const latestOutRaw = deepPick(root, [
+  // 班次未打卡标志优先，避免把计划下班时间当成刷脸记录。
+  const shift = (root.dailyDetail || root).shiftDetails?.[0]
+  const offClocked = shift?.offClocked
+  const latestOutRaw = [false, 0, "0"].includes(offClocked) ? null : deepPick(root, [
     "clockOffTime",
     "clockOutTime",
     "outTime",
@@ -1646,7 +1868,8 @@ function normalizeAttendanceData(raw, dateHint = formatDateKey(now)) {
     "signInStatusDesc"
   ]) || ""
 
-  const outStatusDesc = deepPick(root, [
+  // 原始离场状态写入快照，今日界面仅展示已认定的下班状态。
+  const outSwipeStatus = deepPick(root, [
     "outStatusDesc",
     "clockOffStatusDesc",
     "clockOutStatusDesc",
@@ -1657,7 +1880,10 @@ function normalizeAttendanceData(raw, dateHint = formatDateKey(now)) {
   ]) || ""
 
   const inTime = parseAnyDateTime(clockInRaw, dateStr)
-  const latestOutTime = parseAnyDateTime(latestOutRaw, dateStr)
+  const outSwipeTime = parseAnyDateTime(latestOutRaw, dateStr)
+  const today = String(dateStr).replace(/\//g, "-").slice(0, 10) === formatDateKey(now)
+  const latestOutTime = resolveAttendanceCheckout(inTime, outSwipeTime, today)
+  const outStatusDesc = today && inTime && !latestOutTime ? "" : outSwipeStatus
 
   const hasClockIn = !!inTime
   const hasOutRecord = !!latestOutTime
@@ -1720,6 +1946,8 @@ function normalizeAttendanceData(raw, dateHint = formatDateKey(now)) {
 
     inTime,
     latestOutTime,
+    outSwipeTime,
+    outSwipeStatus,
 
     inStatusDesc,
     outStatusDesc,
@@ -2087,14 +2315,14 @@ function getLockScreenShortText(data) {
 /**
  * 未到应走时间时，用系统倒计时显示当前时间到应走时间
  *
- * 到点或已有下班卡后改成文字，避免系统倒计时过点后继续往上加。
+ * 到点后改成文字，避免系统倒计时过点后继续往上加。
  *
  * @param widget 锁屏组件
  * @param data 打卡摘要
  * @param fallbackText 不倒计时时显示的文字
  * @return 日期元素或文字元素
  * @author Kai
- * @date 2026/11/23 18:28
+ * @date 2026/11/25 10:53
  */
 function addLockScreenCountdown(widget, data, fallbackText) {
   if (showsLiveCountdown(data)) {
@@ -2524,7 +2752,7 @@ async function loadHistoryHolidays(year, cached) {
  * @param checked 本次页面打开期间已查询的日期
  * @return 日期类型、打卡时间和工时状态
  * @author Kai
- * @date 2026/11/24 16:31
+ * @date 2026/11/25 10:53
  */
 function buildAttendanceHistoryDay(date, holidays, checked) {
     const key = formatDateKey(date)
@@ -2532,7 +2760,9 @@ function buildAttendanceHistoryDay(date, holidays, checked) {
     const { kind, label, workday } = historyDayKind(date, holidays)
     const record = readHistorySnapshot(date) || checked.get(key)
     const clockIn = record && record.inTime ? new Date(record.inTime) : null
-    const clockOut = record && record.latestOutTime ? new Date(record.latestOutTime) : null
+    // 今日历史卡也会读到旧快照，应用与小组件相同的离场判断。
+    const outSwipe = record && record.latestOutTime ? new Date(record.latestOutTime) : null
+    const clockOut = resolveAttendanceCheckout(clockIn, outSwipe, today)
     const workedMs = clockIn && clockOut ? Math.max(0, clockOut - clockIn) : null
     const deficit = workedMs === null ? 0 : Math.ceil((CONFIG.TARGET_HOURS * 3600000 - workedMs) / 60000)
     let status = label
