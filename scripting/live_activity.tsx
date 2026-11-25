@@ -25,7 +25,7 @@ function ActivityDetails(state: AttendanceActivityState) {
   return (
     <VStack spacing={6} alignment="leading">
       <HStack spacing={6} alignment="center">
-        <Image systemName="clock.fill" foregroundStyle="#7CC7FF" />
+        <Image systemName="clock.fill" foregroundStyle={state.phase === "ready" ? "systemRed" : "#7CC7FF"} />
         <Text font="caption" foregroundStyle="secondaryLabel">考勤助手 · {state.statusText}</Text>
       </HStack>
       {state.phase === "working"
@@ -35,8 +35,8 @@ function ActivityDetails(state: AttendanceActivityState) {
             countsDown={true}
             showsHours={true}
           />
-        : <Text font="title2" foregroundStyle={state.phase === "ready" ? "systemGreen" : "secondaryLabel"}>
-            {state.phase === "ready" ? "已到下班时间" : "今日考勤已结束"}
+        : <Text font="title2" foregroundStyle={state.phase === "ready" ? "systemRed" : "secondaryLabel"}>
+            {state.phase === "ready" ? "未打下班卡，请立即打卡" : "今日考勤已结束"}
           </Text>}
       <HStack spacing={12}>
         <VStack spacing={2} alignment="leading">
@@ -65,17 +65,17 @@ const builder: LiveActivityUIBuilder<AttendanceActivityState> = (state) => (
     }
     compactLeading={
       <HStack spacing={4}>
-        <Image systemName="clock.fill" foregroundStyle="#7CC7FF" />
+        <Image systemName="clock.fill" foregroundStyle={state.phase === "ready" ? "systemRed" : "#7CC7FF"} />
         <Text>考勤</Text>
       </HStack>
     }
     compactTrailing={
       state.phase === "working"
         ? <TimerIntervalLabel from={state.startedAt} to={state.targetAt} countsDown={true} showsHours={true} />
-        : <Text>{state.phase === "ready" ? "可下班" : "完成"}</Text>
+        : <Text foregroundStyle={state.phase === "ready" ? "systemRed" : "secondaryLabel"}>{state.phase === "ready" ? "漏卡" : "完成"}</Text>
     }
-    minimal={<Image systemName="clock.fill" foregroundStyle="#7CC7FF" />}
-    keylineTint="#7CC7FF"
+    minimal={<Image systemName="clock.fill" foregroundStyle={state.phase === "ready" ? "systemRed" : "#7CC7FF"} />}
+    keylineTint={state.phase === "ready" ? "systemRed" : "#7CC7FF"}
   >
     <LiveActivityUIExpandedCenter>
       <ActivityDetails {...state} />
