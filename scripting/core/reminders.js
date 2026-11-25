@@ -84,7 +84,7 @@ export async function handleNearNineHours() {
   if (data.targetReached) {
     const key = "attendance-helper-target-reached-" + dateKey;
     if (!Storage.get(key)) {
-      await sendNotification(data.hasOutRecord ? "已打下班卡" : "已到下班时间，请打卡", notifyTimes(data), key);
+      await sendNotification(data.hasOutRecord ? "已打下班卡" : "⚠ 未打下班卡，请立即打卡", notifyTimes(data), key);
       Storage.set(key, true);
     }
     return { ok: true, message: "工时已达标", data };
@@ -115,7 +115,7 @@ export async function handleLeaveCompany() {
       notifyTimes(data) + " · 实际工时 " + Math.floor(data.currentWorkMs / 3600000) + "小时"
     );
   } else if (data.targetReached) {
-    await sendNotification("已满 9 小时，但未打下班卡", notifyTimes(data));
+    await sendNotification("⚠ 未打下班卡，请立即打卡", notifyTimes(data));
   } else {
     await sendNotification(formatRemainTitle(data.remainingMinutes), notifyTimes(data));
   }
