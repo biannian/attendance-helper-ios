@@ -12,7 +12,7 @@ function activityState(data) {
     targetAt: data.targetTime.getTime(),
     clockInText: formatTime(data.inTime),
     targetText: formatTime(data.targetTime),
-    statusText: phase === "working" ? "正在工作" : phase === "ready" ? "可以下班" : "已打下班卡",
+    statusText: phase === "working" ? "正在工作" : phase === "ready" ? "未打下班卡" : "已打下班卡",
     workedText: data.hasOutRecord
       ? formatShortDuration(data.currentWorkMs)
       : formatShortDuration(Math.max(0, Date.now() - data.inTime.getTime()))
