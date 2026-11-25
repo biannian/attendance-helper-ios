@@ -1,6 +1,6 @@
 import {
   Button,
-  DateLabel,
+  TimerIntervalLabel,
   HStack,
   Image,
   ProgressView,
@@ -53,7 +53,7 @@ function Countdown({ data, palette }) {
   }
   return <VStack spacing={2} alignment="leading">
     <Text font="caption" foregroundStyle={palette.muted}>距离可下班</Text>
-    <DateLabel date={data.targetTime} style="timer" />
+    <TimerIntervalLabel from={data.inTime.getTime()} to={data.targetTime.getTime()} countsDown={true} showsHours={true} />
   </VStack>;
 }
 
@@ -87,7 +87,7 @@ function TodayPanel({ data, palette, style }) {
     return <VStack spacing={7} alignment="leading">
       <HStack>
         <Image systemName="waveform.path.ecg" foregroundStyle={palette.accent} />
-        <Text font="caption" foregroundStyle={palette.accent}>ATTENDANCE LIVE</Text>
+        <Text font="caption" foregroundStyle={palette.accent}>今日考勤</Text>
         <Spacer />
         <Text font="caption2" foregroundStyle={palette.muted}>{statusText(data)}</Text>
       </HStack>
@@ -195,8 +195,9 @@ function RecentDays({ days, palette }) {
   </VStack>;
 }
 
-function WidgetView({ data, monthData, recent, style, palette, family }) {
-  const large = family === "systemLarge";
+function WidgetView({ data, monthData, recent, style, palette, family, layout }) {
+  if (family.startsWith("accessory")) return <Accessory data={data} family={family} />;
+  const large = family.startsWith("systemExtraLarge") || family === "systemLarge";
   const small = family === "systemSmall";
   const background = style === "minimal" ? "#F4F5F7" : palette.bg;
   const textPalette = style === "minimal"
@@ -210,7 +211,7 @@ function WidgetView({ data, monthData, recent, style, palette, family }) {
     frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
     alignment="leading"
   >
-    <TodayPanel data={data} palette={textPalette} style={style} />
+    {!(layout === "stats" && !large && !small) ? <TodayPanel data={data} palette={textPalette} style={style} /> : null}
     {!small
       ? <Button
           title="刷新考勤"
@@ -229,7 +230,7 @@ function WidgetView({ data, monthData, recent, style, palette, family }) {
               <Text font="caption2" foregroundStyle={textPalette.muted}>待核查 {monthData?.stats.warnings ?? "—"} 天</Text>
             </HStack>
           </VStack>
-        : !small
+        : !small && layout !== "today"
           ? <RecentDays days={recent} palette={textPalette} />
           : null}
     {small
@@ -238,24 +239,42 @@ function WidgetView({ data, monthData, recent, style, palette, family }) {
   </VStack>;
 }
 
+function Accessory({ data, family }) {
+  const status = data?.isRestDay ? "休息日" : !data?.ok ? "待刷新" : !data.hasClockIn ? "待上班" : data.hasOutRecord ? "已打卡" : data.targetReached ? "可下班" : null;
+  const countdown = status ? <Text font="caption">{status}</Text> : <TimerIntervalLabel from={data.inTime.getTime()} to={data.targetTime.getTime()} countsDown={true} showsHours={true} />;
+  if (family === "accessoryInline") return <HStack><Image systemName="clock" />{countdown}</HStack>;
+  if (family === "accessoryCircular") return <VStack spacing={1}><Image systemName="clock" />{countdown}</VStack>;
+  return <VStack alignment="leading" spacing={2}><Text font="caption">今日考勤</Text>{countdown}<Text font="caption2">上班 {data?.inTime ? formatTime(data.inTime) : "--"} · 可下班 {data?.targetTime ? formatTime(data.targetTime) : "--"}</Text></VStack>;
+}
+function nextRefresh(data, family) {
+  const now = new Date(), start = new Date(now), end = new Date(now), tomorrow = new Date(now);
+  start.setHours(8,0,0,0); end.setHours(11,0,0,0); tomorrow.setDate(now.getDate()+1); tomorrow.setHours(8,0,0,0);
+  if (data?.isRestDay) return tomorrow;
+  if (data?.ok && data.hasClockIn && !data.targetReached && !data.hasOutRecord) return new Date(Math.max(now.getTime()+1000, Math.min(data.targetTime.getTime(), now.getTime()+30*60000)));
+  if (data?.ok && data.hasClockIn) return tomorrow;
+  if (now < start) return start;
+  return now < end ? new Date(now.getTime()+10*60000) : tomorrow;
+}
 async function main() {
   const family = Widget.family || "systemMedium";
+  let layout = String(Widget.parameter || "").toLowerCase();
+  try { const parsed = JSON.parse(layout); layout = typeof parsed === "string" ? parsed : parsed.layout || ""; } catch (_) {}
   const preferences = getPreferences();
   const style = family === "systemSmall" || family === "accessoryCircular"
     ? preferences.widgetStyleSmall
-    : family === "systemLarge" || family === "accessoryRectangular"
+    : family === "systemLarge" || family.startsWith("systemExtraLarge") || family === "accessoryRectangular"
       ? preferences.widgetStyleLarge
       : preferences.widgetStyleMedium;
   const palette = COLORS[preferences.theme] || COLORS.navy;
   const workday = await isChinaWorkday(new Date());
   const data = workday ? await getTodaySummary() : { ok: true, isRestDay: true };
-  const monthData = family === "systemLarge"
+  const monthData = family === "systemLarge" || family.startsWith("systemExtraLarge")
     ? await getAttendanceMonth(new Date(), { sync: false, offline: true })
     : null;
-  const recent = getRecentAttendanceDays(7);
+  const recent = getRecentAttendanceDays(layout === "stats" && (family === "systemLarge" || family.startsWith("systemExtraLarge")) ? 14 : 7);
   Widget.present(
-    <WidgetView data={data} monthData={monthData} recent={recent} style={style} palette={palette} family={family} />,
-    { policy: "after", date: new Date(Date.now() + 20 * 60000) }
+    <WidgetView data={data} monthData={monthData} recent={recent} style={style} palette={palette} family={family} layout={layout} />,
+    { policy: "after", date: nextRefresh(data, family) }
   );
   Script.exit();
 }

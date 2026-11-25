@@ -101,6 +101,10 @@ scripting://run/AttendanceHelper?action=refresh
 
 使用 Scripting 的「运行脚本」动作选择 AttendanceHelper，传入文本 `refresh`、`leave`、`schedule9` 或 `near9`。首次配置建议在 App 内完成；兼容旧四行文本（动作、账号、密码、设备 ID），但不建议将密码长期保存在快捷指令。后台新设备验证须回到 App 前台完成。
 
+### 锁屏组件与刷新策略
+
+增加矩形、圆形、行内锁屏专用布局（具体可选尺寸以 iOS 和 Scripting 支持情况为准）。工作日 08:00–11:00 未打卡时建议每 10 分钟刷新，工作中最多每 30 分钟或到达目标时间刷新，其他时段等待次日 08:00。iOS 可能延后。组件参数 `today` / `stats` 已接入基础布局，仍需真机校验完整视觉差异。
+
 ## 8. 本地测试
 
 在仓库根目录运行：

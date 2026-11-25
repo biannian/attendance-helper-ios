@@ -1,6 +1,6 @@
 import {
   Button,
-  DateLabel,
+  TimerIntervalLabel,
   Divider,
   HStack,
   Image,
@@ -115,7 +115,7 @@ function TodayTab({ data, palette, loading, onRefresh, statusMessage, isWorkday 
             <Text font="caption" foregroundStyle="secondaryLabel">距离可下班</Text>
             {data.targetReached
               ? <Text font="title2" foregroundStyle={palette.normal}>已到下班时间，请打卡</Text>
-              : <DateLabel date={data.targetTime} style="timer" />}
+              : <TimerIntervalLabel from={data.inTime.getTime()} to={data.targetTime.getTime()} countsDown={true} showsHours={true} />}
           </VStack>
         : null}
       <Divider />
