@@ -236,7 +236,7 @@ if (config.runsInWidget) {
   if (mode === "widget" || mode === "refresh") {
     checkResult = await runWidgetUpdate({ presentPreview: !fromShortcut && mode !== "refresh" })
   } else if (mode === "leave" || mode === "check") {
-    checkResult = await handleLeaveCompany()
+    checkResult = await handleLeaveCompany(undefined, mode === "leave")
   } else if (mode === "schedule9") {
     checkResult = await handleScheduleNineHours()
   } else if (mode === "near9") {
@@ -256,7 +256,7 @@ if (config.runsInWidget) {
     await showMainMenu()
   }
 
-  if (fromShortcut && checkResult) Script.setShortcutOutput({ok:!!checkResult.ok,message:attendanceCheckResultText(checkResult)})
+  if (fromShortcut && checkResult) { const status=leaveCheckStatus(checkResult); Script.setShortcutOutput({ok:!!checkResult.ok,message:attendanceCheckResultText(checkResult),status,requiresAction:status==="missing_checkout"}) }
   Script.complete()
 }
 
@@ -1664,10 +1664,11 @@ async function getAttendanceSummary(day = new Date()) {
       saveAttendanceSnapshot(data, day)
       if (data.hasOutRecord) {
         try {
-          if (data.targetReached) Keychain.remove(missedCheckoutKey(dateKey))
+          if (data.targetReached && Keychain.contains(missedCheckoutKey(dateKey))) Keychain.remove(missedCheckoutKey(dateKey))
           if (dateKey === formatDateKey(now)) await Notification.removePending(["attendance-helper-checkout-due", "attendance-helper-upcoming-work"])
         } catch (_) {}
       }
+      if(dateKey===formatDateKey(now) && ((data.hasOutRecord && data.targetReached)||confirmedMissedCheckout(dateKey))) await cancelCheckoutEscalation()
     }
 
     return data
@@ -2011,34 +2012,54 @@ function attendanceCheckResultText(data) {
     return "工作中 · 还差 " + formatRemainText(data.remainingMinutes)
 }
 
-async function handleLeaveCompany(existingData) {
+// 离开公司时只对已经到点且尚未打卡的情况升级提醒。
+function leaveCheckStatus(data) {
+  if (!data?.ok) return "check_failed"
+  if (data.isRestDay) return "rest_day"
+  if (!data.hasClockIn) return "no_clock_in"
+  if (missingCheckout(data)) return confirmedMissedCheckout() ? "missed_confirmed" : "missing_checkout"
+  if (data.hasOutRecord && data.targetReached) return "completed"
+  return "before_target"
+}
+function checkoutEscalationIds() {
+  return [0,1,3,5].map(m => "attendance-helper-leave-alert-"+m)
+}
+async function cancelCheckoutEscalation() {
+  try { await Notification.removePending(checkoutEscalationIds()) } catch (_) {}
+  try { await Notification.removeDelivered(checkoutEscalationIds()) } catch (_) {}
+}
+async function scheduleCheckoutEscalation(data) {
+  await cancelCheckoutEscalation()
+  const start=Date.now()
+  for (const minutes of [0,1,3,5]) {
+    const at=new Date(start+minutes*60000)
+    // 避免把当天的漏卡通知延续到第二天。
+    if (formatDateKey(at)!==formatDateKey(now)) continue
+    const n=new Notification()
+    n.identifier="attendance-helper-leave-alert-"+minutes
+    n.title=minutes===0 ? "🚨 请立即返回打下班卡！" : "🚨 下班卡仍需确认"
+    n.body=minutes===0 ? "已到下班时间，未检测到有效下班卡。"+formatNotifyTimes(data) : "请检查最新打卡结果；如已打卡，请刷新考勤以停止提醒。"
+    n.sound="alert"
+    n.openURL="scriptable:///run?scriptName=AttendanceHelper&mode=manage"
+    if(minutes) n.setTriggerDate(at)
+    await n.schedule()
+  }
+}
+async function handleLeaveCompany(existingData, escalate = true) {
   const data = existingData || await getAttendanceSummary()
-
-  if (!data.ok) {
-    await notify("打卡检查失败", data.error)
-    return data
+  const state=leaveCheckStatus(data)
+  if(state==="check_failed") {
+    // 查询失败不等于漏卡：只发检查失败通知，不触发强提醒。
+    await notify("打卡检查失败，请手动确认", data.error)
+  } else if(state==="missing_checkout") {
+    if(escalate) await scheduleCheckoutEscalation(data)
+    else await notifyBrief("⚠ 未打下班卡！请立即打卡",formatNotifyTimes(data))
+  } else if(state==="completed" || state==="missed_confirmed") {
+    await cancelCheckoutEscalation()
   }
-
-  if (!data.hasClockIn) {
-    await notifyBrief("未打卡", "今天还没有上班记录")
-    return data
-  }
-
-  if (!data.targetReached) {
-    await notifyBrief(
-        data.hasOutRecord ? "⚠ 工时不足" : "⚠ 下班卡未确认",
-        formatRemainTitle(data.remainingMinutes) + " · " + formatNotifyTimes(data)
-    )
-    return data
-  }
-
-  await notifyBrief(
-      data.hasOutRecord ? "考勤正常 · 已打下班卡" : (confirmedMissedCheckout() ? "⚠ 已确认漏卡 · 已使用一次漏卡机会" : "⚠ 未打下班卡！请立即打卡"),
-      formatNotifyTimes(data)
-  )
+  // 未达到下班时间、无上班卡、已完成或已确认漏卡时静默返回。
   return data
 }
-
 
 // ==================== 功能 2：预约快满 9 小时提醒 ====================
 
@@ -4266,7 +4287,7 @@ async function presentAttendanceHistory(initialMonth) {
             if (data.ok && open) {
                 const target = data.targetTime ? String(data.targetTime.getTime()) : ""
                 try {
-                    if (kind === "leave" || kind === "check") await handleLeaveCompany(data)
+                    if (kind === "leave" || kind === "check") await handleLeaveCompany(data, kind === "leave")
                     else if (kind === "schedule9" || (kind !== "near9" && target && target !== scheduledTarget && !data.hasOutRecord && !missingCheckout(data))) {
                         const result = await handleScheduleNineHours(data)
                         if(result?.ok && !result.isRestDay) scheduledTarget=target
@@ -4390,7 +4411,7 @@ async function presentAttendanceHistory(initialMonth) {
                     if(!CONFIG.USERNAME || !day.checkoutMissing) throw new Error("当前没有待处理的漏卡")
                     if(data.key !== todayKey || typeof data.confirmed !== "boolean") throw new Error("漏卡确认已过期，请重新操作")
                     const key = missedCheckoutKey(todayKey)
-                    if(data.confirmed) { Keychain.set(key,"1"); try{await Notification.removePending(["attendance-helper-checkout-due","attendance-helper-upcoming-work"])}catch(_){} } else if(Keychain.contains(key)) Keychain.remove(key)
+                    if(data.confirmed) { Keychain.set(key,"1"); await cancelCheckoutEscalation(); try{await Notification.removePending(["attendance-helper-checkout-due","attendance-helper-upcoming-work"])}catch(_){} } else if(Keychain.contains(key)) Keychain.remove(key)
                     await toast(data.confirmed ? "已确认漏卡 · 本机已记录，实际豁免以公司核算为准" : "已撤销漏卡确认")
                 } else if(action==="checkToday") await checkFromManagement("check")
                 else if(action==="sync") await syncMonth()
@@ -4747,7 +4768,7 @@ async function presentNativeAttendanceHistory(initialMonth) {
             alertRow.onSelect = async () => {
                 const ask = new Alert(); ask.title = td.missedConfirmed ? "撤销漏卡确认" : "确认无法返回打卡"; ask.message = "仅记录本机漏卡状态，不修改企业原始考勤"; ask.addAction("确认"); ask.addCancelAction("取消")
                 if(await ask.presentAlert() !== 0 || !CONFIG.USERNAME) return
-                const key = missedCheckoutKey(todayKey); if(td.missedConfirmed) Keychain.remove(key); else Keychain.set(key,"1"); draw(); table.reload()
+                const key = missedCheckoutKey(todayKey); if(td.missedConfirmed) Keychain.remove(key); else {Keychain.set(key,"1"); await cancelCheckoutEscalation()} draw(); table.reload()
             }
             alertText.titleColor = Color.white(); alertText.subtitleColor = Color.white(); table.addRow(alertRow)
         }
