@@ -4054,35 +4054,28 @@ async function presentAttendanceHistory(initialMonth) {
         throw new Error(managementErrorText(loadError || "页面脚本未初始化"))
     }
     try {
-        // 由桌面小组件 URL Scheme 唤起时，Scriptable 可能仍在切换到前台。
-        // 先让 WebView 挂载到可见窗口，再加载页面，避免在未呈现的 WKWebView
-        // 中提前执行脚本和注入首屏数据后出现白屏。
-        const launchedFromWidget = args.queryParameters?.mode === "week"
-        if (launchedFromWidget) {
-            stage = "打开管理窗口"
-            closed = Promise.resolve(view.present(true)).then(() => { open=false }, e => { failure=e;open=false })
-            await pause(500)
-            if (!open) return
-        }
+        // 无论从 Scriptable 直接运行还是由桌面小组件 URL Scheme 唤起，
+        // 都统一先呈现 WebView，再加载 HTML 和注入数据。
+        // 避免直接运行时在尚未挂载到可见窗口的 WKWebView 中初始化页面，
+        // 导致页面 READY 但首屏没有绘制，最终显示白屏。
+        stage = "打开管理窗口"
+        closed = Promise.resolve(view.present(true)).then(() => { open=false }, e => { failure=e;open=false })
+        await pause(500)
+        if (!open) return
 
         fm.writeString(path, html)
         stage = "加载本地 HTML"
         try { await loadPage(true) }
         catch (_) {
             stage = "加载 HTML 备用方式"
-            if (!launchedFromWidget) view = new WebView()
+            // 页面已呈现在同一个 WebView 中，备用加载也必须复用该实例。
             await loadPage(false)
         }
         stage = "初始化数据"
         await draw()
-        if (!closed) {
-            stage = "展示管理页面"
-            closed = Promise.resolve(view.present(true)).then(() => { open=false }, e => { failure=e;open=false })
-        } else {
-            // 首次可见后再触发一次布局刷新，确保首屏在前台窗口完成绘制。
-            await pause(120)
-            await evaluateAck("window.dispatchEvent(new Event('resize'));document.body.style.webkitTransform='translateZ(0)'", "页面首屏重绘")
-        }
+        // 首次可见后再触发一次布局刷新，确保两种入口都在前台窗口完成绘制。
+        await pause(120)
+        await evaluateAck("window.dispatchEvent(new Event('resize'));document.body.style.webkitTransform='translateZ(0)'", "页面首屏重绘")
         stage = "操作桥接"
         while (open) {
             // 不使用 completion、浏览器异步回调或 Promise.race；一次读取一个动作。
