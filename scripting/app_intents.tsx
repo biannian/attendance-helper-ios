@@ -34,6 +34,7 @@ export const CheckAttendanceIntent = AppIntentManager.register({
   protocol: AppIntentProtocol.AppIntent,
   perform: async () => {
     const result = await handleNearNineHours();
+    if (result.data?.ok) { try { await syncAttendanceLiveActivity(result.data); } catch (_) {} }
     Widget.reloadAll();
     console.log(result.message || "检查完成");
   }

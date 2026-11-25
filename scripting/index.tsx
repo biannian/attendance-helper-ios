@@ -4,6 +4,7 @@ import {
   Divider,
   HStack,
   Image,
+  Storage,
   Navigation,
   NavigationStack,
   ProgressView,
@@ -38,9 +39,10 @@ import {
 import {
   handleLeaveCompany,
   handleNearNineHours,
-  handleScheduleNineHours
+  handleScheduleNineHours,
+  cancelUpcomingReminder
 } from "./core/reminders";
-import { syncAttendanceLiveActivity } from "./core/live_activity_service";
+import { syncAttendanceLiveActivity, endSavedActivity } from "./core/live_activity_service";
 
 const PALETTES = {
   navy: { bg: "#F4F6FA", card: "#FFFFFF", ink: "#172033", muted: "#687487", accent: "#315FBD", normal: "#087B5B", warning: "#B86B24" },
@@ -218,11 +220,12 @@ function CalendarTab({ monthData, selectedDate, onSelect, onPrev, onNext, onSync
         ? <VStack spacing={6} alignment="leading">
             <Text font="caption" foregroundStyle="secondaryLabel">已批准请假时长（小时）</Text>
             <TextField title="请假小时数" value={leaveHours} onChanged={onLeaveHours} keyboardType="decimalPad" />
+            <Button title="按请假时长判断" buttonStyle="bordered" action={() => onReview("auto", selected)} />
             <Text font="caption" foregroundStyle="secondaryLabel">人工核查（只影响本机判定）</Text>
             <HStack>
               <Button title="确认正常" buttonStyle="bordered" action={() => onReview("normal", selected)} />
               <Button title="确认异常" buttonStyle="bordered" action={() => onReview("abnormal", selected)} />
-              <Button title="恢复原判" buttonStyle="bordered" action={() => onReview("auto", selected)} />
+              <Button title="恢复原判" buttonStyle="bordered" action={() => onReview("reset", selected)} />
             </HStack>
           </VStack>
         : <Text font="caption" foregroundStyle="secondaryLabel">休息日无需核查</Text>}
@@ -332,10 +335,10 @@ function AppView({ initialTab = "today" }) {
   const [monthData, setMonthData] = useState(null);
   const [selectedDate, setSelectedDate] = useState(formatDateKey(new Date()));
   const [preferences, setPreferences] = useState(getPreferences());
-  const [account, setAccount] = useState(getAccount());
+  const [account, setAccount] = useState(() => { const a = getAccount(); return { username: a.username, deviceId: a.deviceId, configured: a.configured }; });
   const [accountDraft, setAccountDraft] = useState({
     username: account.username,
-    password: account.password,
+    password: "",
     deviceId: account.deviceId
   });
   const [loading, setLoading] = useState(false);
@@ -383,8 +386,7 @@ function AppView({ initialTab = "today" }) {
   }
 
   useEffect(() => {
-    refreshToday();
-    loadMonth(new Date());
+    void (async () => { await refreshToday(); await loadMonth(new Date()); })();
   }, []);
 
   async function changePreference(key, value) {
@@ -392,6 +394,8 @@ function AppView({ initialTab = "today" }) {
     const next = savePreferences({ ...preferences, [key]: value });
     setPreferences(next);
     if (key === "remindMinutes" && next.remindMinutes !== previous.remindMinutes) {
+      await cancelUpcomingReminder();
+      Storage.remove("attendance-helper-schedule9-" + formatDateKey(new Date()));
       const result = await handleScheduleNineHours();
       setMessage(result.message || result.error || "提醒配置已更新");
     }
@@ -405,9 +409,18 @@ function AppView({ initialTab = "today" }) {
 
   async function saveAccountAction() {
     try {
-      const saved = saveAccount(accountDraft);
-      setAccount(saved);
-      setAccountDraft({ ...accountDraft, password: saved.password });
+      if (loading) return;
+      const old = getAccount();
+      const candidate = { ...accountDraft, password: accountDraft.password || (accountDraft.username.trim() === old.username ? old.password : "") };
+      if (!candidate.username.trim() || !candidate.password || !candidate.deviceId.trim()) throw new Error("请填写完整账号资料");
+      if (candidate.username.trim() !== old.username || candidate.password !== old.password || candidate.deviceId.trim() !== old.deviceId) {
+        await endSavedActivity("账号已切换");
+        await cancelUpcomingReminder();
+        setToday(null); setMonthData(null); setDebugText("");
+      }
+      const saved = saveAccount(candidate);
+      setAccount({ username: saved.username, deviceId: saved.deviceId, configured: saved.configured });
+      setAccountDraft({ ...accountDraft, password: "" });
       setMessage("账号已安全保存");
       await refreshToday();
     } catch (error) {
@@ -434,7 +447,7 @@ function AppView({ initialTab = "today" }) {
   async function reviewDay(decision, day) {
     try {
       const hours = Math.max(0, Math.min(CONFIG.TARGET_HOURS, Number(leaveHours) || 0));
-      if (decision === "auto" && hours === 0) resetAttendanceReview(day.key);
+      if (decision === "reset") { resetAttendanceReview(day.key); setLeaveHours("0"); }
       else saveAttendanceReview(day.key, decision, hours);
       setMessage(decision === "normal" ? "已确认正常" : decision === "abnormal" ? "已确认异常" : "已恢复系统原判");
       await loadMonth(monthDate);
@@ -480,7 +493,7 @@ function AppView({ initialTab = "today" }) {
             ? <CalendarTab
                 monthData={monthData}
                 selectedDate={selectedDate}
-                onSelect={setSelectedDate}
+                onSelect={key => { setSelectedDate(key); setLeaveHours(String(monthData?.days?.find(d => d.key === key)?.leaveHours || 0)); }}
                 onPrev={() => navigateMonth(-1)}
                 onNext={() => navigateMonth(1)}
                 onSync={() => loadMonth(monthDate)}
@@ -515,7 +528,7 @@ async function runAction(action) {
   if (action === "refresh" || action === "widget") {
     const workday = await isChinaWorkday(new Date());
     const data = await getTodaySummary({ force: true });
-    if (data.ok && workday) {
+    if (data.ok) {
       await syncAttendanceLiveActivity(data);
       if (getPreferences().remindMinutes > 0 && data.hasClockIn && !data.hasOutRecord) {
         await handleScheduleNineHours();
@@ -524,9 +537,9 @@ async function runAction(action) {
     Widget.reloadAll();
     return data;
   }
-  if (action === "leave") return handleLeaveCompany();
+  if (action === "leave") { const data = await handleLeaveCompany(); if (data?.ok) await syncAttendanceLiveActivity(data); return data; }
   if (action === "schedule9") return handleScheduleNineHours();
-  if (action === "near9") return handleNearNineHours();
+  if (action === "near9") { const result = await handleNearNineHours(); if (result.data?.ok) await syncAttendanceLiveActivity(result.data); return result; }
   if (action === "debug") return debugSummary(await getTodaySummary({ force: true }));
   if (action === "update") return "请在 Scripting 的脚本设置中检查远程仓库更新";
   return null;

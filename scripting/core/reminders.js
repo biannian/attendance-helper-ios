@@ -1,3 +1,4 @@
+import { Notification, TimeIntervalNotificationTrigger, Storage } from "scripting";
 import { CONFIG } from "./config";
 import { getPreferences } from "./store";
 import { getTodaySummary, isChinaWorkday } from "./attendance";
@@ -7,8 +8,7 @@ async function sendNotification(title, body, identifier) {
   await Notification.schedule({
     identifier: identifier || ("attendance-" + Date.now()),
     title,
-    body,
-    sound: "default",
+    subtitle: body,
     trigger: new TimeIntervalNotificationTrigger({
       timeInterval: 1,
       repeats: false
@@ -53,6 +53,7 @@ export async function handleScheduleNineHours() {
     return { ok: true, message: "今天已经达到下班条件" };
   }
 
+  if (Storage.get("attendance-helper-schedule9-" + dateKey)) return { ok: true, message: "今日提醒已安排", data };
   const remindAt = new Date(data.targetTime.getTime() - minutes * 60000);
   await cancelUpcomingReminder();
   if (remindAt <= new Date()) {
@@ -61,8 +62,7 @@ export async function handleScheduleNineHours() {
     await Notification.schedule({
       identifier: "attendance-helper-upcoming-work",
       title: formatRemainTitle(minutes),
-      body: notifyTimes(data),
-      sound: "default",
+      subtitle: notifyTimes(data),
       trigger: new TimeIntervalNotificationTrigger({
         timeInterval: Math.max(1, Math.floor((remindAt.getTime() - Date.now()) / 1000)),
         repeats: false
@@ -86,7 +86,7 @@ export async function handleNearNineHours() {
       await sendNotification(data.hasOutRecord ? "已打下班卡" : "已到下班时间，请打卡", notifyTimes(data), key);
       Storage.set(key, true);
     }
-    return { ok: true, message: "工时已达标" };
+    return { ok: true, message: "工时已达标", data };
   }
 
   const scheduleKey = "attendance-helper-schedule9-" + dateKey;
@@ -97,7 +97,7 @@ export async function handleNearNineHours() {
     await sendNotification(formatRemainTitle(data.remainingMinutes), notifyTimes(data), nearKey);
     Storage.set(nearKey, true);
   }
-  return { ok: true, message: "工时检查完成" };
+  return { ok: true, message: "工时检查完成", data };
 }
 
 export async function handleLeaveCompany() {

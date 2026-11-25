@@ -12,7 +12,7 @@
 
    `https://github.com/biannian/attendance-helper-ios/tree/scripting-migration/scripting`
 
-4. 导入目录中的 `script.json`、`index.tsx`、`widget.tsx` 和 `live_activity.tsx`。
+4. 导入完整 `scripting/` 目录（包括 `core/` 和 `intent.tsx`），不要只复制入口文件。
 5. 打开「考勤助手」，先在「配置」中重新填写账号、密码和设备 ID。
 
 Scripting 的远程仓库导入按分支子目录定位，当前分支名不包含斜杠，便于使用该导入 URL。可在脚本设置中配置远程源和自动检查更新；不要把 GitHub Token、企业账号或密码写入脚本。
@@ -96,6 +96,10 @@ scripting://run/AttendanceHelper?action=refresh
 | `update` | 提示在 Scripting 脚本设置中检查远程源更新 |
 
 自动化仍由 iOS 快捷指令触发。建议沿用早上刷新、工作日定时检查等已有节奏；iOS 不保证精确到分钟执行自动化。
+
+### 快捷指令原参数兼容
+
+使用 Scripting 的「运行脚本」动作选择 AttendanceHelper，传入文本 `refresh`、`leave`、`schedule9` 或 `near9`。首次配置建议在 App 内完成；兼容旧四行文本（动作、账号、密码、设备 ID），但不建议将密码长期保存在快捷指令。后台新设备验证须回到 App 前台完成。
 
 ## 8. 本地测试
 
