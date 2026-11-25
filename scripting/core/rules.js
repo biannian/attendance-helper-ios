@@ -258,7 +258,8 @@ export function buildAttendanceHistoryDay(date, record, review, holiday, now = n
     state = "warning";
   }
 
-  const checkoutMissing = !!(workday && clockIn && requiredMs > 0 && !clockOut && workedMs === null && (!today || now.getTime() >= clockIn.getTime() + requiredMs));
+  const corrected = !!(clockIn && (clockOut || (workedMs !== null ? outSwipe : null)) && workedMs !== null && workedMs >= requiredMs);
+  const checkoutMissing = !!(workday && clockIn && requiredMs > 0 && ((!clockOut && workedMs === null) || (confirmedMissed && !corrected)) && (!today || now.getTime() >= clockIn.getTime() + requiredMs));
   const missedConfirmed = checkoutMissing && confirmedMissed;
   if (checkoutMissing && (today || missedConfirmed)) { status = missedConfirmed ? "已漏卡 · 待补卡" : "未打下班卡"; state = "warning"; }
   return {
