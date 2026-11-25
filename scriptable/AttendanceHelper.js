@@ -7,7 +7,7 @@
  * 考勤助手
  *
  * @author Kai
- * @date 2026/11/25 11:14
+ * @date 2026/11/25 11:29
  * @description 展示今日打卡、多日历史并执行考勤提醒
  */
 // ==================================================
@@ -282,6 +282,11 @@ function readLaunchRequest() {
     // 识别旧版中号组件链接携带的历史查询动作。
     if (!config.runsInWidget && args.queryParameters && args.queryParameters.mode === "week") {
         return { mode: "week", account: null }
+    }
+
+    // 布局参数只在桌面组件中使用，仍以普通小组件模式加载考勤。
+    if (config.runsInWidget && readWidgetLayout(args.widgetParameter)) {
+        return { mode: "widget", account: null }
     }
 
   const raw = config.runsInWidget
@@ -2201,11 +2206,14 @@ async function handleNearNineHours() {
 async function createWidget(data) {
   const family = config.widgetFamily || "medium"
   const isAccessory = family.indexOf("accessory") === 0
+    // 小号和锁屏按系统分配的尺寸渲染，统计仅用于有足够空间的桌面组件。
+    const layout = config.runsInWidget ? readWidgetLayout(args.widgetParameter) : null
+    const statsOnly = layout === "stats" && (family === "medium" || family === "large")
 
   const widget = new ListWidget()
 
-  // 休息日隐藏全部组件内容。工作日包含调休补班。
-  if (!(await isChinaWorkday(now))) {
+  // 统计专用布局在休息日也能查看历史。
+  if (!statsOnly && !(await isChinaWorkday(now))) {
     widget.refreshAfterDate = morningRefreshOn(addDays(now, 1))
     return widget
   }
@@ -2233,21 +2241,40 @@ async function createWidget(data) {
   } else if (family === "accessoryInline") {
     renderAccessoryInline(widget, data)
   } else if (family === "small") {
-    widget.setPadding(10, 10, 10, 10)
+    widget.setPadding(14, 10, 14, 10)
     await renderSmallWidget(widget, data)
+  } else if (statsOnly) {
+    widget.setPadding(16, 10, 16, 10)
+    renderWidgetAttendanceStats(widget, data, family === "large" ? 14 : 7, true)
   } else if (family === "large") {
-    widget.setPadding(14, 14, 14, 14)
-    await renderLargeWidget(widget, data)
+    widget.setPadding(20, 14, 20, 14)
+    await renderLargeWidget(widget, data, layout !== "today")
   } else {
-    widget.setPadding(10, 10, 10, 10)
+    widget.setPadding(15, 10, 15, 10)
     await renderMediumWidget(widget, data)
   }
 
-  // 中号组件整卡打开考勤历史，其他尺寸沿用刷新链接。
-  widget.url = family === "medium" ? getWeeklyAttendanceUrl() : getWidgetUrl()
-  widget.refreshAfterDate = getNextWidgetRefreshDate(data)
+    // 展示统计的组件可直接打开完整历史。
+    const opensHistory = statsOnly || family === "medium" || (family === "large" && layout !== "today")
+    widget.url = opensHistory ? getWeeklyAttendanceUrl() : getWidgetUrl()
+    widget.refreshAfterDate = getNextWidgetRefreshDate(
+        data, !statsOnly && (family === "medium" || family === "large")
+    )
 
   return widget
+}
+
+/**
+ * 解析组件参数，空参数沿用各尺寸默认布局。
+ *
+ * @param raw Scriptable 中填写的组件参数
+ * @return today、stats 或 null
+ * @author Kai
+ * @date 2026/11/25 11:28
+ */
+function readWidgetLayout(raw) {
+    const layout = typeof raw === "string" ? raw.trim().toLowerCase() : ""
+    return ["today", "stats"].includes(layout) ? layout : null
 }
 
 /**
@@ -2516,7 +2543,7 @@ async function renderSmallWidget(widget, data) {
  * @param widget 中号桌面组件
  * @param data 今日打卡摘要
  * @author Kai
- * @date 2026/11/25 11:14
+ * @date 2026/11/25 11:28
  */
 async function renderMediumWidget(widget, data) {
     addCompactHeader(widget, "今日打卡")
@@ -2544,6 +2571,9 @@ async function renderMediumWidget(widget, data) {
         status.lineLimit = 1
         status.minimumScaleFactor = 0.7
     }
+
+    widget.addSpacer(5)
+    addProgressBar(widget, data, mediumWidgetContentWidth())
 
     // 当天短暂外出已在摘要里过滤，只有有效下班卡才能点亮下班格。
     widget.addSpacer()
@@ -2969,14 +2999,77 @@ function getWeeklyAttendanceUrl() {
 // ==================== 大号组件 ====================
 
 /**
+ * 用本地快照绘制近期考勤汇总与日期状态。
+ *
+ * @param widget 承载统计区的桌面组件
+ * @param data 本次刷新取得的今日考勤
+ * @param count 展示的自然日数
+ * @param standalone 是否单独展示统计
+ * @author Kai
+ * @date 2026/11/25 11:29
+ */
+function renderWidgetAttendanceStats(widget, data, count, standalone) {
+    const dates = Array.from({ length: count }, (_, index) => addDays(now, index - count + 1))
+    const holidays = {}
+    for (const year of new Set(dates.map(date => date.getFullYear()))) {
+        holidays[year] = readAttendanceRecord("attendance-history-calendar-" + year)?.holidays
+    }
+    // 组件只使用本地快照，历史详情页负责补查缺失日期。
+    const checked = data.ok ? new Map([[formatDateKey(now), data]]) : new Map()
+    const days = dates.map(date => buildAttendanceHistoryDay(date, holidays, checked))
+    const normal = days.filter(day => day.state === "normal").length
+    const warnings = days.filter(day => day.state === "warning").length
+    const settled = days.filter(day => day.workday && day.workedMs !== null)
+    const average = settled.length
+        ? formatShortDuration(settled.reduce((sum, day) => sum + day.workedMs, 0) / settled.length)
+        : "—"
+    addCompactHeader(widget, "近 " + count + " 天考勤")
+    widget.addSpacer(5)
+    const totals = widget.addText("达标 " + normal + " · 待核对 " + warnings + " · 平均 " + average)
+    totals.font = Font.boldSystemFont(standalone ? 15 : 12)
+    totals.textColor = Color.white()
+    totals.lineLimit = 1
+    totals.minimumScaleFactor = 0.7
+
+    // 按天显示与历史页一致的状态，用符号区分休息和无记录。
+    const states = {
+        normal: ["✓", "#166254"],
+        active: ["·", "#225DA4"],
+        warning: ["!", "#7A552A"],
+        neutral: ["?", "#3D5069"]
+    }
+    for (let start = 0; start < count; start += 7) {
+        widget.addSpacer(6)
+        const row = widget.addStack()
+        row.spacing = 4
+        for (const day of days.slice(start, start + 7)) {
+            const [symbol, color] = day.workday ? states[day.state] : ["—", "#283649"]
+            const tile = row.addStack()
+            tile.layoutVertically()
+            tile.setPadding(4, 4, 4, 4)
+            tile.backgroundColor = new Color(color)
+            tile.cornerRadius = 5
+            tile.size = new Size(32, 33)
+            for (const value of [day.key.slice(-2), symbol]) {
+                const label = tile.addText(value)
+                label.centerAlignText()
+                label.font = Font.mediumSystemFont(10)
+                label.textColor = Color.white()
+            }
+        }
+    }
+}
+
+/**
  * 在大号组件中用完整打卡明细填充纵向空间
  *
  * @param widget 大号桌面组件
  * @param data 今日打卡摘要
+ * @param includeStats 是否在今日状态下方显示近七天统计
  * @author Kai
- * @date 2026/11/25 11:09
+ * @date 2026/11/25 11:28
  */
-async function renderLargeWidget(widget, data) {
+async function renderLargeWidget(widget, data, includeStats) {
   addCompactHeader(widget, "今日打卡")
 
   widget.addSpacer(10)
@@ -3014,6 +3107,15 @@ async function renderLargeWidget(widget, data) {
 
     // 进度条宽度跟随大号组件，给外层和状态卡内边距留空间。
     addProgressBar(statusCard, data, homeScreenWidgetWidth("large") - 52)
+
+    if (includeStats) {
+        // 合并版保留上下班明细，给周统计留出固定的下半区。
+        addDetailRow(widget, "上班卡", data.hasClockIn ? formatTime(data.inTime) : "未打卡")
+        addDetailRow(widget, "下班卡", data.hasOutRecord ? formatTime(data.latestOutTime) : "待打卡")
+        widget.addSpacer()
+        renderWidgetAttendanceStats(widget, data, 7, false)
+        return
+    }
 
     widget.addSpacer(8)
     widget.addSpacer()
@@ -3205,48 +3307,35 @@ function addDetailRow(widget, label, value) {
     widget.addSpacer(4)
 }
 
+/**
+ * 绘制上班首卡到目标时刻的工时进度。
+ *
+ * @param parent 进度条容器
+ * @param data 今日考勤摘要
+ * @param width 进度条宽度
+ * @author Kai
+ * @date 2026/11/25 11:29
+ */
 function addProgressBar(parent, data, width) {
-  // 没打下班卡时不画进度，避免把未结算工时画成一直在涨
-  if (!data.hasOutRecord || data.targetReached) {
-    return
-  }
+    if (!data.hasClockIn) return
 
-  const barWidth = width || 240
-  const barHeight = 6
-
-  const barBg = parent.addStack()
-  barBg.layoutHorizontally()
-  barBg.backgroundColor = new Color("#374151")
-  barBg.cornerRadius = 3
-  barBg.size = new Size(barWidth, barHeight)
-
-  if (!data.hasClockIn) {
-    const empty = barBg.addStack()
-    empty.backgroundColor = new Color("#4B5563")
-    empty.cornerRadius = 3
-    empty.size = new Size(barWidth, barHeight)
-    return
-  }
-
-  const targetMs = CONFIG.TARGET_HOURS * 60 * 60 * 1000
-  const current = Math.max(0, data.currentWorkMs || 0)
-  const ratio = Math.min(1, current / targetMs)
-
-  const filledWidth = Math.max(3, Math.round(barWidth * ratio))
-  const emptyWidth = Math.max(0, barWidth - filledWidth)
-
-  const fill = barBg.addStack()
-  fill.backgroundColor = new Color(
-      data.targetReached ? "#34D399" : "#60A5FA"
-  )
-  fill.cornerRadius = 3
-  fill.size = new Size(filledWidth, barHeight)
-
-  if (emptyWidth > 0) {
-    barBg.addSpacer(emptyWidth)
-  }
+    // 进度使用组件刷新时刻，系统倒计时仍会独立推进。
+    const total = data.targetTime - data.inTime
+    const ratio = total > 0 ? Math.max(0, Math.min(1, (now - data.inTime) / total)) : 1
+    const track = parent.addStack()
+    track.layoutHorizontally()
+    track.backgroundColor = new Color("#374B66")
+    track.cornerRadius = 2
+    track.size = new Size(width, 4)
+    const filled = Math.round(width * ratio)
+    if (filled > 0) {
+        const fill = track.addStack()
+        fill.backgroundColor = new Color(ratio >= 1 ? "#34D399" : "#419DFF")
+        fill.cornerRadius = 2
+        fill.size = new Size(filled, 4)
+    }
+    if (filled < width) track.addSpacer(width - filled)
 }
-
 
 // ==================== 状态文案 ====================
 
@@ -3750,21 +3839,24 @@ function getWidgetUrl() {
 /**
  * 下次建议刷新时间
  *
- * 早上没打卡时按间隔再拉。拉到上班时间后停到可下班时刻，倒计时由系统自己走。
+ * 早上未打卡时按间隔查询。倒计时由系统推进，进度条随组件刷新更新。
  * 已到可下班时间或未打卡且过了早上窗口，就等到下一个早上。
  *
  * @param data 打卡摘要
+ * @param refreshProgress 是否在达标前刷新进度条
  * @return 刷新时间
  * @author Kai
- * @date 2026/11/24 17:59
+ * @date 2026/11/25 11:30
  */
-function getNextWidgetRefreshDate(data) {
+function getNextWidgetRefreshDate(data, refreshProgress = false) {
   const start = morningRefreshOn(now)
   const end = clockOn(now, CONFIG.MORNING_REFRESH_END)
 
-    // 即使已打下班卡，也在倒计时结束时请求刷新并切换为结算状态。
+    // 带进度条的布局每半小时请求刷新，最晚在目标时刻请求刷新。
     if (showsLiveCountdown(data)) {
-        return data.targetTime
+        return refreshProgress
+            ? new Date(Math.min(data.targetTime.getTime(), now.getTime() + 30 * 60000))
+            : data.targetTime
     }
 
   if (data && data.ok && data.hasClockIn) {
@@ -3785,11 +3877,11 @@ function getNextWidgetRefreshDate(data) {
 /**
  * 中号小组件去掉内边距后的内容宽度
  *
- * 四个信息格按这个宽度平分，避免宽屏右侧留空。
+ * 三个信息格按去掉两侧内边距后的宽度平分。
  *
  * @return 内容宽度，单位是点
  * @author Kai
- * @date 2026/11/23 18:24
+ * @date 2026/11/25 11:30
  */
 function mediumWidgetContentWidth() {
   return Math.max(280, homeScreenWidgetWidth("medium") - 20)
