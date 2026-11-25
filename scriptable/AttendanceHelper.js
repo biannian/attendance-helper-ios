@@ -7,7 +7,7 @@
  * 考勤助手
  *
  * @author Kai
- * @date 2026/11/24 16:12
+ * @date 2026/11/25 11:14
  * @description 展示今日打卡、多日历史并执行考勤提醒
  */
 // ==================================================
@@ -1648,7 +1648,7 @@ async function getAttendanceSummary(day = now) {
  * @param data 标准化打卡摘要
  * @param day 快照对应的考勤业务日期
  * @author Kai
- * @date 2026/11/24 16:29
+ * @date 2026/11/25 10:53
  */
 function saveAttendanceSnapshot(data, day) {
   if (!data || !data.ok) {
@@ -1662,9 +1662,10 @@ function saveAttendanceSnapshot(data, day) {
     orgName: data.orgName || "",
     shiftName: data.shiftName || "",
     inTime: data.inTime ? data.inTime.toISOString() : null,
-    latestOutTime: data.latestOutTime ? data.latestOutTime.toISOString() : null,
+    // 保留原始离场记录，次日回看时仍可按原始工卡结算。
+    latestOutTime: data.outSwipeTime ? data.outSwipeTime.toISOString() : null,
     inStatusDesc: data.inStatusDesc || "",
-    outStatusDesc: data.outStatusDesc || ""
+    outStatusDesc: data.outSwipeStatus || ""
   }
 
   try {
@@ -1773,13 +1774,32 @@ function getSnapshotUpdatedText(data) {
 // ==================== 解析接口数据 ====================
 
 /**
+ * 判断离场刷脸是否可用于考勤结算
+ *
+ * @param inTime 首张上班卡时间
+ * @param outTime 接口返回的离场刷脸时间
+ * @param today 是否为今天的考勤
+ * @return 可用于结算的下班卡时间或 null
+ * @author Kai
+ * @date 2026/11/25 10:52
+ */
+function resolveAttendanceCheckout(inTime, outTime, today) {
+    if (!today || !inTime || !outTime) {
+        return outTime
+    }
+    // 目标时刻前的门禁刷脸也可能是短暂外出，不能结束今日考勤。
+    const targetTimeMs = inTime.getTime() + CONFIG.TARGET_HOURS * 3600000
+    return outTime.getTime() >= targetTimeMs && outTime <= now ? outTime : null
+}
+
+/**
  * 解析考勤响应，使用查询日补全只含时分秒的打卡时间
  *
  * @param raw 考勤接口响应或缓存还原的数据
  * @param dateHint 响应没有业务日期时使用的日期，格式为 yyyy-MM-dd
  * @return 标准化考勤摘要
  * @author Kai
- * @date 2026/11/24 16:26
+ * @date 2026/11/25 10:52
  */
 function normalizeAttendanceData(raw, dateHint = formatDateKey(now)) {
   const payload = unwrapPayload(raw)
@@ -1825,8 +1845,10 @@ function normalizeAttendanceData(raw, dateHint = formatDateKey(now)) {
     "signInTime"
   ])
 
-  // 接口里的下班卡时间。打卡之后工时停在这一刻，不再按当前时间累计。
-  const latestOutRaw = deepPick(root, [
+  // 班次未打卡标志优先，避免把计划下班时间当成刷脸记录。
+  const shift = (root.dailyDetail || root).shiftDetails?.[0]
+  const offClocked = shift?.offClocked
+  const latestOutRaw = [false, 0, "0"].includes(offClocked) ? null : deepPick(root, [
     "clockOffTime",
     "clockOutTime",
     "outTime",
@@ -1846,7 +1868,8 @@ function normalizeAttendanceData(raw, dateHint = formatDateKey(now)) {
     "signInStatusDesc"
   ]) || ""
 
-  const outStatusDesc = deepPick(root, [
+  // 原始离场状态写入快照，今日界面仅展示已认定的下班状态。
+  const outSwipeStatus = deepPick(root, [
     "outStatusDesc",
     "clockOffStatusDesc",
     "clockOutStatusDesc",
@@ -1857,7 +1880,10 @@ function normalizeAttendanceData(raw, dateHint = formatDateKey(now)) {
   ]) || ""
 
   const inTime = parseAnyDateTime(clockInRaw, dateStr)
-  const latestOutTime = parseAnyDateTime(latestOutRaw, dateStr)
+  const outSwipeTime = parseAnyDateTime(latestOutRaw, dateStr)
+  const today = String(dateStr).replace(/\//g, "-").slice(0, 10) === formatDateKey(now)
+  const latestOutTime = resolveAttendanceCheckout(inTime, outSwipeTime, today)
+  const outStatusDesc = today && inTime && !latestOutTime ? "" : outSwipeStatus
 
   const hasClockIn = !!inTime
   const hasOutRecord = !!latestOutTime
@@ -1920,6 +1946,8 @@ function normalizeAttendanceData(raw, dateHint = formatDateKey(now)) {
 
     inTime,
     latestOutTime,
+    outSwipeTime,
+    outSwipeStatus,
 
     inStatusDesc,
     outStatusDesc,
@@ -2287,14 +2315,14 @@ function getLockScreenShortText(data) {
 /**
  * 未到应走时间时，用系统倒计时显示当前时间到应走时间
  *
- * 到点或已有下班卡后改成文字，避免系统倒计时过点后继续往上加。
+ * 到点后改成文字，避免系统倒计时过点后继续往上加。
  *
  * @param widget 锁屏组件
  * @param data 打卡摘要
  * @param fallbackText 不倒计时时显示的文字
  * @return 日期元素或文字元素
  * @author Kai
- * @date 2026/11/23 18:28
+ * @date 2026/11/25 10:53
  */
 function addLockScreenCountdown(widget, data, fallbackText) {
   if (showsLiveCountdown(data)) {
@@ -2483,121 +2511,51 @@ async function renderSmallWidget(widget, data) {
 // ==================== 中号组件，推荐使用 ====================
 
 /**
- * 将当日状态和四项打卡信息排在横向中号组件上
+ * 用系统倒计时和三格状态呈现今日考勤。
  *
  * @param widget 中号桌面组件
  * @param data 今日打卡摘要
  * @author Kai
- * @date 2026/11/24 17:45
+ * @date 2026/11/25 11:14
  */
 async function renderMediumWidget(widget, data) {
-  addCompactHeader(widget, "今日打卡")
-
-    // 不同 iPhone 中号高度略有差异，将剩余空间分配到卡片之间。
+    addCompactHeader(widget, "今日打卡")
     widget.addSpacer(4)
+    if (!data.ok) {
+        renderErrorBlock(widget, data)
+        return
+    }
+
+    // 倒计时交给系统更新，达标后原位显示考勤状态。
+    const meta = getStatusMeta(data)
+    const live = showsLiveCountdown(data)
+    const headline = widget.addStack()
+    headline.centerAlignContent()
+    headline.spacing = 8
+    if (live) {
+        const label = headline.addText("距可下班")
+        label.font = Font.systemFont(12)
+        label.textColor = new Color("#B8C6D8")
+        addLiveCountdown(headline, data, Font.boldSystemFont(28), "#FFFFFF")
+    } else {
+        const status = headline.addText(meta.mainText)
+        status.font = Font.boldSystemFont(23)
+        status.textColor = new Color(meta.color)
+        status.lineLimit = 1
+        status.minimumScaleFactor = 0.7
+    }
+
+    // 当天短暂外出已在摘要里过滤，只有有效下班卡才能点亮下班格。
     widget.addSpacer()
-
-  if (!data.ok) {
-    renderErrorBlock(widget, data)
-    return
-  }
-
-  const meta = getStatusMeta(data)
-
-  const card = widget.addStack()
-  card.layoutVertically()
-    // 主状态卡略亮，细描边把状态提示和下方数据区区分开。
-    card.backgroundColor = new Color("#91ABC8", 0.14)
-    card.borderColor = new Color("#B0C8E1", 0.22)
-    card.borderWidth = 0.5
-    card.cornerRadius = 10
-  card.setPadding(6, 8, 6, 8)
-
-  const statusRow = card.addStack()
-  statusRow.layoutHorizontally()
-  statusRow.centerAlignContent()
-
-  const status = statusRow.addText(showsLiveCountdown(data) ? "距应走" : meta.mainText)
-  status.font = Font.boldSystemFont(16)
-  status.textColor = new Color(meta.color)
-  status.lineLimit = 1
-  status.minimumScaleFactor = 0.65
-
-  statusRow.addSpacer()
-
-  if (showsLiveCountdown(data)) {
-    addLiveCountdown(statusRow, data, Font.boldSystemFont(16), "#FFFFFF")
-  } else {
-    const workText = statusRow.addText(
-        data.hasOutRecord ? formatShortDuration(data.currentWorkMs) : "--"
-    )
-    workText.font = Font.boldSystemFont(12)
-    workText.textColor = Color.white()
-    workText.lineLimit = 1
-    workText.minimumScaleFactor = 0.7
-  }
-
-  card.addSpacer(4)
-
-  const contentWidth = mediumWidgetContentWidth()
-  const cellGap = 8
-  const cellWidth = Math.floor((contentWidth - cellGap) / 2)
-
-  addProgressBar(card, data, contentWidth - 16)
-
-    widget.addSpacer(4)
-    widget.addSpacer()
-
-  const grid = widget.addStack()
-  grid.layoutVertically()
-
-  const row1 = grid.addStack()
-  row1.layoutHorizontally()
-
-  addInfoCell(
-      row1,
-      "上班卡",
-      data.hasClockIn ? formatTime(data.inTime) : "--",
-      "#EAF1F9",
-      cellWidth,
-      32
-  )
-
-  row1.addSpacer(cellGap)
-
-  addInfoCell(
-      row1,
-      "可下班",
-      data.hasClockIn ? formatTime(data.targetTime) : "--",
-      "#A9DCCF",
-      cellWidth,
-      32
-  )
-
-  grid.addSpacer(4)
-
-  const row2 = grid.addStack()
-  row2.layoutHorizontally()
-
-  addInfoCell(
-      row2,
-      "下班卡",
-      data.hasOutRecord ? formatTime(data.latestOutTime) : "未打",
-      data.hasOutRecord ? "#EAF1F9" : "#B2C0D0",
-      cellWidth,
-      32
-  )
-
-  row2.addSpacer(cellGap)
-
-  addInfoCell(
-      row2,
-      "更新",
-      formatTime(now),
-      "#9CA3AF",
-      cellWidth,
-      32
-  )
+    const row = widget.addStack()
+    row.spacing = 6
+    const width = Math.floor((mediumWidgetContentWidth() - 12) / 3)
+    addInfoCell(row, "上班卡", data.hasClockIn ? formatTime(data.inTime) : "待打卡",
+        data.hasClockIn ? "done" : "idle", width)
+    addInfoCell(row, "可下班", data.hasClockIn ? formatTime(data.targetTime) : "—",
+        live ? "active" : "idle", width)
+    addInfoCell(row, "下班卡", data.hasOutRecord ? formatTime(data.latestOutTime) : "待打卡",
+        data.hasOutRecord ? "done" : data.targetReached ? "warning" : "idle", width)
 }
 
 
@@ -2724,7 +2682,7 @@ async function loadHistoryHolidays(year, cached) {
  * @param checked 本次页面打开期间已查询的日期
  * @return 日期类型、打卡时间和工时状态
  * @author Kai
- * @date 2026/11/24 16:31
+ * @date 2026/11/25 10:53
  */
 function buildAttendanceHistoryDay(date, holidays, checked) {
     const key = formatDateKey(date)
@@ -2732,7 +2690,9 @@ function buildAttendanceHistoryDay(date, holidays, checked) {
     const { kind, label, workday } = historyDayKind(date, holidays)
     const record = readHistorySnapshot(date) || checked.get(key)
     const clockIn = record && record.inTime ? new Date(record.inTime) : null
-    const clockOut = record && record.latestOutTime ? new Date(record.latestOutTime) : null
+    // 今日历史卡也会读到旧快照，应用与小组件相同的离场判断。
+    const outSwipe = record && record.latestOutTime ? new Date(record.latestOutTime) : null
+    const clockOut = resolveAttendanceCheckout(clockIn, outSwipe, today)
     const workedMs = clockIn && clockOut ? Math.max(0, clockOut - clockIn) : null
     const deficit = workedMs === null ? 0 : Math.ceil((CONFIG.TARGET_HOURS * 3600000 - workedMs) / 60000)
     let status = label
@@ -2780,6 +2740,59 @@ function readAttendanceRecord(key) {
 }
 
 /**
+ * 绘制所选范围的考勤统计和逐日状态格。
+ *
+ * @param table 承载统计的原生历史表格
+ * @param days 按日期倒序排列的考勤记录
+ * @param warningCount 当前范围的待核对天数
+ * @author Kai
+ * @date 2026/11/25 11:14
+ */
+function addAttendanceHistoryOverview(table, days, warningCount) {
+    // 平均工时仅按已结算的工作日计算，缺卡和补查中的日期不进入分母。
+    const workdays = days.filter(day => day.workday)
+    const completed = workdays.filter(day => day.workedMs !== null)
+    const average = completed.length
+        ? formatShortDuration(completed.reduce((sum, day) => sum + day.workedMs, 0) / completed.length)
+        : "—"
+    const summary = new UITableRow()
+    summary.height = 55
+    for (const [value, label, color] of [
+        [String(workdays.length), "工作日", "#64748B"],
+        [String(workdays.filter(day => day.state === "normal").length), "已达标", "#059669"],
+        [String(warningCount), "待核对", "#B45309"],
+        [average, "平均工时", "#2563EB"]
+    ]) {
+        const cell = summary.addText(value, label)
+        cell.titleColor = new Color(color)
+        cell.centerAligned()
+    }
+    table.addRow(summary)
+
+    // 每行最多七格，颜色与短标签同时传达状态，兼顾深色模式与色觉差异。
+    const states = {
+        normal: ["达标", "#059669"],
+        active: ["进行中", "#2563EB"],
+        warning: ["核对", "#B45309"],
+        neutral: ["待定", "#64748B"]
+    }
+    const ascending = days.slice().reverse()
+    for (let start = 0; start < ascending.length; start += 7) {
+        const row = new UITableRow()
+        row.height = 43
+        const week = ascending.slice(start, start + 7)
+        for (const day of week) {
+            const [label, color] = day.workday ? states[day.state] : ["休息", "#64748B"]
+            const cell = row.addText(day.key.slice(5).replace("-", "/"), label)
+            cell.titleColor = new Color(color)
+            cell.centerAligned()
+        }
+        for (let remaining = week.length; remaining < 7; remaining++) row.addText("")
+        table.addRow(row)
+    }
+}
+
+/**
  * 打开原生全屏考勤历史，显示本机记录并逐日补查缺失工作日
  *
  * @author Kai
@@ -2811,16 +2824,11 @@ async function presentAttendanceHistory() {
      * 根据当前范围、缓存和筛选状态重绘手机端历史列表
      *
      * @author Kai
-     * @date 2026/11/24 16:56
+     * @date 2026/11/25 11:14
      */
     function draw() {
         const days = dates.slice(0, range).map(date => buildAttendanceHistoryDay(date, holidays, checked))
-        const workdays = days.filter(day => day.workday)
         const warnings = days.filter(day => day.state === "warning")
-        const completed = workdays.filter(day => day.workedMs !== null)
-        const average = completed.length
-            ? (completed.reduce((sum, day) => sum + day.workedMs, 0) / completed.length / 3600000).toFixed(1) + " 小时"
-            : "—"
 
         table.removeAllRows()
         const heading = new UITableRow()
@@ -2857,11 +2865,12 @@ async function presentAttendanceHistory() {
             }
         }
         table.addRow(ranges)
+        addAttendanceHistoryOverview(table, days, warnings.length)
 
         const filters = new UITableRow()
         filters.height = 48
-        const summary = filters.addText("工作日 " + workdays.length + " 天 · 待核对 " + warnings.length + " 天", "平均工时 " + average)
-        summary.widthWeight = 3
+        const details = filters.addText("逐日明细")
+        details.widthWeight = 3
         const filter = filters.addButton(onlyWarnings ? "显示全部" : "仅看异常")
         filter.rightAligned()
         filter.dismissOnTap = false
@@ -2965,7 +2974,7 @@ function getWeeklyAttendanceUrl() {
  * @param widget 大号桌面组件
  * @param data 今日打卡摘要
  * @author Kai
- * @date 2026/11/24 17:47
+ * @date 2026/11/25 11:09
  */
 async function renderLargeWidget(widget, data) {
   addCompactHeader(widget, "今日打卡")
@@ -2979,14 +2988,8 @@ async function renderLargeWidget(widget, data) {
 
   const meta = getStatusMeta(data)
 
-  const statusCard = widget.addStack()
-  statusCard.layoutVertically()
-    // 大号沿用中号的状态层级，并留出两行说明的空间。
-    statusCard.backgroundColor = new Color("#91ABC8", 0.14)
-    statusCard.borderColor = new Color("#B0C8E1", 0.22)
-    statusCard.borderWidth = 0.5
-  statusCard.cornerRadius = 14
-  statusCard.setPadding(12, 12, 12, 12)
+    // 大号沿用中号的状态层级，并为多行说明留出空间。
+    const statusCard = addAttendanceStatusCard(widget, 14, 12, 12)
 
   if (showsLiveCountdown(data)) {
     const title = addLiveCountdown(statusCard, data, Font.boldSystemFont(22), meta.color)
@@ -3048,6 +3051,29 @@ async function renderLargeWidget(widget, data) {
 
 // ==================== 小组件公共 UI ====================
 
+/**
+ * 绘制桌面组件的考勤状态卡
+ *
+ * @param parent 承载状态卡的组件容器
+ * @param radius 卡片圆角
+ * @param verticalPadding 上下内边距
+ * @param horizontalPadding 左右内边距
+ * @return 可容纳倒计时与状态说明的纵向卡片
+ * @author Kai
+ * @date 2026/11/25 11:09
+ */
+function addAttendanceStatusCard(parent, radius, verticalPadding, horizontalPadding) {
+    const card = parent.addStack()
+    card.layoutVertically()
+    // 统一底色与描边，突出倒计时和考勤状态。
+    card.backgroundColor = new Color("#91ABC8", 0.14)
+    card.borderColor = new Color("#B0C8E1", 0.22)
+    card.borderWidth = 0.5
+    card.cornerRadius = radius
+    card.setPadding(verticalPadding, horizontalPadding, verticalPadding, horizontalPadding)
+    return card
+}
+
 function addCompactHeader(widget, titleText) {
   const row = widget.addStack()
   row.layoutHorizontally()
@@ -3103,38 +3129,45 @@ function addMiniLine(widget, label, value) {
 }
 
 /**
- * 绘制中号和大号组件的打卡数据格
+ * 按完成、计时、待核对或空闲状态绘制打卡格。
  *
- * @param parent 数据格所在的横排
- * @param label 字段名称
- * @param value 显示值
- * @param color 显示值的文字颜色
- * @param width 数据格宽度
- * @param height 数据格高度
+ * @param parent 容纳信息格的横排
+ * @param label 考勤项目名称
+ * @param value 打卡时间或状态文案
+ * @param state 打卡格的视觉状态
+ * @param width 打卡格宽度
  * @author Kai
- * @date 2026/11/24 17:45
+ * @date 2026/11/25 11:14
  */
-function addInfoCell(parent, label, value, color, width, height) {
-  const cell = parent.addStack()
-  cell.layoutVertically()
-    // 用半透明蓝灰保留底色层次，标签维持足够的可读对比度。
-    cell.backgroundColor = new Color("#B0C8E1", 0.09)
-  cell.cornerRadius = 8
-  cell.setPadding(4, 7, 4, 7)
-  cell.size = new Size(width || 130, height || 34)
+function addInfoCell(parent, label, value, state, width) {
+    // 用边框和亮度辅助区分当前阶段。
+    const colors = {
+        done: ["#164640", "#348677", "#C5F7DF"],
+        active: ["#174384", "#419DFF", "#FFFFFF"],
+        warning: ["#493822", "#A87D3F", "#FFD896"],
+        idle: ["#243347", "#536881", "#B8C6D8"]
+    }
+    const [background, border, foreground] = colors[state]
+    const cell = parent.addStack()
+    cell.layoutVertically()
+    cell.backgroundColor = new Color(background)
+    cell.borderColor = new Color(border)
+    cell.borderWidth = state === "active" ? 1.5 : 0.5
+    cell.cornerRadius = 10
+    cell.setPadding(6, 8, 6, 8)
+    cell.size = new Size(width, 58)
 
-  const l = cell.addText(label)
-  l.font = Font.systemFont(9)
-    l.textColor = new Color("#B8C6D8")
-  l.lineLimit = 1
+    const title = cell.addText(label)
+    title.font = Font.mediumSystemFont(11)
+    title.textColor = new Color(foreground)
+    title.lineLimit = 1
 
-  cell.addSpacer(1)
-
-  const v = cell.addText(value)
-  v.font = Font.boldSystemFont(12)
-  v.textColor = new Color(color || "#FFFFFF")
-  v.lineLimit = 1
-  v.minimumScaleFactor = 0.65
+    cell.addSpacer(2)
+    const detail = cell.addText(value)
+    detail.font = Font.boldSystemFont(18)
+    detail.textColor = new Color(foreground)
+    detail.lineLimit = 1
+    detail.minimumScaleFactor = 0.65
 }
 
 /**
