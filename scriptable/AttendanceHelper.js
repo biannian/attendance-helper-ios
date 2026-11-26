@@ -817,9 +817,9 @@ async function presentMaintenanceUpdate() {
   }
   const alert=new Alert()
   alert.title="发现可用更新"
-  alert.message="当前运行：V"+ATTENDANCE_VERSION+"\\n仓库版本："+sourceVersion(release.source)+
-    "\\n源码提交："+(release.commit ? release.commit.slice(0,12) : "未取得，使用分支下载")+
-    "\\n将备份并同步主脚本与检查脚本，账号及考勤数据不变。"
+  alert.message="当前运行：V"+ATTENDANCE_VERSION+"\n仓库版本："+sourceVersion(release.source)+
+    "\n源码提交："+(release.commit ? release.commit.slice(0,12) : "未取得，使用分支下载")+
+    "\n将备份并同步主脚本与检查脚本，账号及考勤数据不变。"
   alert.addAction("备份并更新")
   alert.addCancelAction("取消")
   if (await alert.presentAlert()!==0) return false
@@ -6133,7 +6133,7 @@ async function buildDiagnosticReport() {
       "  下次请求："+diagnosticTime(last?.next))
   }
   lines.push("提示：刷新时间由 iOS 调度；报告不包含账号、密码、设备编号、Token 或原始接口数据。")
-  return lines.join("\\n")
+  return lines.join("\n")
 }
 async function handleDebug() {
   while (true) {
