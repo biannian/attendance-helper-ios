@@ -46,6 +46,29 @@ function paletteFor(style, source) {
   };
 }
 
+function widgetBackground(palette) {
+  return {
+    gradient: [
+      { color: palette.bg, location: 0 },
+      { color: palette.card, location: 0.52 },
+      { color: palette.bg, location: 1 }
+    ],
+    startPoint: { x: 0, y: 0 },
+    endPoint: { x: 1, y: 1 }
+  };
+}
+
+function panelBackground(palette) {
+  return {
+    gradient: [
+      { color: palette.card, location: 0 },
+      { color: palette.surface, location: 1 }
+    ],
+    startPoint: { x: 0, y: 0 },
+    endPoint: { x: 1, y: 1 }
+  };
+}
+
 function progressOf(data) {
   if (!data?.hasClockIn) return 0;
   const elapsed = data.hasOutRecord
@@ -93,6 +116,7 @@ function Countdown({ data, palette }) {
     to={data.targetTime.getTime()}
     countsDown={true}
     showsHours={true}
+    foregroundStyle={palette.text}
   />;
 }
 
@@ -125,7 +149,7 @@ function TodayPanel({ data, palette, style, compact = false, small = false, show
     return <VStack
       spacing={6}
       padding={compact ? 10 : 13}
-      background={palette.card}
+      background={panelBackground(palette)}
       clipShape={{ type: "rect", cornerRadius: 15 }}
       alignment="leading"
     >
@@ -142,7 +166,7 @@ function TodayPanel({ data, palette, style, compact = false, small = false, show
   return <VStack
     spacing={compact ? 6 : 9}
     padding={compact ? 10 : 13}
-    background={palette.card}
+    background={panelBackground(palette)}
     clipShape={{ type: "rect", cornerRadius: 15 }}
     alignment="leading"
   >
@@ -319,7 +343,6 @@ function RecentDays({ days, palette }) {
 function WidgetView({ data, monthData, recent, style, palette, family, layout }) {
   const large = family === "systemLarge" || family.startsWith("systemExtraLarge");
   const small = family === "systemSmall";
-  const isMinimal = style === "minimal";
   const colors = paletteFor(style, palette);
   if (family.startsWith("accessory")) return <Accessory data={data} family={family} />;
 
@@ -327,7 +350,7 @@ function WidgetView({ data, monthData, recent, style, palette, family, layout })
   return <VStack
     spacing={small ? 7 : 9}
     padding={small ? 9 : 12}
-    background={isMinimal ? colors.bg : colors.bg}
+    background={widgetBackground(colors)}
     frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
     alignment="leading"
   >

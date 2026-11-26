@@ -72,7 +72,16 @@ function Card({ children, palette, compact = false, tone = "normal" }) {
   return <VStack
     spacing={compact ? 8 : 11}
     padding={compact ? 12 : 15}
-    background={tone === "hero" ? colors.surface : colors.card}
+    background={tone === "hero"
+      ? {
+          gradient: [
+            { color: colors.surface, location: 0 },
+            { color: colors.card, location: 1 }
+          ],
+          startPoint: { x: 0, y: 0 },
+          endPoint: { x: 1, y: 1 }
+        }
+      : colors.card}
     clipShape={{ type: "rect", cornerRadius: 17 }}
     alignment="leading"
     frame={{ maxWidth: "infinity" }}
@@ -165,7 +174,7 @@ function TodayTab({ data, palette, loading, onRefresh, statusMessage, isWorkday,
                   <Text font="title2" foregroundStyle={palette.danger}>{data.missedConfirmed ? "已确认漏卡，请申请补卡" : "工时已满，请检查下班卡"}</Text>
                   <Button title={data.missedConfirmed ? "撤销漏卡确认" : "确认漏卡"} buttonStyle="bordered" action={onConfirmMissed} />
                 </VStack>
-              : <TimerIntervalLabel from={data.inTime.getTime()} to={data.targetTime.getTime()} countsDown={true} showsHours={true} />}
+              : <TimerIntervalLabel from={data.inTime.getTime()} to={data.targetTime.getTime()} countsDown={true} showsHours={true} foregroundStyle={palette.ink} />}
           </VStack>
         : null}
 
@@ -600,7 +609,15 @@ export function AppView({ initialTab = "today" }) {
 
   return <NavigationStack>
     <ScrollView navigationTitle="考勤助手" navigationBarTitleDisplayMode="inline">
-      <VStack spacing={11} padding={13} alignment="leading" background={palette.bg} frame={{ maxWidth: "infinity" }}>
+      <VStack spacing={11} padding={13} alignment="leading" background={{
+        gradient: [
+          { color: palette.bg, location: 0 },
+          { color: palette.card, location: 0.55 },
+          { color: palette.bg, location: 1 }
+        ],
+        startPoint: { x: 0, y: 0 },
+        endPoint: { x: 1, y: 1 }
+      }} frame={{ maxWidth: "infinity" }}>
         <HStack spacing={5} padding={4} background={palette.card} clipShape={{ type: "rect", cornerRadius: 13 }}>
           {[
             ["today", "今日"],
