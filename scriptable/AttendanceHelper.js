@@ -634,6 +634,8 @@ async function showMainMenu() {
         alert.addAction("预览中号组件")
         alert.addAction("预览大号组件")
         alert.addAction("系统诊断")
+        alert.addAction("检查并更新脚本")
+        alert.addAction("回滚上次更新")
         alert.addCancelAction("关闭")
         const index = await alert.presentSheet()
         if (index === 0) await presentNativeAttendanceHistory(args.queryParameters?.month)
@@ -641,6 +643,12 @@ async function showMainMenu() {
         else if (index === 2) await runWidgetUpdate({presentPreview:true})
         else if (index === 3) await runWidgetUpdate({presentPreview:true,family:"large"})
         else if (index === 4) await handleDebug()
+        else if (index === 5 || index === 6) {
+            try {
+                if (index === 5) await presentMaintenanceUpdate()
+                else await presentMaintenanceRollback()
+            } catch (error) { await presentMessage("维护操作失败", managementErrorText(error)) }
+        }
     }
 }
 
