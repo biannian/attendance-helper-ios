@@ -3,6 +3,9 @@
  * All rights reserved.
  */
 
+// Explicit shared state for the widget renderer; declared before every helper that reads it.
+const WIDGET_RENDER_STATE = { transparent: false }
+
 /**
  * 考勤助手
  *
@@ -2366,7 +2369,7 @@ function widgetStyleForFamily(family, override) {
     return preferences[widgetStyleKey(family)] || WIDGET_STYLE_DEFAULTS[family] || "fitness"
 }
 
-let widgetTransparentRendering = false
+
 
 function adaptiveWidgetColor(light, dark, lightAlpha = 1, darkAlpha = 1) {
     const lightColor = new Color(light, lightAlpha)
@@ -2408,7 +2411,7 @@ function widgetStylePalette(style) {
         }
     }
     const base = palettes[style] || palettes.fitness
-    if (!widgetTransparentRendering) return base
+    if (!WIDGET_RENDER_STATE.transparent) return base
 
     // Transparent variants retain each theme's identity while adapting text to light/dark appearance.
     const variants = {
@@ -2481,7 +2484,7 @@ function supportsTransparentWidgetBackground(widget) {
 }
 
 function applyWidgetStyleBackground(widget, style, family, previewTransparent) {
-    widgetTransparentRendering = false
+    WIDGET_RENDER_STATE.transparent = false
     const p = widgetStylePalette(style)
     if (style === "cyber" || style === "heatmap") {
         const gradient = new LinearGradient()
@@ -2500,7 +2503,7 @@ function applyWidgetStyleBackground(widget, style, family, previewTransparent) {
     if (enabled && supportsTransparentWidgetBackground(widget)) {
         try {
             widget.backgroundStyle = "transparent"
-            widgetTransparentRendering = true
+            WIDGET_RENDER_STATE.transparent = true
             return true
         } catch (_) {
             // Native support may be missing even on a compatible OS.
@@ -2644,12 +2647,12 @@ function createFitnessRingsImage(data, size, workProgressOverride, punchProgress
         : fitnessPunchProgress(data)
     // 外环：工时目标完成度；内环：上下班两次打卡的完成度（各占 50%）。
     const specs = [
-        { inset: 4, width: 7, progress: workProgress, color: missingCheckout(data) && !Number.isFinite(workProgressOverride) ? "#EF4444" : (widgetTransparentRendering ? palette.canvasAccent : palette.accent) },
-        { inset: 17, width: 6, progress: punchProgress, color: missingCheckout(data) && !Number.isFinite(punchProgressOverride) ? "#EF4444" : (widgetTransparentRendering ? palette.canvasAccent2 : palette.accent2) }
+        { inset: 4, width: 7, progress: workProgress, color: missingCheckout(data) && !Number.isFinite(workProgressOverride) ? "#EF4444" : (WIDGET_RENDER_STATE.transparent ? palette.canvasAccent : palette.accent) },
+        { inset: 17, width: 6, progress: punchProgress, color: missingCheckout(data) && !Number.isFinite(punchProgressOverride) ? "#EF4444" : (WIDGET_RENDER_STATE.transparent ? palette.canvasAccent2 : palette.accent2) }
     ]
     for (const spec of specs) {
         const rect = new Rect(spec.inset, spec.inset, size - spec.inset * 2, size - spec.inset * 2)
-        context.setStrokeColor(new Color(widgetTransparentRendering ? "#7B8794" : "#2B3540", widgetTransparentRendering ? 0.48 : 1))
+        context.setStrokeColor(new Color(WIDGET_RENDER_STATE.transparent ? "#7B8794" : "#2B3540", WIDGET_RENDER_STATE.transparent ? 0.48 : 1))
         context.setLineWidth(spec.width)
         context.strokeEllipse(rect)
         if (spec.progress <= 0) continue
@@ -3811,7 +3814,7 @@ async function renderStyledWidget(widget, data, family, style, width, layout, ca
  * @date 2026/11/25 13:00
  */
 async function createWidget(data, previewFamily, previewStyle, previewTransparent) {
-  widgetTransparentRendering = false
+  WIDGET_RENDER_STATE.transparent = false
   // 管理页预览时，显式选择的尺寸优先；真正由桌面运行时则使用 config.widgetFamily。
   const requestedFamily = previewFamily || config.widgetFamily || "medium"
   // Portrait XL is taller than large; reuse the existing adaptive calendar layout.
