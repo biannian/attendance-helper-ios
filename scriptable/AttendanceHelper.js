@@ -3600,7 +3600,7 @@ function renderRecentHeatmapRow(widget, data, width, p, tileHeight = 30) {
         tile.cornerRadius = 5
         tile.backgroundColor = widgetColor(isToday
             ? p.background2
-            : !day.workday ? p.cell : widgetDayStatusColor(day, p, p.accent))
+            : !day.workday ? p.cell : widgetDayFillColor(day, p, p.accent))
         tile.size = new Size(tileWidth, tileHeight)
         if (isToday) {
             // 今日格不再只是普通状态色块：描边标识今天，底部进度条展示当日工时进度。
