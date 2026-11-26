@@ -1,6 +1,7 @@
 import {
   Button,
   TimerIntervalLabel,
+  DateLabel,
   Divider,
   HStack,
   NavigationStack,
@@ -24,7 +25,7 @@ import {
   debugSummary,
   isChinaWorkday
 } from "./core/attendance";
-import { formatDateKey, formatShortDuration, formatTime, missingCheckout, checkoutWarningTitle } from "./core/rules";
+import { formatDateKey, formatShortDuration, formatTime, missingCheckout, checkoutWarningTitle, attendanceDisplayProgress } from "./core/rules";
 import {
   getAccount,
   getPreferences,
@@ -133,13 +134,8 @@ function TodayTab({ data, palette, loading, onRefresh, statusMessage, isWorkday,
     </VStack>;
   }
 
-  const progress = !data?.hasClockIn ? 0 : Math.max(0, Math.min(1,
-    (data.hasOutRecord ? data.currentWorkMs : Date.now() - data.inTime.getTime()) /
-    (CONFIG.TARGET_HOURS * 3600000)
-  ));
-  const elapsed = data?.hasClockIn
-    ? formatShortDuration(data.hasOutRecord ? data.currentWorkMs : Date.now() - data.inTime.getTime())
-    : "--";
+  const progress = attendanceDisplayProgress(data);
+  const elapsed = data?.hasClockIn ? formatShortDuration(progress.elapsedMs) : "--";
   const status = !data?.ok ? "等待同步" :
     !data.hasClockIn ? "等待上班卡" :
     data.hasOutRecord ? (data.targetReached ? "考勤正常" : "工时不足") :
@@ -154,7 +150,7 @@ function TodayTab({ data, palette, loading, onRefresh, statusMessage, isWorkday,
       <HStack>
         <VStack spacing={2} alignment="leading">
           <Text font="caption" foregroundStyle={palette.muted}>{formatDateKey(new Date())} · 今日考勤</Text>
-          <Text font="largeTitle" foregroundStyle={missingCheckout(data) ? palette.danger : palette.ink}>{elapsed}</Text>
+          {progress.running && progress.start !== null ? <DateLabel date={new Date(progress.start)} style="timer" font="largeTitle" monospacedDigit foregroundStyle={palette.ink} /> : <Text font="largeTitle" foregroundStyle={missingCheckout(data) ? palette.danger : palette.ink}>{elapsed}</Text>}
           <Text font="caption" foregroundStyle={palette.accent}>累计工时 / 目标 {CONFIG.TARGET_HOURS} 小时</Text>
         </VStack>
         <Spacer />
@@ -164,7 +160,7 @@ function TodayTab({ data, palette, loading, onRefresh, statusMessage, isWorkday,
         </VStack>
       </HStack>
 
-      <ProgressView value={progress} total={1} tint={missingCheckout(data) ? palette.danger : palette.accent} />
+      {progress.timer ? <ProgressView timerFrom={progress.start} timerTo={progress.target} countsDown={false} progressViewStyle="linear" tint={palette.accent} /> : <ProgressView value={progress.ratio} total={1} tint={missingCheckout(data) ? palette.danger : palette.accent} />}
 
       {data?.hasClockIn && !data.hasOutRecord && data.targetTime
         ? <VStack spacing={4} alignment="leading">

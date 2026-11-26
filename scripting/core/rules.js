@@ -180,6 +180,21 @@ export function normalizeAttendanceData(raw, dateHint = formatDateKey(new Date()
   };
 }
 
+// Shared presentation model: system timers advance between snapshots, while a valid checkout freezes actual time.
+export function attendanceDisplayProgress(data, at = Date.now()) {
+  const start = data?.inTime?.getTime?.();
+  const target = data?.targetTime?.getTime?.();
+  const checkout = data?.latestOutTime?.getTime?.();
+  const valid = !!(data?.ok && !data.isRestDay && data.hasClockIn && Number.isFinite(start) &&
+    Number.isFinite(target) && target > start && start <= at);
+  if (!valid) return { timer: false, ratio: 0, elapsedMs: 0, start: null, target: null };
+  const settled = !!data.hasOutRecord;
+  const end = settled ? (Number.isFinite(checkout) ? Math.max(start, Math.min(at, checkout)) : start) : at;
+  const elapsedMs = Math.max(0, end - start);
+  return { timer: !settled && at < target, ratio: Math.min(1, elapsedMs / (target-start)),
+    elapsedMs, start, target, running: !settled };
+}
+
 export function monthWeeks(month) {
   const first = new Date(month.getFullYear(), month.getMonth(), 1);
   const count = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate();
