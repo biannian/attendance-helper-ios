@@ -6534,7 +6534,7 @@ async function notifyCheckoutSuccessOnce(data, dateKey) {
   if (!CONFIG.USERNAME || !data?.ok || data.isCached || !data.hasClockIn ||
       !data.hasOutRecord || !data.targetReached || !data.inTime || !data.latestOutTime) return false
   const today = formatDateKey(new Date())
-  if (dateKey !== today || String(data.date || "").replace(/\\//g, "-").slice(0, 10) !== today) return false
+  if (dateKey !== today || String(data.date || "").split("/").join("-").slice(0, 10) !== today) return false
   const checkoutMs = data.latestOutTime.getTime()
   if (!Number.isFinite(checkoutMs) || checkoutMs > Date.now() ||
       formatDateKey(data.latestOutTime) !== today ||
