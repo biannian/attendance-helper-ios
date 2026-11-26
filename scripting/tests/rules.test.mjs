@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  attendanceDisplayProgress,
   buildAttendanceHistoryDay,
   formatRemainText,
   normalizeAttendanceData,
@@ -78,4 +79,23 @@ test("remaining duration uses the compact Chinese hour/minute format", () => {
   assert.equal(formatRemainText(80), "1小时20分钟");
   assert.equal(formatRemainText(60), "1小时");
   assert.equal(formatRemainText(25), "25分钟");
+});
+
+test("time-driven work progress uses one interval and stops at checkout", () => {
+  const start = new Date(2026, 10, 26, 8), h = 3600000;
+  const target = new Date(+start + 9*h);
+  const data = {ok:true, hasClockIn:true, hasOutRecord:false, inTime:start, targetTime:target};
+  assert.equal(attendanceDisplayProgress(data, +start).timer, true);
+  assert.equal(attendanceDisplayProgress(data, +start+4.5*h).ratio, 0.5);
+  assert.equal(attendanceDisplayProgress(data, +target).ratio, 1);
+  assert.equal(attendanceDisplayProgress(data, +target).timer, false);
+  assert.equal(attendanceDisplayProgress(data, +target+h).elapsedMs, 10*h);
+  const settled = {...data, hasOutRecord:true, latestOutTime:new Date(+target+12*60000)};
+  assert.equal(attendanceDisplayProgress(settled, +target+h).elapsedMs, 9*h+12*60000);
+  assert.equal(attendanceDisplayProgress(settled, +target+h).running, false);
+  assert.equal(attendanceDisplayProgress({...settled,latestOutTime:new Date(+start+8*h)}, +target+h).ratio, 8/9);
+  assert.equal(attendanceDisplayProgress({...data,ok:false},+target).timer,false);
+  assert.equal(attendanceDisplayProgress({...data,isRestDay:true},+target).timer,false);
+  assert.equal(attendanceDisplayProgress(data,+start-1).timer,false);
+  assert.equal(attendanceDisplayProgress({...data,targetTime:start},+target).timer,false);
 });
