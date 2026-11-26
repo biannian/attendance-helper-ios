@@ -4,7 +4,7 @@
  */
 
 // Explicit shared state for the widget renderer; declared before every helper that reads it.
-const WIDGET_RENDER_STATE = { transparent: false }
+const WIDGET_RENDER_STATE = { transparent: false, at: null }
 
 /**
  * 考勤助手
@@ -1700,6 +1700,8 @@ async function getAttendanceSummary(day = new Date()) {
         } catch (_) {}
       }
       if(dateKey===formatDateKey(now) && ((data.hasOutRecord && data.targetReached)||confirmedMissedCheckout(dateKey))) {clearCheckoutSnooze(); await cancelCheckoutEscalation()}
+      // Only a successful live query can announce completion; historical queries and cached data cannot.
+      await notifyCheckoutSuccessOnce(data, dateKey)
     }
 
     return data
@@ -2318,12 +2320,13 @@ async function handleNearNineHours(existingData) {
 
   if (data.targetReached || missingCheckout(data)) {
     if (missingCheckout(data) && (checkoutSnoozed() || confirmedMissedCheckout())) return data
-    if (data.hasOutRecord) await Notification.removePending(["attendance-helper-checkout-due"])
-    const key = "targetReached-" + CONFIG.USERNAME + ":" + formatDateKey(now) + (data.hasOutRecord ? "-done" : confirmedMissedCheckout() ? "-confirmed-missed" : "-missing")
+    // Fresh-query completion is handled centrally by getAttendanceSummary.
+    if (data.hasOutRecord) return data
+    const key = "targetReached-" + CONFIG.USERNAME + ":" + formatDateKey(now) + (confirmedMissedCheckout() ? "-confirmed-missed" : "-missing")
 
     if (!Keychain.contains(key)) {
       await notifyBrief(
-          data.hasOutRecord ? "考勤正常 · 已打下班卡" : (confirmedMissedCheckout() ? "⚠ 已确认漏卡 · 已使用一次漏卡机会" : "⚠ 未打下班卡！请立即打卡"),
+          confirmedMissedCheckout() ? "⚠ 已确认漏卡 · 已使用一次漏卡机会" : "⚠ 未打下班卡！请立即打卡",
           formatNotifyTimes(data)
       )
 
@@ -2512,19 +2515,35 @@ function applyWidgetStyleBackground(widget, style, family, previewTransparent) {
     return false
 }
 
+// Pure display calculation; elapsed time is provisional until a valid checkout is confirmed.
+function getAttendanceProgress(data, timestamp = Date.now()) {
+    const start = data?.inTime?.getTime?.()
+    const requiredDefault = CONFIG.TARGET_HOURS * 3600000
+    if (!data?.ok || !data.hasClockIn || !Number.isFinite(start)) {
+        return { elapsedMs: 0, requiredMs: requiredDefault, remainingMs: requiredDefault, ratio: 0, reached: false }
+    }
+    const target = data.targetTime?.getTime?.()
+    const requiredMs = Number.isFinite(target) && target > start ? target - start : requiredDefault
+    const checkout = data.latestOutTime?.getTime?.()
+    const end = data.hasOutRecord && Number.isFinite(checkout) ? checkout : timestamp
+    const elapsedMs = Math.max(0, end - start)
+    return { elapsedMs, requiredMs, remainingMs: Math.max(0, requiredMs - elapsedMs),
+        ratio: Math.max(0, Math.min(1, elapsedMs / Math.max(1, requiredMs))),
+        reached: elapsedMs >= requiredMs }
+}
+
+function widgetRenderTimestamp() {
+    return Number.isFinite(WIDGET_RENDER_STATE.at) ? WIDGET_RENDER_STATE.at : Date.now()
+}
+
 function widgetWorkProgress(data) {
-    if (!data || !data.ok || !data.hasClockIn || !data.inTime) return 0
-    const start = data.inTime.getTime()
-    const target = data.targetTime ? data.targetTime.getTime() : start + CONFIG.TARGET_HOURS * 3600000
-    const end = data.hasOutRecord && data.latestOutTime ? data.latestOutTime.getTime() : Date.now()
-    return Math.max(0, Math.min(1, (end - start) / Math.max(1, target - start)))
+    return getAttendanceProgress(data, widgetRenderTimestamp()).ratio
 }
 
 function widgetElapsedText(data) {
     if (!data || !data.ok) return "需更新"
     if (!data.hasClockIn || !data.inTime) return "未打卡"
-    const end = data.hasOutRecord && data.latestOutTime ? data.latestOutTime : now
-    return formatShortDuration(Math.max(0, end.getTime() - data.inTime.getTime()))
+    return formatShortDuration(getAttendanceProgress(data, widgetRenderTimestamp()).elapsedMs)
 }
 
 function missedCheckoutKey(day) { return "attendance-missed-checkout:" + CONFIG.USERNAME + ":" + day }
@@ -2538,7 +2557,7 @@ function widgetStatusText(data) {
     if (data && data.isRestDay) return "休息日"
     if (!data || !data.ok) return data && data.cacheMiss ? "需要更新" : "数据暂不可用"
     if (!data.hasClockIn) return "等待上班卡"
-    if (data.targetReached && data.hasOutRecord) return "今日工时已达标"
+    if (data.targetReached && data.hasOutRecord) return "✓ 今日考勤完成"
     if (missingCheckout(data)) return checkoutWarningTitle(data) + "！"
     return "距离达标还差 " + formatRemainText(data.remainingMinutes || 0)
 }
@@ -2556,7 +2575,7 @@ function addStyledHeader(widget, label, p) {
     const refresh = row.addStack()
     refresh.centerAlignContent()
     const interactive = supportsNativeWidgetAction(refresh)
-    const stamp = refresh.addText((interactive ? "↻ " : "") + formatTime(now))
+    const stamp = refresh.addText((interactive ? "↻ " : "") + formatTime(new Date(widgetRenderTimestamp())))
     stamp.font = Font.mediumSystemFont(9)
     stamp.textColor = widgetColor(interactive ? p.accent : p.muted)
     stamp.lineLimit = 1
@@ -2983,7 +3002,7 @@ function widgetDayFillColor(day, p, activeColor) {
     return p.neutralFill || p.neutral
 }
 
-function widgetDayProgress(day, data, at = Date.now()) {
+function widgetDayProgress(day, data, at = widgetRenderTimestamp()) {
     if (!day || !day.workday) return 0
     const required = Number.isFinite(day.requiredMs) && day.requiredMs >= 0 ? day.requiredMs : CONFIG.TARGET_HOURS * 3600000
     const ratio = elapsed => Math.max(0, Math.min(1, elapsed / Math.max(1, required)))
@@ -3815,6 +3834,7 @@ async function renderStyledWidget(widget, data, family, style, width, layout, ca
  */
 async function createWidget(data, previewFamily, previewStyle, previewTransparent) {
   WIDGET_RENDER_STATE.transparent = false
+  WIDGET_RENDER_STATE.at = Date.now()
   // 管理页预览时，显式选择的尺寸优先；真正由桌面运行时则使用 config.widgetFamily。
   const requestedFamily = previewFamily || config.widgetFamily || "medium"
   // Portrait XL is taller than large; reuse the existing adaptive calendar layout.
@@ -3833,6 +3853,7 @@ async function createWidget(data, previewFamily, previewStyle, previewTransparen
     return widget
   }
   const workday = isPreview || statsOnly || await isChinaWorkday(now)
+  WIDGET_RENDER_STATE.at = Date.now()
   const calendarOnly = statsOnly || (!workday && hasCalendar)
 
   if (!workday && !calendarOnly) {
@@ -3878,7 +3899,7 @@ async function createWidget(data, previewFamily, previewStyle, previewTransparen
   const opensHistory = statsOnly || family === "medium" || hasCalendar
   widget.url = opensHistory ? getWeeklyAttendanceUrl() : getWidgetUrl()
   widget.refreshAfterDate = getNextWidgetRefreshDate(
-      data, !calendarOnly && (family === "medium" || hasCalendar)
+      data, !calendarOnly && !isAccessory
   )
   return widget
 }
@@ -4042,7 +4063,7 @@ function addLockScreenCountdown(widget, data, fallbackText) {
 function showsLiveCountdown(data) {
     // 倒计时以当前时间为准，下班卡只用于结算工时。
     return !!(data && data.ok && data.hasClockIn
-        && data.targetTime && data.targetTime.getTime() > Date.now())
+        && !data.hasOutRecord && data.targetTime && data.targetTime.getTime() > Date.now())
 }
 
 /**
@@ -6351,7 +6372,7 @@ function getNextWidgetRefreshDate(data, refreshProgress = false) {
     // 带进度条的布局每 15 分钟请求刷新，最晚在目标时刻请求刷新；实际时间由 WidgetKit 决定。
     if (showsLiveCountdown(data)) {
         return refreshProgress
-            ? new Date(Math.min(data.targetTime.getTime(), now.getTime() + 15 * 60000))
+            ? new Date(Math.min(data.targetTime.getTime(), Date.now() + 15 * 60000))
             : data.targetTime
     }
 
@@ -6509,6 +6530,43 @@ function formatNotifyTimes(data) {
  * @author Kai
  * @date 2026/11/19 20:43
  */
+async function notifyCheckoutSuccessOnce(data, dateKey) {
+  if (!CONFIG.USERNAME || !data?.ok || data.isCached || !data.hasClockIn ||
+      !data.hasOutRecord || !data.targetReached || !data.inTime || !data.latestOutTime) return false
+  const today = formatDateKey(new Date())
+  if (dateKey !== today || String(data.date || "").split("/").join("-").slice(0, 10) !== today) return false
+  const checkoutMs = data.latestOutTime.getTime()
+  if (!Number.isFinite(checkoutMs) || checkoutMs > Date.now() ||
+      formatDateKey(data.latestOutTime) !== today ||
+      !getAttendanceProgress(data).reached) return false
+  // Reuse the previous near9 completion key to avoid duplicate success notifications after upgrading.
+  const key = "targetReached-" + CONFIG.USERNAME + ":" + today + "-done"
+  const claim = "pending:" + Date.now() + ":" + Math.random()
+  try {
+    if (Keychain.contains(key)) {
+      const previous = String(Keychain.get(key))
+      if (previous === "1" || !previous.startsWith("pending:") ||
+          Date.now() - Number(previous.split(":")[1]) < 120000) return false
+    }
+    Keychain.set(key, claim)
+    if (Keychain.get(key) !== claim) return false
+    const n = new Notification()
+    // A stable notification identifier also reduces duplicate pending requests from overlapping runs.
+    n.identifier = "attendance-helper-checkout-success-" + today
+    n.title = "✅ 今日考勤完成，辛苦了！"
+    n.subtitle = "下班 " + formatTime(data.latestOutTime) + " · 工时 " + formatDuration(getAttendanceProgress(data).elapsedMs)
+    n.sound = "default"
+    n.openURL = "scriptable:///run?scriptName=AttendanceHelper&mode=manage"
+    await n.schedule()
+    if (Keychain.get(key) === claim) Keychain.set(key, "1")
+    return true
+  } catch (e) {
+    try { if (Keychain.contains(key) && Keychain.get(key) === claim) Keychain.remove(key) } catch (_) {}
+    // Notification failure must not invalidate a successfully fetched attendance record.
+    return false
+  }
+}
+
 async function notifyBrief(title, subtitle) {
   const n = new Notification()
   n.title = title
