@@ -38,7 +38,7 @@ export async function syncAttendanceLiveActivity(data) {
   }
 
   if (data.hasOutRecord) {
-    if (savedId) await endSavedActivity("已检测到下班卡");
+    if (savedId) await endSavedActivity(data.targetReached ? "今日考勤完成，辛苦了！" : "已检测到下班卡 · 工时不足", data);
     return { ok: true, message: "已结束考勤倒计时" };
   }
 
@@ -76,7 +76,7 @@ export async function syncAttendanceLiveActivity(data) {
   return { ok: true, message: "灵动岛倒计时已同步" };
 }
 
-export async function endSavedActivity(reason) {
+export async function endSavedActivity(reason, data) {
   const id = getLiveActivityId();
   if (!id) return;
   try {
@@ -86,12 +86,13 @@ export async function endSavedActivity(reason) {
       if (typeof activity?.end !== "function") throw new Error("实时活动无法恢复");
       const ended = await activity.end({
         phase: "finished",
-        startedAt: Date.now(),
-        targetAt: Date.now(),
-        clockInText: "--",
-        targetText: "--",
+        startedAt: data?.inTime?.getTime() ?? Date.now(),
+        targetAt: data?.targetTime?.getTime() ?? Date.now(),
+        clockInText: data?.inTime ? formatTime(data.inTime) : "--",
+        targetText: data?.targetTime ? formatTime(data.targetTime) : "--",
+        clockOutText: data?.latestOutTime ? formatTime(data.latestOutTime) : undefined,
         statusText: reason,
-        workedText: "--"
+        workedText: data?.hasOutRecord ? formatShortDuration(data.currentWorkMs) : "--"
       }, { dismissTimeInterval: 0 });
       if (ended === false) throw new Error("实时活动结束失败");
     }
