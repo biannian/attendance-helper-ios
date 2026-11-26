@@ -5,8 +5,8 @@
 
 // Explicit shared state for the widget renderer; declared before every helper that reads it.
 const WIDGET_RENDER_STATE = { transparent: false, at: null }
-const ATTENDANCE_VERSION = "10.9.2"
-const ATTENDANCE_BUILD = "combined-trends-1"
+const ATTENDANCE_VERSION = "10.9.3"
+const ATTENDANCE_BUILD = "transparent-calendar-fix-1"
 
 /**
  * 考勤助手
@@ -5776,7 +5776,7 @@ function renderWidgetMonthCalendar(widget, data, contentWidth, style = "heatmap"
             button.addSpacer()
             const title = button.addText(monthKey + "  ·  ✓" + normal + "  !" + warnings + "  ×" + abnormal + "  ?" + pending)
             title.font = Font.boldSystemFont(10)
-            title.textColor = new Color(stylePalette.text)
+            title.textColor = widgetColor(stylePalette.text)
             title.lineLimit = 1
             title.minimumScaleFactor = 0.62
             title.url = getWeeklyAttendanceUrl(monthKey)
@@ -5789,7 +5789,7 @@ function renderWidgetMonthCalendar(widget, data, contentWidth, style = "heatmap"
         const key = formatDateKey(target).slice(0, 7)
         const symbol = button.addText(offset < 0 ? "‹" : "›")
         symbol.font = Font.boldSystemFont(18)
-        symbol.textColor = new Color(stylePalette.accent)
+        symbol.textColor = widgetColor(stylePalette.accent)
         if (typeof button.setAction === "function" && Number.parseInt(Device.systemVersion(), 10) >= 17) {
             button.setAction(offset < 0 ? "上个月" : "下个月", { id: "attendance-month:" + key })
         } else {
@@ -5808,7 +5808,7 @@ function renderWidgetMonthCalendar(widget, data, contentWidth, style = "heatmap"
         column.size = new Size(width, 14)
         const label = column.addText(day)
         label.font = Font.systemFont(8)
-        label.textColor = new Color(stylePalette.muted)
+        label.textColor = widgetColor(stylePalette.muted)
         label.centerAlignText()
     }
 
@@ -5836,14 +5836,22 @@ function renderWidgetMonthCalendar(widget, data, contentWidth, style = "heatmap"
             if (!day) continue
             tile.cornerRadius = style === "minimal" ? 4 : 6
             tile.setPadding(1, 0, 1, 0)
-            tile.backgroundColor = new Color(day.workday
-                ? (isWidgetReviewedAbnormal(day) ? colors.abnormal : colors[day.state] || colors.future)
-                : colors.rest)
+            // Transparent palettes carry dynamic Color wrappers, not hexadecimal strings.
+            const transparent = WIDGET_RENDER_STATE.transparent
+            const fill = transparent
+                ? (day.state === "future" ? stylePalette.background2
+                    : !day.workday ? stylePalette.cell : widgetDayFillColor(day, stylePalette, stylePalette.accent))
+                : (day.workday ? (isWidgetReviewedAbnormal(day) ? colors.abnormal : colors[day.state] || colors.future) : colors.rest)
+            tile.backgroundColor = widgetColor(fill)
             // 左右使用等量弹性留白，让 1 位和 2 位日期都严格落在色块中心。
             tile.addSpacer()
             const label = tile.addText(String(Number(day.key.slice(-2))))
             label.font = Font.mediumSystemFont(fontSize)
-            label.textColor = new Color(day.state === "future" ? stylePalette.muted : tileText)
+            const foreground = transparent
+                ? (day.state === "future" || !day.workday ? stylePalette.muted
+                    : widgetDayStatusColor(day, stylePalette, stylePalette.accent))
+                : (day.state === "future" ? stylePalette.muted : tileText)
+            label.textColor = widgetColor(foreground)
             label.centerAlignText()
             label.lineLimit = 1
             tile.addSpacer()
