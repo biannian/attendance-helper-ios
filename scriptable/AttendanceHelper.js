@@ -2606,7 +2606,8 @@ function getWidgetMonthModel(data) {
     return {
         month, monthKey, weeks, days, workdays,
         normal: workdays.filter(day => day.state === "normal").length,
-        warnings: workdays.filter(day => day.state === "warning").length,
+        warnings: workdays.filter(isWidgetPendingWarning).length,
+        abnormal: workdays.filter(isWidgetReviewedAbnormal).length,
         pending: workdays.filter(day => day.state === "neutral").length,
         active: workdays.filter(day => day.state === "active").length,
         average: settled.length
@@ -2720,9 +2721,7 @@ function renderLargeWeekSummary(widget, model, width, p, rowHeight = 17, weekCou
         times.lineLimit = 1
         times.minimumScaleFactor = 0.62
         row.addSpacer(null)
-        const status = day.state === "normal" ? "达标"
-            : day.state === "warning" ? "待核查"
-            : day.state === "active" ? "进行中" : "待查"
+        const status = widgetDayStatusLabel(day)
         const statusCol = row.addStack()
         statusCol.layoutHorizontally()
         statusCol.centerAlignContent()
@@ -2730,7 +2729,7 @@ function renderLargeWeekSummary(widget, model, width, p, rowHeight = 17, weekCou
         statusCol.addSpacer(null)
         const badge = statusCol.addText(status)
         badge.font = Font.boldSystemFont(rowHeight >= 20 ? 10 : 8)
-        badge.textColor = new Color(day.state === "normal" ? p.good : day.state === "warning" ? p.warning : p.accent)
+        badge.textColor = new Color(widgetDayStatusColor(day, p, p.accent))
         badge.lineLimit = 1
         badge.minimumScaleFactor = 0.75
     }
@@ -2786,6 +2785,44 @@ function addWidgetMonthNavigation(widget, model, width, p, label) {
     addArrow(1)
 }
 
+function isWidgetReviewedAbnormal(day) {
+    return !!(day && (day.missedConfirmed || day.review?.decision === "abnormal"))
+}
+
+function isWidgetPendingWarning(day) {
+    return !!(day && day.state === "warning" && !isWidgetReviewedAbnormal(day))
+}
+
+function widgetDayStatusLabel(day) {
+    if (!day || !day.workday) return "休息"
+    if (day.missedConfirmed) return "已确认漏卡"
+    if (day.review?.decision === "abnormal") return "已确认异常"
+    if (day.review?.confirmed || day.review?.decision === "normal") return "已核实正常"
+    if (day.state === "normal") return day.leaveHours > 0 ? "请假达标" : "达标"
+    if (day.state === "warning") return day.review?.decision === "auto" && day.leaveHours > 0 ? "请假后仍差" : "待核查"
+    if (day.state === "active") return "进行中"
+    return "待查"
+}
+
+function widgetDayMarker(day) {
+    if (!day || !day.workday) return "—"
+    if (isWidgetReviewedAbnormal(day)) return "×"
+    if (day.review?.confirmed || day.review?.decision === "normal" || day.state === "normal") return "✓"
+    if (day.state === "warning") return "!"
+    if (day.state === "active") return "●"
+    return "·"
+}
+
+function widgetDayStatusColor(day, p, activeColor) {
+    if (!day) return p.neutral
+    if (isWidgetReviewedAbnormal(day)) return p.abnormal || "#C83D3D"
+    if (day.checkoutMissing) return "#EF4444"
+    if (day.state === "normal") return p.good
+    if (day.state === "warning") return p.warning
+    if (day.state === "active" || day.key === formatDateKey(now)) return activeColor || p.accent
+    return p.neutral
+}
+
 function widgetDayProgress(day, data, at = Date.now()) {
     if (!day || !day.workday) return 0
     const required = Number.isFinite(day.requiredMs) && day.requiredMs >= 0 ? day.requiredMs : CONFIG.TARGET_HOURS * 3600000
@@ -2802,10 +2839,7 @@ function widgetDayProgress(day, data, at = Date.now()) {
 }
 
 function widgetDayBarColor(day, p, activeColor) {
-    if (day.checkoutMissing) return "#EF4444"
-    if (day.state === "normal") return p.good
-    if (day.state === "warning") return p.warning
-    return day.state === "active" || day.key === formatDateKey(now) ? activeColor : p.neutral
+    return widgetDayStatusColor(day, p, activeColor)
 }
 
 function addCyberTimelineEvent(parent, index, label, value, color, p) {
@@ -3409,7 +3443,7 @@ function renderRecentHeatmapRow(widget, data, width, p, tileHeight = 30) {
         tile.cornerRadius = 5
         tile.backgroundColor = new Color(isToday
             ? p.background2
-            : !day.workday ? p.cell : stateColors[day.state] || p.neutral)
+            : !day.workday ? p.cell : widgetDayStatusColor(day, p, p.accent))
         tile.size = new Size(tileWidth, tileHeight)
         if (isToday) {
             // 今日格不再只是普通状态色块：描边标识今天，底部进度条展示当日工时进度。
@@ -3435,7 +3469,7 @@ function renderRecentHeatmapRow(widget, data, width, p, tileHeight = 30) {
         markLine.centerAlignContent()
         markLine.size = new Size(tileWidth, 11)
         markLine.addSpacer()
-        const mark = markLine.addText(!day.workday ? "—" : day.state === "normal" ? "✓" : day.state === "warning" ? "!" : day.state === "active" ? "●" : "·")
+        const mark = markLine.addText(widgetDayMarker(day))
         mark.font = Font.boldSystemFont(8)
         mark.textColor = new Color(isToday ? widgetDayBarColor(day,p,p.accent) : p.text)
         mark.centerAlignText()
@@ -3503,7 +3537,8 @@ function renderHeatmapWidget(widget, data, family, width, showToday = true) {
     const days = getRecentWidgetDays(data, count)
     const workdays = days.filter(day => day.workday)
     const normal = workdays.filter(day => day.state === "normal").length
-    const warnings = workdays.filter(day => day.state === "warning").length
+    const warnings = workdays.filter(isWidgetPendingWarning).length
+    const abnormal = workdays.filter(isWidgetReviewedAbnormal).length
     const recorded = workdays.filter(day => ["normal", "warning", "active"].includes(day.state)).length
     const achievement = workdays.length ? normal / workdays.length : 0
     const coverage = workdays.length ? recorded / workdays.length : 0
@@ -3526,7 +3561,7 @@ function renderHeatmapWidget(widget, data, family, width, showToday = true) {
         const label = summary.addText("工作日达标")
         label.font = Font.systemFont(8)
         label.textColor = new Color(p.accent)
-        const warn = summary.addText("记录覆盖 " + Math.round(coverage * 100) + "% · 待核查 " + warnings + " 天")
+        const warn = summary.addText("记录覆盖 " + Math.round(coverage * 100) + "% · 待核查 " + warnings + " · 已核异常 " + abnormal)
         warn.font = Font.systemFont(9)
         warn.textColor = new Color(p.accent2)
     } else {
@@ -3534,7 +3569,7 @@ function renderHeatmapWidget(widget, data, family, width, showToday = true) {
         total.font = Font.boldSystemFont(large ? 30 : 24)
         total.textColor = new Color(p.accent)
         total.lineLimit = 1
-        const detail = widget.addText("待核查 " + warnings + " 天  ·  其余休息或待查")
+        const detail = widget.addText("待核查 " + warnings + " 天 · 已核异常 " + abnormal + " 天")
         detail.font = Font.systemFont(9)
         detail.textColor = new Color(p.muted)
         detail.lineLimit = 1
@@ -3556,11 +3591,11 @@ function renderHeatmapWidget(widget, data, family, width, showToday = true) {
             tile.cornerRadius = 5
             tile.size = new Size(tileWidth, large ? 31 : 38)
             const colors = { normal: p.good, warning: p.warning, active: p.accent, neutral: p.neutral }
-            tile.backgroundColor = new Color(day.workday ? (colors[day.state] || p.neutral) : p.cell)
+            tile.backgroundColor = new Color(day.workday ? widgetDayStatusColor(day, p, p.accent) : p.cell)
             const date = tile.addText(day.key.slice(-2))
             date.font = Font.mediumSystemFont(8)
             date.textColor = new Color(p.text)
-            const mark = tile.addText(!day.workday ? "—" : day.state === "normal" ? "✓" : day.state === "warning" ? "!" : day.state === "active" ? "●" : "·")
+            const mark = tile.addText(widgetDayMarker(day))
             mark.font = Font.boldSystemFont(8)
             mark.textColor = new Color(p.text)
         }
@@ -5202,14 +5237,15 @@ function renderWidgetAttendanceStats(widget, data, count, standalone) {
     const checked = data.ok ? new Map([[formatDateKey(now), data]]) : new Map()
     const days = dates.map(date => buildAttendanceHistoryDay(date, holidays, checked))
     const normal = days.filter(day => day.state === "normal").length
-    const warnings = days.filter(day => day.state === "warning").length
+    const warnings = days.filter(isWidgetPendingWarning).length
+    const abnormal = days.filter(isWidgetReviewedAbnormal).length
     const settled = days.filter(day => day.workday && day.workedMs !== null)
     const average = settled.length
         ? formatShortDuration(settled.reduce((sum, day) => sum + day.workedMs, 0) / settled.length)
         : "—"
     addCompactHeader(widget, "近 " + count + " 天考勤")
     widget.addSpacer(5)
-    const totals = widget.addText("达标 " + normal + " · 待核对 " + warnings + " · 平均 " + average)
+    const totals = widget.addText("达标 " + normal + " · 待核对 " + warnings + " · 已核异常 " + abnormal + " · 平均 " + average)
     totals.font = Font.boldSystemFont(standalone ? 15 : 12)
     totals.textColor = Color.white()
     totals.lineLimit = 1
@@ -5220,6 +5256,7 @@ function renderWidgetAttendanceStats(widget, data, count, standalone) {
         normal: ["✓", "#166254"],
         active: ["·", "#225DA4"],
         warning: ["!", "#7A552A"],
+        abnormal: ["×", "#8A3737"],
         neutral: ["?", "#3D5069"]
     }
     for (let start = 0; start < count; start += 7) {
@@ -5227,7 +5264,8 @@ function renderWidgetAttendanceStats(widget, data, count, standalone) {
         const row = widget.addStack()
         row.spacing = 4
         for (const day of days.slice(start, start + 7)) {
-            const [symbol, color] = day.workday ? states[day.state] : ["—", "#283649"]
+            const stateKey = isWidgetReviewedAbnormal(day) ? "abnormal" : day.state
+            const [symbol, color] = day.workday ? states[stateKey] : ["—", "#283649"]
             const tile = row.addStack()
             tile.layoutVertically()
             tile.setPadding(4, 4, 4, 4)
@@ -5287,7 +5325,8 @@ function renderWidgetMonthCalendar(widget, data, contentWidth, style = "heatmap"
     }))
     const days = weeks.flat().filter(Boolean)
     const normal = days.filter(day => day.state === "normal").length
-    const warnings = days.filter(day => day.state === "warning").length
+    const warnings = days.filter(isWidgetPendingWarning).length
+    const abnormal = days.filter(isWidgetReviewedAbnormal).length
     const pending = days.filter(day => day.workday && day.state === "neutral").length
 
     // 先按可用宽度计算七列，横向留白由 createWidget 的统一 padding 控制。
@@ -5304,7 +5343,7 @@ function renderWidgetMonthCalendar(widget, data, contentWidth, style = "heatmap"
         if (offset === 0) {
             button.size = new Size(Math.max(80, gridWidth - 52), 22)
             button.addSpacer()
-            const title = button.addText(monthKey + "  ·  ✓" + normal + "  !" + warnings + "  ?" + pending)
+            const title = button.addText(monthKey + "  ·  ✓" + normal + "  !" + warnings + "  ×" + abnormal + "  ?" + pending)
             title.font = Font.boldSystemFont(10)
             title.textColor = new Color(stylePalette.text)
             title.lineLimit = 1
@@ -5343,8 +5382,8 @@ function renderWidgetMonthCalendar(widget, data, contentWidth, style = "heatmap"
     }
 
     const colors = style === "minimal"
-        ? { normal: "#CBD9CF", warning: "#E7D7B6", active: "#343B36", neutral: "#D8DAD3", rest: "#E9EAE4", future: "#F0F1EC" }
-        : { normal: stylePalette.good, warning: stylePalette.warning, active: stylePalette.accent, neutral: stylePalette.neutral, rest: stylePalette.cell, future: stylePalette.background2 }
+        ? { normal: "#CBD9CF", warning: "#E7D7B6", abnormal: "#D9B6B0", active: "#343B36", neutral: "#D8DAD3", rest: "#E9EAE4", future: "#F0F1EC" }
+        : { normal: stylePalette.good, warning: stylePalette.warning, abnormal: stylePalette.abnormal, active: stylePalette.accent, neutral: stylePalette.neutral, rest: stylePalette.cell, future: stylePalette.background2 }
     const tileText = style === "minimal" ? "#353A36" : "#FFFFFF"
     const calendarHeight = Math.max(120, Number.isFinite(options.height) ? options.height : Math.round(contentWidth * 0.46))
     const rowHeight = Math.max(18, Math.floor(calendarHeight / weeks.length))
@@ -5367,7 +5406,7 @@ function renderWidgetMonthCalendar(widget, data, contentWidth, style = "heatmap"
             tile.cornerRadius = style === "minimal" ? 4 : 6
             tile.setPadding(1, 0, 1, 0)
             tile.backgroundColor = new Color(day.workday
-                ? (colors[day.state] || colors.future)
+                ? (isWidgetReviewedAbnormal(day) ? colors.abnormal : colors[day.state] || colors.future)
                 : colors.rest)
             // 左右使用等量弹性留白，让 1 位和 2 位日期都严格落在色块中心。
             tile.addSpacer()
