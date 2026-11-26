@@ -214,6 +214,8 @@ if (config.runsInWidget) {
     // 翻月只改变本地选月，优先用缓存立即重绘。
     const monthChanged = saveWidgetCalendarAction(args.widgetAction?.id)
     let data = monthChanged ? loadCachedAttendanceSummary() : await getAttendanceSummary()
+    // A first-time calendar interaction may have no cache; recover via the normal fetch.
+    if (monthChanged && !data.ok) data = await getAttendanceSummary()
   if (!data.ok) {
     const cached = loadCachedAttendanceSummary()
     if (cached.ok) {
@@ -591,7 +593,8 @@ async function runWidgetUpdate(options) {
 
   if (presentPreview) {
     if (options?.family === "small") await widget.presentSmall()
-    else if (options?.family === "large") await widget.presentLarge()
+    else if (options?.family === "extraLargePortrait" && typeof widget.presentExtraLargePortrait === "function") await widget.presentExtraLargePortrait()
+    else if (options?.family === "large" || options?.family === "extraLargePortrait") await widget.presentLarge()
     else await widget.presentMedium()
   }
   return data
@@ -2437,19 +2440,46 @@ function addStyledHeader(widget, label, p) {
     title.textColor = new Color(p.muted)
     title.lineLimit = 1
     row.addSpacer()
-    const stamp = row.addText(formatTime(now))
+    // Keep the existing timestamp footprint; on 1.8 it doubles as a native refresh action.
+    const refresh = row.addStack()
+    refresh.centerAlignContent()
+    const interactive = supportsNativeWidgetAction(refresh)
+    const stamp = refresh.addText((interactive ? "↻ " : "") + formatTime(now))
     stamp.font = Font.mediumSystemFont(9)
-    stamp.textColor = new Color(p.muted)
+    stamp.textColor = new Color(interactive ? p.accent : p.muted)
     stamp.lineLimit = 1
+    if (interactive) refresh.setAction("刷新考勤", { id: "attendance-refresh" })
+    else refresh.url = getWidgetUrl()
+}
+
+function supportsNativeWidgetAction(stack) {
+    return typeof stack.setAction === "function" &&
+        Number.parseInt(Device.systemVersion(), 10) >= 17
+}
+
+// Scriptable 1.8 takes progress in percent, whereas our calculation uses a 0–1 ratio.
+// Older versions retain the existing custom track and all theme colors.
+function addNativeLinearProgress(parent, width, progress, color, trackColor, height) {
+    if (typeof parent.addProgress !== "function") return false
+    const ratio = Number.isFinite(progress) ? Math.max(0, Math.min(1, progress)) : 0
+    const bar = parent.addProgress(ratio * 100, {
+        style: "linear",
+        progressColor: new Color(color),
+        trackColor: new Color(trackColor),
+        thickness: height
+    })
+    bar.size = new Size(width, height)
+    return true
 }
 
 function addStyledProgress(parent, data, width, p, height = 5) {
+    const progress = data && data.ok ? widgetWorkProgress(data) : 0
+    if (addNativeLinearProgress(parent, width, progress, missingCheckout(data) ? "#EF4444" : p.accent, p.track, height)) return
     const track = parent.addStack()
     track.layoutHorizontally()
     track.backgroundColor = new Color(p.track)
     track.cornerRadius = Math.ceil(height / 2)
     track.size = new Size(width, height)
-    const progress = data && data.ok ? widgetWorkProgress(data) : 0
     const fillWidth = Math.max(0, Math.min(width, Math.round(width * progress)))
     if (fillWidth > 0) {
         const fill = track.addStack()
@@ -2564,6 +2594,7 @@ function addFitnessMetricLine(parent, labelText, valueText, width, color, fontSi
 }
 
 function addFitnessProgressTrack(parent, width, progress, color, height = 4) {
+    if (addNativeLinearProgress(parent, width, progress, color, "#2B3540", height)) return
     const track = parent.addStack()
     track.layoutHorizontally()
     track.backgroundColor = new Color("#2B3540")
@@ -3660,7 +3691,9 @@ async function renderStyledWidget(widget, data, family, style, width, layout, ca
  */
 async function createWidget(data, previewFamily, previewStyle) {
   // 管理页预览时，显式选择的尺寸优先；真正由桌面运行时则使用 config.widgetFamily。
-  const family = previewFamily || config.widgetFamily || "medium"
+  const requestedFamily = previewFamily || config.widgetFamily || "medium"
+  // Portrait XL is taller than large; reuse the existing adaptive calendar layout.
+  const family = requestedFamily === "extraLargePortrait" ? "large" : requestedFamily
   const isAccessory = family.indexOf("accessory") === 0
   const layout = config.runsInWidget ? readWidgetLayout(args.widgetParameter) : null
   const hasCalendar = family === "large" || family === "extraLarge"
@@ -5297,7 +5330,7 @@ function renderWidgetAttendanceStats(widget, data, count, standalone) {
  */
 function saveWidgetCalendarAction(actionId) {
     const match = /^attendance-month:(\d{4}-(?:0[1-9]|1[0-2]))$/.exec(String(actionId || ""))
-    if (!match || attendanceMonth(match[1]) > attendanceMonth()) return false
+    if (!match || !CONFIG.USERNAME || Number(match[1].slice(0, 4)) < 2000 || attendanceMonth(match[1]) > attendanceMonth()) return false
     Keychain.set("attendance-widget-month:" + CONFIG.USERNAME, match[1])
     return true
 }
@@ -5570,8 +5603,9 @@ function addProgressBar(parent, data, width) {
     if (!data.hasClockIn) return
 
     // 进度使用组件刷新时刻，系统倒计时仍会独立推进。
-    const total = data.targetTime - data.inTime
-    const ratio = total > 0 ? Math.max(0, Math.min(1, (now - data.inTime) / total)) : 1
+    const ratio = widgetWorkProgress(data)
+    const progressColor = missingCheckout(data) ? "#EF4444" : ratio >= 1 && data.hasOutRecord ? "#34D399" : attendancePalette().accent
+    if (addNativeLinearProgress(parent, width, ratio, progressColor, "#374B66", 4)) return
     const track = parent.addStack()
     track.layoutHorizontally()
     track.backgroundColor = new Color("#374B66")
@@ -5580,7 +5614,7 @@ function addProgressBar(parent, data, width) {
     const filled = Math.round(width * ratio)
     if (filled > 0) {
         const fill = track.addStack()
-        fill.backgroundColor = new Color(missingCheckout(data) ? "#EF4444" : ratio >= 1 && data.hasOutRecord ? "#34D399" : attendancePalette().accent)
+        fill.backgroundColor = new Color(progressColor)
         fill.cornerRadius = 2
         fill.size = new Size(filled, 4)
     }
