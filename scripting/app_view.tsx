@@ -21,11 +21,10 @@ import {
   getTodaySummary,
   saveAttendanceReview,
   resetAttendanceReview,
-  summarizeMonth,
   debugSummary,
   isChinaWorkday
 } from "./core/attendance";
-import { formatDateKey, formatRemainText, formatShortDuration, formatTime, missingCheckout, checkoutWarningTitle } from "./core/rules";
+import { formatDateKey, formatShortDuration, formatTime, missingCheckout, checkoutWarningTitle } from "./core/rules";
 import {
   getAccount,
   getPreferences,
@@ -42,24 +41,39 @@ import {
 import { syncAttendanceLiveActivity, endSavedActivity } from "./core/live_activity_service";
 
 const PALETTES = {
-  navy: { bg: "#F4F6FA", card: "#FFFFFF", ink: "#172033", muted: "#687487", accent: "#315FBD", normal: "#087B5B", warning: "#B86B24" },
-  teal: { bg: "#F1F7F5", card: "#FFFFFF", ink: "#173A36", muted: "#64817A", accent: "#167E74", normal: "#087B5B", warning: "#B86B24" },
-  slate: { bg: "#F4F4F7", card: "#FFFFFF", ink: "#272B38", muted: "#74798A", accent: "#5A637A", normal: "#087B5B", warning: "#B86B24" }
+  navy: {
+    bg: "#0B1728", card: "#14263D", surface: "#1B314C", ink: "#F3F7FD",
+    muted: "#9FB2CA", accent: "#82BCFF", normal: "#65D5AC", warning: "#F2B66D",
+    danger: "#FF8179", line: "#2A415D"
+  },
+  teal: {
+    bg: "#0B2425", card: "#143536", surface: "#1B4443", ink: "#F0FFFA",
+    muted: "#A2C6BE", accent: "#75DCCB", normal: "#69D7B0", warning: "#F1B66D",
+    danger: "#FF8A80", line: "#2B5652"
+  },
+  slate: {
+    bg: "#191C26", card: "#252A36", surface: "#303746", ink: "#F5F6FA",
+    muted: "#B4BAC8", accent: "#B7C6E8", normal: "#78D4B5", warning: "#EAC07C",
+    danger: "#FF958D", line: "#41495A"
+  }
 };
 
 const STYLE_LABELS = {
   cyber: "赛博控制台",
   fitness: "运动环形",
-  minimal: "极简工时账本",
+  minimal: "极简账本",
   heatmap: "月历热力图"
 };
+const STYLE_SHORT = { cyber: "赛博", fitness: "运动", minimal: "极简", heatmap: "热力" };
+const THEME_LABELS = { navy: "深海蓝", teal: "松石绿", slate: "岩灰" };
 
-function Card({ children }) {
+function Card({ children, palette, compact = false, tone = "normal" }) {
+  const colors = palette || PALETTES.navy;
   return <VStack
-    spacing={10}
-    padding={14}
-    background="#FFFFFF"
-    clipShape={{ type: "rect", cornerRadius: 16 }}
+    spacing={compact ? 8 : 11}
+    padding={compact ? 12 : 15}
+    background={tone === "hero" ? colors.surface : colors.card}
+    clipShape={{ type: "rect", cornerRadius: 17 }}
     alignment="leading"
     frame={{ maxWidth: "infinity" }}
   >
@@ -67,19 +81,49 @@ function Card({ children }) {
   </VStack>;
 }
 
-function SectionTitle({ title, subtitle }) {
-  return <VStack spacing={3} alignment="leading">
-    <Text font="headline">{title}</Text>
-    {subtitle ? <Text font="caption" foregroundStyle="secondaryLabel">{subtitle}</Text> : null}
+function SectionTitle({ title, subtitle, palette }) {
+  return <VStack spacing={2} alignment="leading">
+    <Text font="headline" foregroundStyle={palette?.ink || "primaryLabel"}>{title}</Text>
+    {subtitle ? <Text font="caption" foregroundStyle={palette?.muted || "secondaryLabel"}>{subtitle}</Text> : null}
   </VStack>;
 }
 
-function StatusBadge({ text, color }) {
-  return <Text font="caption" foregroundStyle={color}>{text}</Text>;
+function StatusBadge({ text, color, palette }) {
+  return <VStack
+    padding={6}
+    background={palette?.surface || "#303746"}
+    clipShape={{ type: "rect", cornerRadius: 8 }}
+  >
+    <Text font="caption2" foregroundStyle={color}>{text}</Text>
+  </VStack>;
+}
+
+function MetricCell({ label, value, palette, color }) {
+  return <VStack
+    spacing={4}
+    padding={9}
+    background={palette.surface}
+    clipShape={{ type: "rect", cornerRadius: 11 }}
+    frame={{ maxWidth: "infinity" }}
+    alignment="leading"
+  >
+    <Text font="caption2" foregroundStyle={palette.muted}>{label}</Text>
+    <Text font="headline" foregroundStyle={color || palette.ink}>{value}</Text>
+  </VStack>;
 }
 
 function TodayTab({ data, palette, loading, onRefresh, statusMessage, isWorkday, onConfirmMissed }) {
-  if (!isWorkday) return <VStack spacing={12} alignment="leading"><Card><Text font="caption" foregroundStyle="secondaryLabel">{formatDateKey(new Date())} · 今日考勤</Text><Text font="title2">今天是休息日</Text><Text font="caption" foregroundStyle="secondaryLabel">法定节假日和周末不显示考勤状态，调休补班日会自动恢复。</Text><Button title="仍然刷新数据" buttonStyle="bordered" action={onRefresh} /></Card></VStack>;
+  if (!isWorkday) {
+    return <VStack spacing={10} alignment="leading">
+      <Card palette={palette} tone="hero">
+        <Text font="caption" foregroundStyle={palette.muted}>{formatDateKey(new Date())} · 今日</Text>
+        <Text font="largeTitle" foregroundStyle={palette.ink}>今天休息</Text>
+        <Text font="caption" foregroundStyle={palette.muted}>调休补班日会自动恢复考勤</Text>
+        <Button title="刷新" buttonStyle="bordered" action={onRefresh} disabled={loading} />
+      </Card>
+    </VStack>;
+  }
+
   const progress = !data?.hasClockIn ? 0 : Math.max(0, Math.min(1,
     (data.hasOutRecord ? data.currentWorkMs : Date.now() - data.inTime.getTime()) /
     (CONFIG.TARGET_HOURS * 3600000)
@@ -91,235 +135,288 @@ function TodayTab({ data, palette, loading, onRefresh, statusMessage, isWorkday,
     !data.hasClockIn ? "等待上班卡" :
     data.hasOutRecord ? (data.targetReached ? "考勤正常" : "工时不足") :
     missingCheckout(data) ? checkoutWarningTitle(data) : "正在工作";
+  const statusColor = missingCheckout(data) || (data?.hasOutRecord && !data.targetReached)
+    ? palette.danger
+    : data?.hasOutRecord && data.targetReached ? palette.normal : palette.accent;
+  const reminderMinutes = getPreferences().remindMinutes;
 
-  return <VStack spacing={14} alignment="leading">
-    <Card>
+  return <VStack spacing={10} alignment="leading">
+    <Card palette={palette} tone="hero">
       <HStack>
-        <VStack spacing={3} alignment="leading">
-          <Text font="caption" foregroundStyle="secondaryLabel">{formatDateKey(new Date())} · 今日考勤</Text>
-          <Text font="largeTitle" foregroundStyle={missingCheckout(data) ? "systemRed" : "primaryLabel"}>{missingCheckout(data) ? checkoutWarningTitle(data) : elapsed}</Text>
+        <VStack spacing={2} alignment="leading">
+          <Text font="caption" foregroundStyle={palette.muted}>{formatDateKey(new Date())} · 今日考勤</Text>
+          <Text font="largeTitle" foregroundStyle={missingCheckout(data) ? palette.danger : palette.ink}>{elapsed}</Text>
           <Text font="caption" foregroundStyle={palette.accent}>累计工时 / 目标 {CONFIG.TARGET_HOURS} 小时</Text>
         </VStack>
         <Spacer />
-        <VStack spacing={3} alignment="trailing">
-          <StatusBadge text={status} color={missingCheckout(data) || (data?.hasOutRecord && !data.targetReached) ? "systemRed" : data?.hasOutRecord && data.targetReached ? palette.normal : palette.accent} />
+        <VStack spacing={6} alignment="trailing">
+          <StatusBadge text={status} color={statusColor} palette={palette} />
           <Button title={loading ? "同步中…" : "刷新"} buttonStyle="bordered" action={onRefresh} disabled={loading} />
         </VStack>
       </HStack>
-      <ProgressView value={progress} total={1} tint={missingCheckout(data) ? "systemRed" : palette.accent} />
+
+      <ProgressView value={progress} total={1} tint={missingCheckout(data) ? palette.danger : palette.accent} />
+
       {data?.hasClockIn && !data.hasOutRecord && data.targetTime
-        ? <VStack spacing={3} alignment="leading">
-            <Text font="caption" foregroundStyle="secondaryLabel">距离可下班</Text>
+        ? <VStack spacing={4} alignment="leading">
+            <Text font="caption" foregroundStyle={palette.muted}>距离可下班</Text>
             {missingCheckout(data)
-              ? <VStack alignment="leading" spacing={6}><Text font="title2" foregroundStyle="systemRed">{data.missedConfirmed ? "已确认漏卡，请申请补卡" : "工时已满，请立即打下班卡"}</Text><Button title={data.missedConfirmed ? "撤销漏卡确认" : "已无法返回 · 确认漏卡"} buttonStyle="bordered" action={onConfirmMissed} /></VStack>
+              ? <VStack spacing={6} alignment="leading">
+                  <Text font="title2" foregroundStyle={palette.danger}>{data.missedConfirmed ? "已确认漏卡，请申请补卡" : "工时已满，请检查下班卡"}</Text>
+                  <Button title={data.missedConfirmed ? "撤销漏卡确认" : "确认漏卡"} buttonStyle="bordered" action={onConfirmMissed} />
+                </VStack>
               : <TimerIntervalLabel from={data.inTime.getTime()} to={data.targetTime.getTime()} countsDown={true} showsHours={true} />}
           </VStack>
         : null}
+
       <Divider />
-      <HStack>
-        <VStack spacing={3} alignment="leading">
-          <Text font="caption2" foregroundStyle="secondaryLabel">上班卡</Text>
-          <Text font="headline">{data?.hasClockIn ? formatTime(data.inTime) : "--"}</Text>
-        </VStack>
-        <Spacer />
-        <VStack spacing={3} alignment="leading">
-          <Text font="caption2" foregroundStyle="secondaryLabel">预计下班</Text>
-          <Text font="headline">{data?.targetTime ? formatTime(data.targetTime) : "--"}</Text>
-        </VStack>
-        <Spacer />
-        <VStack spacing={3} alignment="leading">
-          <Text font="caption2" foregroundStyle="secondaryLabel">下班卡</Text>
-          <Text font="headline" foregroundStyle={missingCheckout(data) ? "systemRed" : "primaryLabel"}>{data?.hasOutRecord ? formatTime(data.latestOutTime) : "未打"}</Text>
-        </VStack>
+      <HStack spacing={7}>
+        <MetricCell label="上班卡" value={data?.hasClockIn ? formatTime(data.inTime) : "--"} palette={palette} />
+        <MetricCell label="预计下班" value={data?.targetTime ? formatTime(data.targetTime) : "--"} palette={palette} />
+        <MetricCell label="下班卡" value={data?.hasOutRecord ? formatTime(data.latestOutTime) : "未打"} palette={palette} color={missingCheckout(data) ? palette.danger : palette.ink} />
       </HStack>
+
       {data?.refreshError
-        ? <Text font="caption" foregroundStyle="systemOrange">网络同步失败，当前展示本机快照：{data.refreshError}</Text>
+        ? <Text font="caption2" foregroundStyle={palette.warning}>同步失败，显示本机记录：{data.refreshError}</Text>
         : null}
-      {!data?.ok ? <Text foregroundStyle="systemRed">{data?.error || "暂无考勤数据，请先配置账号"}</Text> : null}
+      {!data?.ok ? <Text font="caption" foregroundStyle={palette.danger}>{data?.error || "暂无考勤数据"}</Text> : null}
     </Card>
-    <Card>
-      <SectionTitle title="考勤提醒" subtitle="提醒只在本机安排，不修改企业原始工卡" />
+
+    <Card palette={palette} compact>
       <HStack>
-        <Text>提前下班提醒</Text>
+        <VStack spacing={3} alignment="leading">
+          <Text font="headline" foregroundStyle={palette.ink}>提前提醒</Text>
+          <Text font="caption" foregroundStyle={palette.muted}>{reminderMinutes ? "提前 " + reminderMinutes + " 分钟" : "未开启"}</Text>
+        </VStack>
         <Spacer />
-        <Text font="caption" foregroundStyle={palette.accent}>{getPreferences().remindMinutes ? "提前 " + getPreferences().remindMinutes + " 分钟" : "已关闭"}</Text>
+        <Button title="重新安排" buttonStyle="bordered" action={async () => {
+          const result = await handleScheduleNineHours();
+          console.log(result.message || result.error);
+        }} />
       </HStack>
-      <Button title="重新安排提前提醒" buttonStyle="bordered" action={async () => {
-        const result = await handleScheduleNineHours();
-        console.log(result.message || result.error);
-      }} />
-      {statusMessage ? <Text font="caption" foregroundStyle="secondaryLabel">{statusMessage}</Text> : null}
+      {statusMessage ? <Text font="caption2" foregroundStyle={palette.muted}>{statusMessage}</Text> : null}
     </Card>
   </VStack>;
 }
 
-function CalendarTab({ monthData, selectedDate, onSelect, onPrev, onNext, onSync, onReview, loading, leaveHours, onLeaveHours }) {
+function dayMarker(day) {
+  if (day.future) return "";
+  if (!day.workday) return "休";
+  if (day.state === "normal") return "✓";
+  if (day.state === "warning") return "!";
+  if (day.state === "abnormal") return "×";
+  if (day.state === "active") return "●";
+  if (day.future) return "";
+  return "·";
+}
+
+function CalendarTab({ monthData, selectedDate, onSelect, onPrev, onNext, onSync, onReview, loading, leaveHours, onLeaveHours, palette }) {
   const selected = monthData?.days?.find(day => day.key === selectedDate);
-  return <VStack spacing={12} alignment="leading">
-    <Card>
+  return <VStack spacing={10} alignment="leading">
+    <Card palette={palette}>
       <HStack>
         <Button title="‹" buttonStyle="bordered" action={onPrev} disabled={!monthData?.canPrev} />
         <Spacer />
-        <Text font="headline">{monthData?.monthLabel || "考勤月历"}</Text>
+        <VStack spacing={2} alignment="center">
+          <Text font="headline" foregroundStyle={palette.ink}>{monthData?.monthLabel || "考勤月历"}</Text>
+          <Text font="caption2" foregroundStyle={palette.muted}>点选日期查看打卡</Text>
+        </VStack>
         <Spacer />
         <Button title="›" buttonStyle="bordered" action={onNext} disabled={!monthData?.canNext} />
       </HStack>
-      <HStack>
-        {["一","二","三","四","五","六","日"].map(day => (
-          <VStack frame={{ maxWidth: "infinity" }}>
-            <Text font="caption2" foregroundStyle="secondaryLabel">{day}</Text>
+
+      <HStack spacing={3}>
+        {["一", "二", "三", "四", "五", "六", "日"].map(day => (
+          <VStack frame={{ maxWidth: "infinity" }} alignment="center">
+            <Text font="caption2" foregroundStyle={palette.muted}>{day}</Text>
           </VStack>
         ))}
       </HStack>
+
       {monthData?.weeks?.map(week => (
         <HStack spacing={3}>
           {week.map(day => day
             ? <Button
-                title={String(Number(day.key.slice(-2))) + (day.state === "normal" ? " ✓" : day.state === "warning" ? " !" : day.state === "active" ? " ●" : day.workday ? " ·" : " 休")}
+                title={String(Number(day.key.slice(-2))) + " " + dayMarker(day)}
                 buttonStyle={day.key === selectedDate ? "borderedProminent" : "bordered"}
                 frame={{ maxWidth: "infinity" }}
                 action={() => onSelect(day.key)}
+                disabled={!!day.future}
               />
             : <VStack frame={{ maxWidth: "infinity" }}><Text> </Text></VStack>
           )}
         </HStack>
       ))}
+
       <Divider />
-      <HStack>
-        <Text font="caption" foregroundStyle="systemGreen">正常 {monthData?.stats.normal ?? 0}</Text>
+      <HStack spacing={8}>
+        <Text font="caption2" foregroundStyle={palette.normal}>● 正常 {monthData?.stats.normal ?? 0}</Text>
         <Spacer />
-        <Text font="caption" foregroundStyle="systemOrange">待核查 {monthData?.stats.warnings ?? 0}</Text>
+        <Text font="caption2" foregroundStyle={palette.warning}>● 待核 {monthData?.stats.warnings ?? 0}</Text>
         <Spacer />
-        <Text font="caption" foregroundStyle="secondaryLabel">待查 {monthData?.stats.pending ?? 0}</Text>
+        <Text font="caption2" foregroundStyle={palette.muted}>· 待查 {monthData?.stats.pending ?? 0}</Text>
       </HStack>
-      <Button title={loading ? "补查中…" : "补查本月缺失记录"} buttonStyle="bordered" action={onSync} disabled={loading} />
+      <Button title={loading ? "同步中…" : "补查本月"} buttonStyle="bordered" action={onSync} disabled={loading} />
     </Card>
 
-    {selected ? <Card>
-      <SectionTitle title={selected.key + " · " + selected.status} subtitle={selected.originalStatus ? "系统原判：" + selected.originalStatus : selected.label} />
+    {selected ? <Card palette={palette} compact>
       <HStack>
-        <VStack spacing={3} alignment="leading">
-          <Text font="caption2" foregroundStyle="secondaryLabel">上班卡</Text>
-          <Text font="headline">{selected.clockIn}</Text>
+        <VStack spacing={2} alignment="leading">
+          <Text font="headline" foregroundStyle={palette.ink}>{selected.key}</Text>
+          <Text font="caption" foregroundStyle={palette.muted}>{selected.status}</Text>
         </VStack>
         <Spacer />
-        <VStack spacing={3} alignment="leading">
-          <Text font="caption2" foregroundStyle="secondaryLabel">下班卡</Text>
-          <Text font="headline">{selected.clockOut}</Text>
-        </VStack>
-        <Spacer />
-        <VStack spacing={3} alignment="leading">
-          <Text font="caption2" foregroundStyle="secondaryLabel">工时</Text>
-          <Text font="headline">{selected.worked}</Text>
-        </VStack>
+        <StatusBadge text={selected.status} color={selected.state === "normal" ? palette.normal : selected.state === "warning" ? palette.warning : selected.state === "abnormal" ? palette.danger : palette.accent} palette={palette} />
+      </HStack>
+      <HStack spacing={7}>
+        <MetricCell label="上班" value={selected.clockIn} palette={palette} />
+        <MetricCell label="下班" value={selected.clockOut} palette={palette} />
+        <MetricCell label="工时" value={selected.worked} palette={palette} />
       </HStack>
       {selected.workday
-        ? <VStack spacing={6} alignment="leading">
-            <Text font="caption" foregroundStyle="secondaryLabel">已批准请假时长（小时）</Text>
+        ? <VStack spacing={7} alignment="leading">
+            <Text font="caption" foregroundStyle={palette.muted}>请假时长（小时）</Text>
             <TextField title="请假小时数" value={leaveHours} onChanged={onLeaveHours} keyboardType="decimalPad" />
             <Button title="按请假时长判断" buttonStyle="bordered" action={() => onReview("auto", selected)} />
-            <Text font="caption" foregroundStyle="secondaryLabel">人工核查（只影响本机判定）</Text>
-            <HStack>
+            <HStack spacing={6}>
               <Button title="确认正常" buttonStyle="bordered" action={() => onReview("normal", selected)} />
               <Button title="确认异常" buttonStyle="bordered" action={() => onReview("abnormal", selected)} />
               <Button title="恢复原判" buttonStyle="bordered" action={() => onReview("reset", selected)} />
             </HStack>
           </VStack>
-        : <Text font="caption" foregroundStyle="secondaryLabel">休息日无需核查</Text>}
+        : <Text font="caption2" foregroundStyle={palette.muted}>休息日</Text>}
     </Card> : null}
+
     {monthData?.stats
-      ? <Card>
-          <SectionTitle title="月度统计" subtitle="只统计已有有效工卡的工作日" />
-          <HStack>
-            <VStack spacing={3}><Text font="caption2" foregroundStyle="secondaryLabel">平均上班</Text><Text font="headline">{monthData.stats.averageIn}</Text></VStack>
-            <Spacer />
-            <VStack spacing={3}><Text font="caption2" foregroundStyle="secondaryLabel">平均下班</Text><Text font="headline">{monthData.stats.averageOut}</Text></VStack>
-            <Spacer />
-            <VStack spacing={3}><Text font="caption2" foregroundStyle="secondaryLabel">平均工时</Text><Text font="headline">{monthData.stats.averageWorked}</Text></VStack>
+      ? <Card palette={palette} compact>
+          <SectionTitle title="本月平均" palette={palette} />
+          <HStack spacing={7}>
+            <MetricCell label="上班" value={monthData.stats.averageIn} palette={palette} />
+            <MetricCell label="下班" value={monthData.stats.averageOut} palette={palette} />
+            <MetricCell label="工时" value={monthData.stats.averageWorked} palette={palette} />
           </HStack>
         </Card>
       : null}
   </VStack>;
 }
 
-function SettingsTab({ preferences, account, onPreference, onSaveAccount, accountDraft, setAccountDraft, palette }) {
-  const styleRows = [
-    ["widgetStyleSmall", "小号组件"],
-    ["widgetStyleMedium", "中号组件"],
-    ["widgetStyleLarge", "大号组件"]
-  ];
-  const styleIndex = value => Math.max(0, WIDGET_STYLES.indexOf(value));
-  const cycleStyle = (key) => {
-    const current = styleIndex(preferences[key]);
-    onPreference(key, WIDGET_STYLES[(current + 1) % WIDGET_STYLES.length]);
-  };
-  return <VStack spacing={12} alignment="leading">
-    <Card>
-      <SectionTitle title="考勤配置" subtitle="设置保存在 Scripting 本机存储中" />
-      <HStack>
-        <Text>主题配色</Text><Spacer />
-        {THEMES.map(theme => <Button title={theme === "navy" ? "深海蓝" : theme === "teal" ? "松石绿" : "岩灰"} buttonStyle={preferences.theme === theme ? "borderedProminent" : "bordered"} action={() => onPreference("theme", theme)} />)}
-      </HStack>
-      <Divider />
-      <Text>提前下班提醒</Text>
-      <HStack>
-        {[0,5,15,30,45,60].map(minutes => <Button title={minutes === 0 ? "关闭" : minutes + "分"} buttonStyle={preferences.remindMinutes === minutes ? "borderedProminent" : "bordered"} action={() => onPreference("remindMinutes", minutes)} />)}
-      </HStack>
-      <Divider />
-      <HStack>
-        <Text>灵动岛实时倒计时</Text><Spacer />
-        <Button title={preferences.liveActivityEnabled ? "已开启" : "已关闭"} buttonStyle="bordered" action={() => onPreference("liveActivityEnabled", !preferences.liveActivityEnabled)} />
-      </HStack>
-      <Text font="caption" foregroundStyle="secondaryLabel">需要在 iOS 设置中允许 Scripting 的实时活动。上班卡同步成功后自动启动，检测到下班卡后结束。</Text>
-    </Card>
-    <Card>
-      <SectionTitle title="小组件样式" subtitle="每种尺寸可以独立选择布局" />
-      {styleRows.map(([key, label]) => (
-        <HStack>
-          <Text>{label}</Text><Spacer />
-          <Text font="caption" foregroundStyle={palette.accent}>{STYLE_LABELS[preferences[key]]}</Text>
-          <Button title="更换" buttonStyle="bordered" action={() => cycleStyle(key)} />
-        </HStack>
+function StyleChoiceRow({ label, settingKey, value, onPreference, palette }) {
+  return <VStack spacing={6} alignment="leading">
+    <HStack>
+      <Text font="subheadline" foregroundStyle={palette.ink}>{label}</Text>
+      <Spacer />
+      <Text font="caption2" foregroundStyle={palette.accent}>{STYLE_LABELS[value]}</Text>
+    </HStack>
+    <HStack spacing={5}>
+      {WIDGET_STYLES.map(style => (
+        <Button
+          title={STYLE_SHORT[style]}
+          buttonStyle={value === style ? "borderedProminent" : "bordered"}
+          frame={{ maxWidth: "infinity" }}
+          action={() => onPreference(settingKey, style)}
+        />
       ))}
-      <HStack>
-        <Button title="预览小号" buttonStyle="bordered" action={() => Widget.preview({ family: "systemSmall" })} />
-        <Button title="预览中号" buttonStyle="bordered" action={() => Widget.preview({ family: "systemMedium" })} />
-        <Button title="预览大号" buttonStyle="bordered" action={() => Widget.preview({ family: "systemLarge" })} />
+    </HStack>
+  </VStack>;
+}
+
+function SettingsTab({ preferences, account, onPreference, onSaveAccount, accountDraft, setAccountDraft, palette, onPreview }) {
+  return <VStack spacing={10} alignment="leading">
+    <Card palette={palette}>
+      <SectionTitle title="主题配色" palette={palette} />
+      <HStack spacing={6}>
+        {THEMES.map(theme => (
+          <Button
+            title={THEME_LABELS[theme]}
+            buttonStyle={preferences.theme === theme ? "borderedProminent" : "bordered"}
+            frame={{ maxWidth: "infinity" }}
+            action={() => onPreference("theme", theme)}
+          />
+        ))}
       </HStack>
     </Card>
-    <Card>
-      <SectionTitle title="企业账号" subtitle="账号、密码、设备 ID 和 Token 只保存在 Scripting Keychain" />
+
+    <Card palette={palette}>
+      <SectionTitle title="小组件样式" subtitle="不同尺寸可分别设置" palette={palette} />
+      <StyleChoiceRow label="小号" settingKey="widgetStyleSmall" value={preferences.widgetStyleSmall} onPreference={onPreference} palette={palette} />
+      <Divider />
+      <StyleChoiceRow label="中号" settingKey="widgetStyleMedium" value={preferences.widgetStyleMedium} onPreference={onPreference} palette={palette} />
+      <Divider />
+      <StyleChoiceRow label="大号" settingKey="widgetStyleLarge" value={preferences.widgetStyleLarge} onPreference={onPreference} palette={palette} />
+      <HStack spacing={5}>
+        <Button title="预览小号" buttonStyle="bordered" action={() => onPreview("systemSmall")} />
+        <Button title="预览中号" buttonStyle="bordered" action={() => onPreview("systemMedium")} />
+        <Button title="预览大号" buttonStyle="bordered" action={() => onPreview("systemLarge")} />
+      </HStack>
+    </Card>
+
+    <Card palette={palette}>
+      <HStack>
+        <VStack spacing={3} alignment="leading">
+          <Text font="headline" foregroundStyle={palette.ink}>提前下班提醒</Text>
+          <Text font="caption" foregroundStyle={palette.muted}>达到目标工时前通知</Text>
+        </VStack>
+        <Spacer />
+        <Text font="caption" foregroundStyle={palette.accent}>{preferences.remindMinutes ? "提前 " + preferences.remindMinutes + " 分钟" : "关闭"}</Text>
+      </HStack>
+      <HStack spacing={5}>
+        {[0, 5, 15, 30, 45, 60].map(minutes => (
+          <Button
+            title={minutes === 0 ? "关" : minutes + "分"}
+            buttonStyle={preferences.remindMinutes === minutes ? "borderedProminent" : "bordered"}
+            frame={{ maxWidth: "infinity" }}
+            action={() => onPreference("remindMinutes", minutes)}
+          />
+        ))}
+      </HStack>
+      <Divider />
+      <HStack>
+        <VStack spacing={3} alignment="leading">
+          <Text font="headline" foregroundStyle={palette.ink}>灵动岛倒计时</Text>
+          <Text font="caption" foregroundStyle={palette.muted}>锁屏持续显示可下班时间</Text>
+        </VStack>
+        <Spacer />
+        <Button title={preferences.liveActivityEnabled ? "已开启" : "已关闭"} buttonStyle={preferences.liveActivityEnabled ? "borderedProminent" : "bordered"} action={() => onPreference("liveActivityEnabled", !preferences.liveActivityEnabled)} />
+      </HStack>
+    </Card>
+
+    <Card palette={palette}>
+      <SectionTitle title="企业账号" palette={palette} />
       <TextField title="账号 / 手机号" value={accountDraft.username} onChanged={value => setAccountDraft({ ...accountDraft, username: value })} />
       <SecureField title="密码" value={accountDraft.password} onChanged={value => setAccountDraft({ ...accountDraft, password: value })} />
       <TextField title="设备 ID" value={accountDraft.deviceId} onChanged={value => setAccountDraft({ ...accountDraft, deviceId: value })} />
-      <Button title="安全保存账号" buttonStyle="borderedProminent" action={onSaveAccount} />
-      <Text font="caption2" foregroundStyle="secondaryLabel">
-        {account.configured ? "当前账号已配置。更换账号会清除旧 Token 和今日快照。" : "首次使用需要填写完整账号资料。"}
+      <Button title="安全保存" buttonStyle="borderedProminent" action={onSaveAccount} />
+      <Text font="caption2" foregroundStyle={palette.muted}>
+        {account.configured ? "已配置 · 更换账号会清除旧 Token 和今日快照" : "首次使用请填写完整账号资料"}
       </Text>
     </Card>
   </VStack>;
 }
 
-function ToolsTab({ onRun, onDebug, onPreview }) {
-  return <VStack spacing={12} alignment="leading">
-    <Card>
-      <SectionTitle title="考勤工具" subtitle="兼容原有快捷指令动作" />
-      <Button title="离开公司检查" buttonStyle="bordered" action={() => onRun("leave")} />
-      <Button title="预约提前下班提醒" buttonStyle="bordered" action={() => onRun("schedule9")} />
-      <Button title="检查是否达到 9 小时" buttonStyle="bordered" action={() => onRun("near9")} />
-      <Button title="查看接口解析与考勤判定" buttonStyle="bordered" action={onDebug} />
+function ToolsTab({ onRun, onDebug, onPreview, palette }) {
+  return <VStack spacing={10} alignment="leading">
+    <Card palette={palette}>
+      <SectionTitle title="快捷操作" palette={palette} />
+      <HStack spacing={6}>
+        <Button title="离开公司检查" buttonStyle="bordered" action={() => onRun("leave")} />
+        <Button title="安排提醒" buttonStyle="bordered" action={() => onRun("schedule9")} />
+      </HStack>
+      <HStack spacing={6}>
+        <Button title="检查 9 小时" buttonStyle="bordered" action={() => onRun("near9")} />
+        <Button title="查看诊断" buttonStyle="bordered" action={onDebug} />
+      </HStack>
     </Card>
-    <Card>
-      <SectionTitle title="小组件预览" subtitle="选择对应尺寸，在 Scripting 中查看真实渲染" />
-      <HStack>
+    <Card palette={palette}>
+      <SectionTitle title="小组件预览" palette={palette} />
+      <HStack spacing={6}>
         <Button title="小号" buttonStyle="bordered" action={() => onPreview("systemSmall")} />
         <Button title="中号" buttonStyle="bordered" action={() => onPreview("systemMedium")} />
         <Button title="大号" buttonStyle="bordered" action={() => onPreview("systemLarge")} />
       </HStack>
     </Card>
-    <Card>
-      <SectionTitle title="快捷指令" subtitle="通过 scripting://run/AttendanceHelper?action=refresh 调用" />
-      <Text font="caption">refresh · leave · schedule9 · near9 · debug · manage</Text>
+    <Card palette={palette}>
+      <SectionTitle title="快捷指令" palette={palette} />
+      <Text font="caption" foregroundStyle={palette.muted}>刷新 · 离开检查 · 安排提醒 · 工时检查 · 诊断 · 管理</Text>
     </Card>
   </VStack>;
 }
@@ -333,7 +430,11 @@ export function AppView({ initialTab = "today" }) {
   const [selectedDate, setSelectedDate] = useState(formatDateKey(new Date()));
   const [preferences, setPreferences] = useState(getPreferences());
   const initialAccount = getAccount();
-  const [account, setAccount] = useState({ username: initialAccount.username, deviceId: initialAccount.deviceId, configured: initialAccount.configured });
+  const [account, setAccount] = useState({
+    username: initialAccount.username,
+    deviceId: initialAccount.deviceId,
+    configured: initialAccount.configured
+  });
   const [accountDraft, setAccountDraft] = useState({
     username: account.username,
     password: "",
@@ -350,7 +451,7 @@ export function AppView({ initialTab = "today" }) {
     setMissedCheckoutConfirmed(today.date, next);
     const updated = { ...today, missedConfirmed: next };
     setToday(updated);
-    setMessage(next ? "已标记待补卡，请按公司流程申请补卡" : "已撤销漏卡确认");
+    setMessage(next ? "已标记待补卡" : "已撤销漏卡确认");
     try { await syncAttendanceLiveActivity(updated); } catch (_) {}
     Widget.reloadAll();
     await loadMonth(monthDate);
@@ -367,9 +468,7 @@ export function AppView({ initialTab = "today" }) {
       if (data.ok) {
         const live = await syncAttendanceLiveActivity(data);
         setMessage(live.message || "同步完成");
-        if (workday && data.hasClockIn) {
-          await handleScheduleNineHours();
-        }
+        if (workday && data.hasClockIn) await handleScheduleNineHours();
       } else {
         setMessage(data.error || "同步失败");
       }
@@ -387,9 +486,7 @@ export function AppView({ initialTab = "today" }) {
     try {
       const result = await getAttendanceMonth(date, { sync: true });
       setMonthData(result);
-      if (!result.days.some(day => day.key === selectedDate)) {
-        setSelectedDate(result.todayKey);
-      }
+      if (!result.days.some(day => day.key === selectedDate)) setSelectedDate(result.todayKey);
     } catch (error) {
       setMessage("月历加载失败：" + String(error?.message || error));
     } finally {
@@ -398,7 +495,6 @@ export function AppView({ initialTab = "today" }) {
   }
 
   useEffect(() => {
-    // First render must not depend on enterprise or holiday network access.
     if (!account.configured) return;
     void (async () => { await refreshToday(); await loadMonth(new Date()); })();
   }, []);
@@ -425,12 +521,19 @@ export function AppView({ initialTab = "today" }) {
     try {
       if (loading) return;
       const old = getAccount();
-      const candidate = { ...accountDraft, password: accountDraft.password || (accountDraft.username.trim() === old.username ? old.password : "") };
-      if (!candidate.username.trim() || !candidate.password || !candidate.deviceId.trim()) throw new Error("请填写完整账号资料");
+      const candidate = {
+        ...accountDraft,
+        password: accountDraft.password || (accountDraft.username.trim() === old.username ? old.password : "")
+      };
+      if (!candidate.username.trim() || !candidate.password || !candidate.deviceId.trim()) {
+        throw new Error("请填写完整账号资料");
+      }
       if (candidate.username.trim() !== old.username || candidate.password !== old.password || candidate.deviceId.trim() !== old.deviceId) {
         await endSavedActivity("账号已切换");
         await cancelUpcomingReminder();
-        setToday(null); setMonthData(null); setDebugText("");
+        setToday(null);
+        setMonthData(null);
+        setDebugText("");
       }
       const saved = saveAccount(candidate);
       setAccount({ username: saved.username, deviceId: saved.deviceId, configured: saved.configured });
@@ -461,8 +564,12 @@ export function AppView({ initialTab = "today" }) {
   async function reviewDay(decision, day) {
     try {
       const hours = Math.max(0, Math.min(CONFIG.TARGET_HOURS, Number(leaveHours) || 0));
-      if (decision === "reset") { resetAttendanceReview(day.key); setLeaveHours("0"); }
-      else saveAttendanceReview(day.key, decision, hours);
+      if (decision === "reset") {
+        resetAttendanceReview(day.key);
+        setLeaveHours("0");
+      } else {
+        saveAttendanceReview(day.key, decision, hours);
+      }
       setMessage(decision === "normal" ? "已确认正常" : decision === "abnormal" ? "已确认异常" : "已恢复系统原判");
       await loadMonth(monthDate);
       Widget.reloadAll();
@@ -492,13 +599,22 @@ export function AppView({ initialTab = "today" }) {
   const palette = PALETTES[preferences.theme] || PALETTES.navy;
 
   return <NavigationStack>
-    <ScrollView navigationTitle="考勤助手" navigationBarTitleDisplayMode="large">
-      <VStack spacing={14} padding={14} alignment="leading" background={palette.bg}>
-        <HStack spacing={6}>
-          <Button title="今日" buttonStyle={tab === "today" ? "borderedProminent" : "bordered"} action={() => setTab("today")} />
-          <Button title="月历" buttonStyle={tab === "calendar" ? "borderedProminent" : "bordered"} action={() => setTab("calendar")} />
-          <Button title="配置" buttonStyle={tab === "settings" ? "borderedProminent" : "bordered"} action={() => setTab("settings")} />
-          <Button title="工具" buttonStyle={tab === "tools" ? "borderedProminent" : "bordered"} action={() => setTab("tools")} />
+    <ScrollView navigationTitle="考勤助手" navigationBarTitleDisplayMode="inline">
+      <VStack spacing={11} padding={13} alignment="leading" background={palette.bg} frame={{ maxWidth: "infinity" }}>
+        <HStack spacing={5} padding={4} background={palette.card} clipShape={{ type: "rect", cornerRadius: 13 }}>
+          {[
+            ["today", "今日"],
+            ["calendar", "月历"],
+            ["settings", "设置"],
+            ["tools", "更多"]
+          ].map(item => (
+            <Button
+              title={item[1]}
+              buttonStyle={tab === item[0] ? "borderedProminent" : "bordered"}
+              frame={{ maxWidth: "infinity" }}
+              action={() => setTab(item[0])}
+            />
+          ))}
         </HStack>
 
         {tab === "today"
@@ -507,7 +623,10 @@ export function AppView({ initialTab = "today" }) {
             ? <CalendarTab
                 monthData={monthData}
                 selectedDate={selectedDate}
-                onSelect={key => { setSelectedDate(key); setLeaveHours(String(monthData?.days?.find(d => d.key === key)?.leaveHours || 0)); }}
+                onSelect={key => {
+                  setSelectedDate(key);
+                  setLeaveHours(String(monthData?.days?.find(day => day.key === key)?.leaveHours || 0));
+                }}
                 onPrev={() => navigateMonth(-1)}
                 onNext={() => navigateMonth(1)}
                 onSync={() => loadMonth(monthDate)}
@@ -515,6 +634,7 @@ export function AppView({ initialTab = "today" }) {
                 loading={loading}
                 leaveHours={leaveHours}
                 onLeaveHours={setLeaveHours}
+                palette={palette}
               />
             : tab === "settings"
               ? <SettingsTab
@@ -525,16 +645,18 @@ export function AppView({ initialTab = "today" }) {
                   accountDraft={accountDraft}
                   setAccountDraft={setAccountDraft}
                   palette={palette}
+                  onPreview={preview}
                 />
-              : <VStack spacing={12}>
-                  <ToolsTab onRun={runTool} onDebug={showDebug} onPreview={preview} />
-                  {debugText ? <Card><SectionTitle title="Debug" /><Text font="caption" monospaced>{debugText}</Text></Card> : null}
+              : <VStack spacing={10}>
+                  <ToolsTab onRun={runTool} onDebug={showDebug} onPreview={preview} palette={palette} />
+                  {debugText
+                    ? <Card palette={palette}><SectionTitle title="诊断信息" palette={palette} /><Text font="caption" monospaced foregroundStyle={palette.muted}>{debugText}</Text></Card>
+                    : null}
                 </VStack>}
 
-        {message ? <Text font="caption" foregroundStyle="secondaryLabel">{message}</Text> : null}
-        <Text font="caption2" foregroundStyle="tertiaryLabel">考勤核查仅修改本机记录，不会更改企业原始工卡。</Text>
+        {message ? <Text font="caption2" foregroundStyle={palette.muted}>{message}</Text> : null}
+        <Text font="caption2" foregroundStyle={palette.muted}>iGroup · 考勤助手</Text>
       </VStack>
     </ScrollView>
   </NavigationStack>;
 }
-
