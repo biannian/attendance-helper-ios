@@ -216,6 +216,13 @@ if (config.runsInWidget) {
     let data = monthChanged ? loadCachedAttendanceSummary() : await getAttendanceSummary()
     // A first-time calendar interaction may have no cache; recover via the normal fetch.
     if (monthChanged && !data.ok) data = await getAttendanceSummary()
+    // Only a fresh server response can schedule a new advance reminder.
+    if (readWidgetLayout(args.widgetParameter) === "controls" &&
+        ["small", "medium"].includes(config.widgetFamily) &&
+        args.widgetAction?.id === "attendance-reminder" &&
+        typeof args.widgetAction.isOn === "boolean" && CONFIG.USERNAME) {
+        await updateWidgetAdvanceReminder(args.widgetAction.isOn, data)
+    }
   if (!data.ok) {
     const cached = loadCachedAttendanceSummary()
     if (cached.ok) {
@@ -3700,6 +3707,12 @@ async function createWidget(data, previewFamily, previewStyle) {
   const statsOnly = layout === "stats" && family === "medium"
   const style = widgetStyleForFamily(family, previewStyle)
   const widget = new ListWidget()
+  if (layout === "controls" && ["small", "medium"].includes(family)) {
+    renderAttendanceControls(widget, data, family, style)
+    widget.url = getWeeklyAttendanceUrl()
+    widget.refreshAfterDate = getNextWidgetRefreshDate(data, true)
+    return widget
+  }
   const isPreview = !!previewFamily && !config.runsInWidget
   const workday = isPreview || statsOnly || await isChinaWorkday(now)
   const calendarOnly = statsOnly || (!workday && hasCalendar)
@@ -3757,9 +3770,62 @@ async function createWidget(data, previewFamily, previewStyle) {
  * @author Kai
  * @date 2026/11/25 11:28
  */
+// Optional control widget: does not crowd the four existing visual themes.
+function renderAttendanceControls(widget, data, family, style) {
+    const p = widgetStylePalette(style)
+    applyWidgetStyleBackground(widget, style)
+    widget.setPadding(10, 12, 10, 12)
+    const title = widget.addText("考勤控制")
+    title.font = Font.boldSystemFont(13)
+    title.textColor = new Color(p.text)
+    widget.addSpacer(5)
+    const status = widget.addText(widgetStatusText(data))
+    status.font = Font.boldSystemFont(12)
+    status.textColor = new Color(missingCheckout(data) ? "#EF4444" : p.text)
+    status.lineLimit = 1
+    status.minimumScaleFactor = 0.65
+    widget.addSpacer()
+    const prefs = readAttendancePreferences()
+    const controls = widget.addStack()
+    controls.layoutVertically()
+    controls.spacing = 4
+    if (typeof controls.addRefreshButton === "function" &&
+        typeof controls.addToggle === "function" && Number.parseInt(Device.systemVersion(), 10) >= 17) {
+        controls.addRefreshButton("刷新考勤")
+        if (CONFIG.USERNAME) controls.addToggle("提前提醒", prefs.remindMinutes > 0, { id: "attendance-reminder" })
+    } else {
+        const refresh = controls.addText("刷新考勤")
+        refresh.font = Font.mediumSystemFont(12)
+        refresh.textColor = new Color(p.accent)
+        refresh.url = getWidgetUrl()
+        const settings = controls.addText("提醒设置 ›")
+        settings.font = Font.mediumSystemFont(12)
+        settings.textColor = new Color(p.muted)
+        settings.url = getWeeklyAttendanceUrl()
+    }
+}
+
+async function updateWidgetAdvanceReminder(enabled, data) {
+    const previous = readAttendancePreferences()
+    if (enabled === (previous.remindMinutes > 0)) return
+    const key = "attendance-helper-last-advance-minutes"
+    const saved = Number(readKeychainValue(key))
+    const minutes = enabled ? ([5, 15, 30, 45, 60].includes(saved) ? saved : CONFIG.NEAR_MINUTES) : 0
+    if (!enabled) Keychain.set(key, String(previous.remindMinutes))
+    Keychain.set("attendance-helper-preferences-v1", JSON.stringify({ ...previous, remindMinutes: minutes }))
+    // Only the advance notification is affected, never the checkout-due or missed-card warning.
+    await Notification.removePending(["attendance-helper-upcoming-work"])
+    const scheduledKey = "schedule9-" + formatDateKey(now)
+    if (Keychain.contains(scheduledKey)) Keychain.remove(scheduledKey)
+    if (enabled && data && data.ok && data.hasClockIn && !data.hasOutRecord &&
+        data.targetTime && data.targetTime.getTime() > Date.now()) {
+        await handleScheduleNineHours(data)
+    }
+}
+
 function readWidgetLayout(raw) {
     const layout = typeof raw === "string" ? raw.trim().toLowerCase() : ""
-    return ["today", "stats"].includes(layout) ? layout : null
+    return ["today", "stats", "controls"].includes(layout) ? layout : null
 }
 
 /**
