@@ -1,5 +1,7 @@
 import {
   Button,
+  Circle,
+  ZStack,
   TimerIntervalLabel,
   HStack,
   Image,
@@ -99,145 +101,86 @@ function statusColor(data, palette) {
   return palette.accent;
 }
 
-function Countdown({ data, palette }) {
-  if (data?.isRestDay) return <Text font="headline" foregroundStyle={palette.muted}>今天休息</Text>;
-  if (!data?.ok) return <Text font="headline" foregroundStyle={palette.warning}>等待同步</Text>;
-  if (!data.hasClockIn) return <Text font="headline" foregroundStyle={palette.text}>等待上班卡</Text>;
-  if (data.hasOutRecord) {
-    return <Text font="headline" foregroundStyle={data.targetReached ? palette.normal : palette.danger}>
-      {data.targetReached ? "已完成" : "工时不足"}
-    </Text>;
-  }
-  if (missingCheckout(data)) {
-    return <Text font="headline" foregroundStyle={palette.danger}>{checkoutWarningTitle(data)}</Text>;
-  }
-  return <TimerIntervalLabel
-    from={data.inTime.getTime()}
-    to={data.targetTime.getTime()}
-    countsDown={true}
-    showsHours={true}
-    foregroundStyle={palette.text}
-  />;
+function Countdown({ data, palette, size = 20 }) {
+  const status = data?.isRestDay ? "休息日" : !data?.ok ? "待同步" : !data.hasClockIn ? "待上班" : data.hasOutRecord ? (data.targetReached ? "已完成" : "工时不足") : missingCheckout(data) ? checkoutWarningTitle(data) : "";
+  if (status || !data.targetTime) return <Text font={Math.min(size, 15)} fontWeight="semibold" lineLimit={1} minScaleFactor={0.65} foregroundStyle={statusColor(data, palette)}>{status || "待同步"}</Text>;
+  return <TimerIntervalLabel from={data.inTime.getTime()} to={data.targetTime.getTime()} countsDown={true} showsHours={true} font={size} fontWeight="semibold" monospacedDigit lineLimit={1} minScaleFactor={0.7} foregroundStyle={palette.text} />;
 }
 
-function MetricCell({ label, value, palette, compact = false, highlight = false }) {
-  return <VStack
-    spacing={compact ? 2 : 3}
-    padding={compact ? 6 : 8}
-    background={palette.surface}
-    clipShape={{ type: "rect", cornerRadius: 9 }}
-    frame={{ maxWidth: "infinity" }}
-    alignment="leading"
-  >
-    <Text font="caption2" foregroundStyle={palette.muted}>{label}</Text>
-    <Text font="headline" foregroundStyle={highlight ? palette.accent2 : palette.text}>{value}</Text>
+function MetricCell({ label, value, palette, highlight = false }) {
+  return <VStack spacing={1} alignment="center" frame={{maxWidth:"infinity",minHeight:29}} background={palette.surface} clipShape={{type:"rect",cornerRadius:7}}>
+    <Text font={9} lineLimit={1} foregroundStyle={palette.muted}>{label}</Text>
+    <Text font={13} fontWeight="semibold" monospacedDigit lineLimit={1} minScaleFactor={0.7} foregroundStyle={highlight ? palette.accent2 : palette.text}>{value}</Text>
   </VStack>;
 }
 
+function Rings({ data, palette, size=45 }) {
+  const work = progressOf(data);
+  const punch = ((data?.hasClockIn ? 1 : 0) + (data?.hasOutRecord ? 1 : 0))/2;
+  return <ZStack frame={{width:size,height:size}}>
+    {[{n:size-5,p:work,c:palette.accent2},{n:size-17,p:punch,c:palette.accent}].map(r => <ZStack frame={{width:r.n,height:r.n}}>
+      <Circle stroke={{shapeStyle:palette.line,strokeStyle:{lineWidth:4}}} frame={{width:r.n,height:r.n}} />
+      {r.p>0 ? <Circle trim={{from:0,to:r.p}} stroke={{shapeStyle:r.c,strokeStyle:{lineWidth:4,lineCap:"round"}}} frame={{width:r.n,height:r.n}} /> : null}
+    </ZStack>)}
+    <Text font={9} fontWeight="semibold" foregroundStyle={palette.text}>{Math.round(work*100)}%</Text>
+  </ZStack>;
+}
+
 function TodayPanel({ data, palette, style, compact = false, small = false, showRefresh = false }) {
-  const progress = progressOf(data);
-  const status = statusText(data);
   const inText = data?.hasClockIn ? formatTime(data.inTime) : "--";
   const outText = data?.hasOutRecord ? formatTime(data.latestOutTime) : "未打";
   const targetText = data?.targetTime ? formatTime(data.targetTime) : "--";
   const danger = missingCheckout(data) || (data?.hasOutRecord && !data.targetReached);
-  const cells = small
-    ? [["上班卡", inText], ["下班卡", outText]]
-    : [["上班卡", inText], ["预计下班", targetText], ["下班卡", outText]];
-
-  if (data?.isRestDay) {
-    return <VStack
-      spacing={6}
-      padding={compact ? 10 : 13}
-      background={panelBackground(palette)}
-      clipShape={{ type: "rect", cornerRadius: 15 }}
-      alignment="leading"
-    >
-      <HStack>
-        <Text font="caption" foregroundStyle={palette.muted}>今日考勤</Text>
-        <Spacer />
-        <Text font="caption" foregroundStyle={palette.accent}>休息日</Text>
-      </HStack>
-      <Text font="title2" foregroundStyle={palette.text}>今天不需要打卡</Text>
-      <Text font="caption2" foregroundStyle={palette.muted}>调休补班日会自动恢复考勤显示</Text>
-    </VStack>;
-  }
-
-  return <VStack
-    spacing={compact ? 6 : 9}
-    padding={compact ? 10 : 13}
-    background={panelBackground(palette)}
-    clipShape={{ type: "rect", cornerRadius: 15 }}
-    alignment="leading"
-  >
-    <HStack>
-      {style === "cyber"
-        ? <Image systemName="waveform.path.ecg" foregroundStyle={palette.accent} />
-        : style === "fitness"
-          ? <Image systemName="figure.run" foregroundStyle={palette.accent2} />
-          : style === "heatmap"
-            ? <Image systemName="calendar" foregroundStyle={palette.accent} />
-            : null}
-      <Text font="caption" foregroundStyle={palette.muted}>
-        {"今日打卡"}
-      </Text>
+  const progress = progressOf(data);
+  if (small) return <VStack spacing={4} alignment="leading" frame={{maxWidth:"infinity"}}>
+    <HStack spacing={3}>
+      <Text font={10} lineLimit={1} foregroundStyle={palette.muted}>今日考勤</Text><Spacer />
+      <Text font={9} lineLimit={1} minScaleFactor={0.65} foregroundStyle={statusColor(data,palette)}>{danger ? "待打卡" : data?.hasOutRecord ? "已完成" : data?.isRestDay ? "休息" : data?.hasClockIn ? "进行中" : "待同步"}</Text>
+    </HStack>
+    <Spacer />
+    {style==="fitness" && data?.hasClockIn ? <HStack spacing={5}>
+      <Rings data={data} palette={palette} size={38} />
+      <VStack spacing={1} alignment="leading">
+        <Text font={9} foregroundStyle={palette.muted}>距可下班</Text>
+        <Countdown data={data} palette={palette} size={15} />
+        <Text font={9} lineLimit={1} foregroundStyle={palette.accent2}>{elapsedText(data)}</Text>
+      </VStack>
+    </HStack> : <VStack spacing={1} alignment="leading">
+      <Text font={9} foregroundStyle={palette.muted}>距可下班</Text>
+      <Countdown data={data} palette={palette} size={23} />
+      <Text font={10} lineLimit={1} foregroundStyle={palette.muted}>累计 {elapsedText(data)}</Text>
+    </VStack>}
+    <ProgressView value={progress} tint={danger?palette.danger:palette.accent2} />
+    <Spacer />
+    <HStack spacing={3}>
+      <MetricCell label="上班" value={inText} palette={palette} />
+      <MetricCell label="下班" value={outText} palette={palette} highlight={danger} />
+    </HStack>
+  </VStack>;
+  return <VStack spacing={4} padding={compact?5:6} background={panelBackground(palette)} clipShape={{type:"rect",cornerRadius:10}} alignment="leading">
+    <HStack spacing={4}>
+      <Text font={11} foregroundStyle={palette.muted}>今日考勤</Text><Spacer />
+      <Text font={10} lineLimit={1} foregroundStyle={statusColor(data,palette)}>{statusText(data)}</Text>
+      {showRefresh ? <Button buttonStyle="plain" intent={RefreshAttendanceIntent(undefined)}><Image systemName="arrow.clockwise" font={11} foregroundStyle={palette.accent} /></Button> : null}
+    </HStack>
+    <HStack spacing={8}>
+      {style==="fitness" ? <Rings data={data} palette={palette} size={compact?38:48} /> : null}
+      <VStack spacing={1} alignment="leading">
+        <Text font={9} foregroundStyle={palette.muted}>累计工时</Text>
+        <Text font={compact?18:22} fontWeight="semibold" lineLimit={1} minScaleFactor={0.7} foregroundStyle={palette.text}>{elapsedText(data)}</Text>
+      </VStack>
       <Spacer />
-      <Text font="caption2" foregroundStyle={statusColor(data, palette)}>{status}</Text>
-      {showRefresh ? <Button title="刷新" buttonStyle="bordered" intent={RefreshAttendanceIntent(undefined)} /> : null}
+      <VStack spacing={1} alignment="trailing">
+        <Text font={9} foregroundStyle={palette.muted}>距可下班</Text>
+        <Countdown data={data} palette={palette} size={compact?18:22} />
+      </VStack>
     </HStack>
-
-    {style === "fitness" && !small
-      ? <HStack>
-          <VStack spacing={2} alignment="leading">
-            <Text font="caption2" foregroundStyle={palette.muted}>累计工时</Text>
-            <Text font={compact ? "title2" : "largeTitle"} foregroundStyle={palette.text}>{elapsedText(data)}</Text>
-          </VStack>
-          <Spacer />
-          <VStack spacing={2} alignment="trailing">
-            <Text font="caption2" foregroundStyle={palette.muted}>距离可下班</Text>
-            <Countdown data={data} palette={palette} />
-          </VStack>
-        </HStack>
-      : <HStack>
-          <VStack spacing={2} alignment="leading">
-            <Text font="caption2" foregroundStyle={palette.muted}>累计工时</Text>
-            <Text font={compact ? "title2" : "largeTitle"} foregroundStyle={danger ? palette.danger : palette.text}>
-              {elapsedText(data)}
-            </Text>
-          </VStack>
-          <Spacer />
-          <VStack spacing={2} alignment="trailing">
-            <Text font="caption2" foregroundStyle={palette.muted}>距离可下班</Text>
-            <Countdown data={data} palette={palette} />
-          </VStack>
-        </HStack>}
-
-    {style === "fitness"
-      ? <HStack>
-          <ProgressView value={progress} tint={danger ? palette.danger : palette.accent2} />
-          <Text font="caption2" foregroundStyle={palette.muted}>{Math.round(progress * 100)}%</Text>
-        </HStack>
-      : <ProgressView value={progress} tint={danger ? palette.danger : palette.accent} />}
-
-    {style === "cyber" && !compact
-      ? <Text font="caption2" foregroundStyle={palette.muted}>目标工时 {CONFIG.TARGET_HOURS} 小时 · {data?.targetTime ? "预计 " + targetText + " 达标" : "等待上班卡"}</Text>
-      : null}
-
-    <HStack spacing={6}>
-      {cells.map((cell, index) => (
-        <MetricCell
-          label={cell[0]}
-          value={cell[1]}
-          palette={palette}
-          compact={compact || small}
-          highlight={index === 1 && style === "fitness"}
-        />
-      ))}
+    {style!=="fitness" ? <ProgressView value={progress} tint={danger?palette.danger:palette.accent} /> : null}
+    <HStack spacing={4}>
+      <MetricCell label="上班" value={inText} palette={palette} />
+      <MetricCell label="可下班" value={targetText} palette={palette} highlight />
+      <MetricCell label="下班" value={outText} palette={palette} />
     </HStack>
-
-    {style === "minimal" && !compact
-      ? <Text font="caption2" foregroundStyle={palette.muted}>目标 {CONFIG.TARGET_HOURS} 小时 · 以实际工卡为准</Text>
-      : null}
   </VStack>;
 }
 
@@ -245,7 +188,7 @@ function dayColors(day, palette, todayKey) {
   if (!day) return { bg: "clear", fg: palette.muted, mark: "" };
   if (day.future) return { bg: palette.tile, fg: palette.muted, mark: "" };
   if (!day.workday) return { bg: palette.tile, fg: palette.muted, mark: "休" };
-  if (day.key === todayKey || day.state === "active") return { bg: palette.accent, fg: palette.bg, mark: "今" };
+  if (day.state === "active") return { bg: palette.accent, fg: palette.bg, mark: "今" };
   if (day.state === "normal") return { bg: "#1E4B42", fg: "#8DE2C2", mark: "✓" };
   if (day.state === "warning") return { bg: "#563D2B", fg: "#F4C27C", mark: "!" };
   if (day.state === "abnormal") return { bg: "#542D32", fg: "#FF9C95", mark: "×" };
@@ -253,71 +196,33 @@ function dayColors(day, palette, todayKey) {
 }
 
 function DayCell({ day, palette, todayKey }) {
-  if (!day) return <VStack frame={{ maxWidth: "infinity" }}><Text font="caption2"> </Text></VStack>;
   const colors = dayColors(day, palette, todayKey);
-  return <VStack
-    spacing={0}
-    padding={3}
-    background={colors.bg}
-    clipShape={{ type: "rect", cornerRadius: 7 }}
-    frame={{ maxWidth: "infinity" }}
-    alignment="center"
-  >
-    <Text font="caption" foregroundStyle={colors.fg}>{Number(day.key.slice(-2))}</Text>
+  return <VStack spacing={0} frame={{maxWidth:"infinity",minHeight:17}} background={colors.bg} clipShape={{type:"rect",cornerRadius:5}} alignment="center">
+    <Text font={10} fontWeight={day?.key===todayKey?"bold":"regular"} lineLimit={1} foregroundStyle={colors.fg}>{day ? Number(day.key.slice(-2)) : " "}</Text>
   </VStack>;
 }
 
 function Heatmap({ monthData, palette }) {
-  if (!monthData) return <Text font="caption" foregroundStyle={palette.muted}>月历缓存尚未建立</Text>;
+  if (!monthData) return <Text font={10} foregroundStyle={palette.muted}>月历缓存尚未建立</Text>;
   const todayKey = formatDateKey(new Date());
-  return <VStack
-    spacing={6}
-    padding={11}
-    background={palette.card}
-    clipShape={{ type: "rect", cornerRadius: 15 }}
-    alignment="leading"
-  >
-    <HStack>
-      <VStack spacing={1} alignment="leading">
-        <Text font="headline" foregroundStyle={palette.text}>{monthData.monthLabel}</Text>
-        <Text font="caption2" foregroundStyle={palette.muted}>考勤月历</Text>
-      </VStack>
-      <Spacer />
-      <VStack spacing={1} alignment="trailing">
-        <Text font="title2" foregroundStyle={palette.normal}>{monthData.stats.normal}</Text>
-        <Text font="caption2" foregroundStyle={palette.muted}>正常天数</Text>
-      </VStack>
-    </HStack>
-    <HStack spacing={3}>
-      {["一", "二", "三", "四", "五", "六", "日"].map(label => (
-        <VStack frame={{ maxWidth: "infinity" }} alignment="center">
-          <Text font="caption2" foregroundStyle={palette.muted}>{label}</Text>
-        </VStack>
-      ))}
-    </HStack>
-    {monthData.weeks.map(week => (
-      <HStack spacing={3}>
-        {week.map(day => <DayCell day={day} palette={palette} todayKey={todayKey} />)}
-      </HStack>
-    ))}
-    <HStack spacing={9}>
-      <Text font="caption2" foregroundStyle={palette.normal}>● 正常</Text>
-      <Text font="caption2" foregroundStyle={palette.warning}>● 待核查</Text>
-      <Text font="caption2" foregroundStyle={palette.accent}>● 进行中</Text>
-    </HStack>
+  return <VStack spacing={3} padding={5} background={palette.card} clipShape={{type:"rect",cornerRadius:10}} alignment="leading">
+    <HStack><Text font={13} fontWeight="semibold" foregroundStyle={palette.text}>{monthData.monthLabel}</Text><Spacer /><Text font={10} foregroundStyle={palette.normal}>达标 {monthData.stats.normal} 天</Text></HStack>
+    <HStack spacing={3}>{["一","二","三","四","五","六","日"].map(label => <Text font={9} frame={{maxWidth:"infinity"}} foregroundStyle={palette.muted}>{label}</Text>)}</HStack>
+    {monthData.weeks.map(week => <HStack spacing={3}>{week.map(day => <DayCell day={day} palette={palette} todayKey={todayKey} />)}</HStack>)}
+    <HStack spacing={8}><Text font={9} foregroundStyle={palette.normal}>● 正常</Text><Text font={9} foregroundStyle={palette.warning}>● 待核</Text><Text font={9} foregroundStyle={palette.accent}>● 进行中</Text></HStack>
   </VStack>;
 }
 
 function RecentDays({ days, palette }) {
   return <VStack
-    spacing={7}
-    padding={11}
+    spacing={4}
+    padding={5}
     background={palette.card}
     clipShape={{ type: "rect", cornerRadius: 15 }}
     alignment="leading"
   >
     <HStack>
-      <Text font="headline" foregroundStyle={palette.text}>近 7 天</Text>
+      <Text font={12} foregroundStyle={palette.text}>近 7 天</Text>
       <Spacer />
       <Text font="caption2" foregroundStyle={palette.muted}>每日状态</Text>
     </HStack>
@@ -325,14 +230,14 @@ function RecentDays({ days, palette }) {
       {days.map(day => {
         const colors = dayColors(day, palette, formatDateKey(new Date()));
         return <VStack
-          spacing={4}
-          padding={5}
+          spacing={2}
+          padding={3}
           background={colors.bg}
           clipShape={{ type: "rect", cornerRadius: 8 }}
           frame={{ maxWidth: "infinity" }}
           alignment="center"
         >
-          <Text font="caption2" foregroundStyle={palette.muted}>{day.key.slice(8, 10)}</Text>
+          <Text font={10} foregroundStyle={colors.fg}>{day.key.slice(8, 10)}</Text>
           <Text font="headline" foregroundStyle={colors.fg}>{colors.mark || "·"}</Text>
         </VStack>;
       })}
@@ -348,16 +253,17 @@ function WidgetView({ data, monthData, recent, style, palette, family, layout })
 
   const statsOnly = layout === "stats" && !large && !small;
   return <VStack
-    spacing={small ? 7 : 9}
-    padding={small ? 9 : 12}
+    spacing={small ? 3 : 5}
+    padding={small ? 3 : 4}
     background={widgetBackground(colors)}
     frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
     alignment="leading"
   >
     {statsOnly
       ? <RecentDays days={recent} palette={colors} />
-      : <TodayPanel data={data} palette={colors} style={style} compact={large || small} small={small} showRefresh={!small} />}
+      : <TodayPanel data={data} palette={colors} style={style} compact={large || small} small={small} showRefresh={!small && !large} />}
 
+    {large ? <Spacer /> : null}
     {large
       ? style === "heatmap"
         ? <Heatmap monthData={monthData} palette={colors} />

@@ -44,6 +44,7 @@ export const DEFAULT_PREFERENCES = Object.freeze({
   theme: "navy",
   remindMinutes: CONFIG.NEAR_MINUTES,
   liveActivityEnabled: true,
+  checkoutReminderEnabled: true,
   widgetStyleSmall: "minimal",
   widgetStyleMedium: "fitness",
   widgetStyleLarge: "heatmap"

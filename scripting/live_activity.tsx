@@ -65,15 +65,12 @@ const builder: LiveActivityUIBuilder<AttendanceActivityState> = (state) => (
       </VStack>
     }
     compactLeading={
-      <HStack spacing={4}>
-        <Image systemName="clock.fill" foregroundStyle={state.phase === "ready" ? "systemRed" : "#7CC7FF"} />
-        <Text>考勤</Text>
-      </HStack>
+      <Image systemName="clock.fill" font={13} foregroundStyle={state.phase === "ready" ? "systemRed" : "#7CC7FF"} />
     }
     compactTrailing={
       state.phase === "working"
-        ? <TimerIntervalLabel from={state.startedAt} to={state.targetAt} countsDown={true} showsHours={true} />
-        : <Text foregroundStyle={state.phase === "ready" ? "systemRed" : "secondaryLabel"}>{state.phase === "ready" ? (state.missedConfirmed ? "待补卡" : "⚠ 漏卡") : "完成"}</Text>
+        ? <TimerIntervalLabel from={state.startedAt} to={state.targetAt} countsDown={true} showsHours={true} font={12} monospacedDigit frame={{ width: 52 }} lineLimit={1} minScaleFactor={0.75} />
+        : <Text foregroundStyle={state.phase === "ready" ? "systemRed" : "secondaryLabel"}>{state.phase === "ready" ? (state.missedConfirmed ? "补卡" : "漏卡") : "完成"}</Text>
     }
     minimal={<Image systemName="clock.fill" foregroundStyle={state.phase === "ready" ? "systemRed" : "#7CC7FF"} />}
     keylineTint={state.phase === "ready" ? "systemRed" : "#7CC7FF"}

@@ -47,8 +47,11 @@ export async function syncAttendanceLiveActivity(data) {
   }
 
   const state = activityState(data);
-  let activity = savedId ? LiveActivity.from(savedId, "AttendanceCountdown") : null;
-  let currentState = activity ? await activity.getActivityState() : null;
+  let currentState = savedId ? await LiveActivity.getActivityState(savedId) : null;
+  let activity = savedId && (currentState === "active" || currentState === "stale") ? await LiveActivity.from(savedId, "AttendanceCountdown") : null;
+  if (savedId && (currentState === "active" || currentState === "stale") && typeof activity?.update !== "function") {
+    return { ok: false, message: "实时活动暂无法恢复，请在锁屏关闭旧活动后刷新" };
+  }
 
   if (!activity || !currentState || currentState === "dismissed" || currentState === "ended") {
     activity = AttendanceCountdownActivity();
@@ -77,10 +80,11 @@ export async function endSavedActivity(reason) {
   const id = getLiveActivityId();
   if (!id) return;
   try {
-    const activity = LiveActivity.from(id, "AttendanceCountdown");
-    const state = await activity.getActivityState();
-    if (state && state !== "dismissed") {
-      await activity.end({
+    const state = await LiveActivity.getActivityState(id);
+    const activity = await LiveActivity.from(id, "AttendanceCountdown");
+    if (state === "active" || state === "stale" || state === "ended") {
+      if (typeof activity?.end !== "function") throw new Error("实时活动无法恢复");
+      const ended = await activity.end({
         phase: "finished",
         startedAt: Date.now(),
         targetAt: Date.now(),
@@ -89,6 +93,7 @@ export async function endSavedActivity(reason) {
         statusText: reason,
         workedText: "--"
       }, { dismissTimeInterval: 0 });
+      if (ended === false) throw new Error("实时活动结束失败");
     }
   } catch (_) {
     throw new Error("无法结束旧实时活动，请先在锁屏关闭后重试");

@@ -55,7 +55,7 @@ export function saveAccount(account) {
     Storage.remove(STORAGE_KEYS.TODAY_SNAPSHOT);
     // Live Activity must be ended by the foreground caller before replacing credentials.
     for (const key of Storage.keys()) {
-      if (/^attendance-helper-(schedule9|near9|target-reached)-/.test(key)) Storage.remove(key);
+      if (/^attendance-helper-(schedule9|near9|target-reached|notice-v2)-/.test(key)) Storage.remove(key);
       if (key.startsWith(STORAGE_KEYS.HISTORY_PREFIX + previous.username + ":")) Storage.remove(key);
     }
   }
@@ -79,10 +79,11 @@ export function getPreferences() {
   const saved = Storage.get(STORAGE_KEYS.PREFERENCES) || {};
   return {
     theme: THEMES.includes(saved.theme) ? saved.theme : DEFAULT_PREFERENCES.theme,
-    remindMinutes: [0, 5, 15, 30, 45, 60].includes(Number(saved.remindMinutes))
+    remindMinutes: Number.isInteger(Number(saved.remindMinutes)) && saved.remindMinutes != null && Number(saved.remindMinutes) >= 0 && Number(saved.remindMinutes) <= 180
       ? Number(saved.remindMinutes)
       : DEFAULT_PREFERENCES.remindMinutes,
     liveActivityEnabled: saved.liveActivityEnabled !== false,
+    checkoutReminderEnabled: saved.checkoutReminderEnabled !== false,
     widgetStyleSmall: WIDGET_STYLES.includes(saved.widgetStyleSmall)
       ? saved.widgetStyleSmall : DEFAULT_PREFERENCES.widgetStyleSmall,
     widgetStyleMedium: WIDGET_STYLES.includes(saved.widgetStyleMedium)
@@ -96,13 +97,15 @@ export function savePreferences(next) {
   const current = getPreferences();
   const merged = { ...current, ...next };
   if (!THEMES.includes(merged.theme)) merged.theme = current.theme;
-  if (![0, 5, 15, 30, 45, 60].includes(Number(merged.remindMinutes))) {
+  if (!Number.isInteger(Number(merged.remindMinutes)) || Number(merged.remindMinutes) < 0 || Number(merged.remindMinutes) > 180) {
     merged.remindMinutes = current.remindMinutes;
   }
   for (const key of ["widgetStyleSmall", "widgetStyleMedium", "widgetStyleLarge"]) {
     if (!WIDGET_STYLES.includes(merged[key])) merged[key] = current[key];
   }
   merged.liveActivityEnabled = !!merged.liveActivityEnabled;
+  merged.checkoutReminderEnabled = !!merged.checkoutReminderEnabled;
+  merged.remindMinutes = Number(merged.remindMinutes);
   Storage.set(STORAGE_KEYS.PREFERENCES, merged);
   return merged;
 }

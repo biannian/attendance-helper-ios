@@ -84,7 +84,7 @@ function Card({ children, palette, compact = false, tone = "normal" }) {
       : colors.card}
     clipShape={{ type: "rect", cornerRadius: 17 }}
     alignment="leading"
-    frame={{ maxWidth: "infinity" }}
+    frame={{ minWidth: 0, maxWidth: "infinity", alignment: "leading" }}
   >
     {children}
   </VStack>;
@@ -128,7 +128,7 @@ function TodayTab({ data, palette, loading, onRefresh, statusMessage, isWorkday,
         <Text font="caption" foregroundStyle={palette.muted}>{formatDateKey(new Date())} · 今日</Text>
         <Text font="largeTitle" foregroundStyle={palette.ink}>今天休息</Text>
         <Text font="caption" foregroundStyle={palette.muted}>调休补班日会自动恢复考勤</Text>
-        <Button title="刷新" buttonStyle="bordered" action={onRefresh} disabled={loading} />
+        <Button title="刷新" buttonStyle="bordered" controlSize="small" buttonBorderShape={{roundedRectangleRadius:8}} tint={palette.accent} action={onRefresh} disabled={loading} />
       </Card>
     </VStack>;
   }
@@ -160,7 +160,7 @@ function TodayTab({ data, palette, loading, onRefresh, statusMessage, isWorkday,
         <Spacer />
         <VStack spacing={6} alignment="trailing">
           <StatusBadge text={status} color={statusColor} palette={palette} />
-          <Button title={loading ? "同步中…" : "刷新"} buttonStyle="bordered" action={onRefresh} disabled={loading} />
+          <Button buttonStyle="plain" action={onRefresh} disabled={loading}><Text font={13} foregroundStyle={palette.accent}>{loading ? "同步中" : "刷新"}</Text></Button>
         </VStack>
       </HStack>
 
@@ -172,7 +172,7 @@ function TodayTab({ data, palette, loading, onRefresh, statusMessage, isWorkday,
             {missingCheckout(data)
               ? <VStack spacing={6} alignment="leading">
                   <Text font="title2" foregroundStyle={palette.danger}>{data.missedConfirmed ? "已确认漏卡，请申请补卡" : "工时已满，请检查下班卡"}</Text>
-                  <Button title={data.missedConfirmed ? "撤销漏卡确认" : "确认漏卡"} buttonStyle="bordered" action={onConfirmMissed} />
+                  <Button title={data.missedConfirmed ? "撤销漏卡确认" : "确认漏卡"} buttonStyle="bordered" controlSize="small" buttonBorderShape={{roundedRectangleRadius:8}} tint={palette.accent} action={onConfirmMissed} />
                 </VStack>
               : <TimerIntervalLabel from={data.inTime.getTime()} to={data.targetTime.getTime()} countsDown={true} showsHours={true} foregroundStyle={palette.ink} />}
           </VStack>
@@ -198,12 +198,12 @@ function TodayTab({ data, palette, loading, onRefresh, statusMessage, isWorkday,
           <Text font="caption" foregroundStyle={palette.muted}>{reminderMinutes ? "提前 " + reminderMinutes + " 分钟" : "未开启"}</Text>
         </VStack>
         <Spacer />
-        <Button title="重新安排" buttonStyle="bordered" action={async () => {
+        <Button title="重新安排" buttonStyle="bordered" controlSize="small" buttonBorderShape={{roundedRectangleRadius:8}} tint={palette.accent} action={async () => {
           const result = await handleScheduleNineHours();
           console.log(result.message || result.error);
         }} />
       </HStack>
-      {statusMessage ? <Text font="caption2" foregroundStyle={palette.muted}>{statusMessage}</Text> : null}
+
     </Card>
   </VStack>;
 }
@@ -224,14 +224,14 @@ function CalendarTab({ monthData, selectedDate, onSelect, onPrev, onNext, onSync
   return <VStack spacing={10} alignment="leading">
     <Card palette={palette}>
       <HStack>
-        <Button title="‹" buttonStyle="bordered" action={onPrev} disabled={!monthData?.canPrev} />
+        <Button title="‹" buttonStyle="bordered" controlSize="small" buttonBorderShape={{roundedRectangleRadius:8}} tint={palette.accent} action={onPrev} disabled={!monthData?.canPrev} />
         <Spacer />
         <VStack spacing={2} alignment="center">
           <Text font="headline" foregroundStyle={palette.ink}>{monthData?.monthLabel || "考勤月历"}</Text>
           <Text font="caption2" foregroundStyle={palette.muted}>点选日期查看打卡</Text>
         </VStack>
         <Spacer />
-        <Button title="›" buttonStyle="bordered" action={onNext} disabled={!monthData?.canNext} />
+        <Button title="›" buttonStyle="bordered" controlSize="small" buttonBorderShape={{roundedRectangleRadius:8}} tint={palette.accent} action={onNext} disabled={!monthData?.canNext} />
       </HStack>
 
       <HStack spacing={3}>
@@ -246,13 +246,13 @@ function CalendarTab({ monthData, selectedDate, onSelect, onPrev, onNext, onSync
         <HStack spacing={3}>
           {week.map(day => day
             ? <Button
-                title={String(Number(day.key.slice(-2))) + " " + dayMarker(day)}
-                buttonStyle={day.key === selectedDate ? "borderedProminent" : "bordered"}
-                frame={{ maxWidth: "infinity" }}
-                action={() => onSelect(day.key)}
-                disabled={!!day.future}
-              />
-            : <VStack frame={{ maxWidth: "infinity" }}><Text> </Text></VStack>
+                buttonStyle="plain" action={() => onSelect(day.key)} disabled={!!day.future}>
+                <VStack spacing={1} frame={{maxWidth:"infinity",minHeight:36}} background={day.key===selectedDate ? palette.accent : day.state==="normal" ? "#1E4B42" : day.state==="warning" ? "#563D2B" : palette.surface} clipShape={{type:"rect",cornerRadius:7}}>
+                  <Text font={14} lineLimit={1} foregroundStyle={day.key===selectedDate ? palette.bg : day.future ? palette.muted : palette.ink}>{Number(day.key.slice(-2))}</Text>
+                  <Text font={9} lineLimit={1} foregroundStyle={day.key===selectedDate ? palette.bg : day.state==="normal" ? palette.normal : day.state==="warning" ? palette.warning : palette.muted}>{dayMarker(day) || " "}</Text>
+                </VStack>
+              </Button>
+            : <VStack frame={{maxWidth:"infinity",minHeight:36}}><Text font={9}> </Text></VStack>
           )}
         </HStack>
       ))}
@@ -265,7 +265,7 @@ function CalendarTab({ monthData, selectedDate, onSelect, onPrev, onNext, onSync
         <Spacer />
         <Text font="caption2" foregroundStyle={palette.muted}>· 待查 {monthData?.stats.pending ?? 0}</Text>
       </HStack>
-      <Button title={loading ? "同步中…" : "补查本月"} buttonStyle="bordered" action={onSync} disabled={loading} />
+      <Button title={loading ? "同步中…" : "补查本月"} buttonStyle="bordered" controlSize="small" buttonBorderShape={{roundedRectangleRadius:8}} tint={palette.accent} action={onSync} disabled={loading} />
     </Card>
 
     {selected ? <Card palette={palette} compact>
@@ -285,12 +285,12 @@ function CalendarTab({ monthData, selectedDate, onSelect, onPrev, onNext, onSync
       {selected.workday
         ? <VStack spacing={7} alignment="leading">
             <Text font="caption" foregroundStyle={palette.muted}>请假时长（小时）</Text>
-            <TextField title="请假小时数" value={leaveHours} onChanged={onLeaveHours} keyboardType="decimalPad" />
-            <Button title="按请假时长判断" buttonStyle="bordered" action={() => onReview("auto", selected)} />
+            <TextField title="请假小时数" value={leaveHours} onChanged={onLeaveHours} keyboardType="decimalPad" foregroundStyle={palette.ink} padding={8} background={palette.surface} />
+            <Button title="按请假时长判断" buttonStyle="bordered" controlSize="small" buttonBorderShape={{roundedRectangleRadius:8}} tint={palette.accent} action={() => onReview("auto", selected)} />
             <HStack spacing={6}>
-              <Button title="确认正常" buttonStyle="bordered" action={() => onReview("normal", selected)} />
-              <Button title="确认异常" buttonStyle="bordered" action={() => onReview("abnormal", selected)} />
-              <Button title="恢复原判" buttonStyle="bordered" action={() => onReview("reset", selected)} />
+              <Button title="确认正常" buttonStyle="bordered" controlSize="small" buttonBorderShape={{roundedRectangleRadius:8}} tint={palette.accent} action={() => onReview("normal", selected)} />
+              <Button title="确认异常" buttonStyle="bordered" controlSize="small" buttonBorderShape={{roundedRectangleRadius:8}} tint={palette.accent} action={() => onReview("abnormal", selected)} />
+              <Button title="恢复原判" buttonStyle="bordered" controlSize="small" buttonBorderShape={{roundedRectangleRadius:8}} tint={palette.accent} action={() => onReview("reset", selected)} />
             </HStack>
           </VStack>
         : <Text font="caption2" foregroundStyle={palette.muted}>休息日</Text>}
@@ -320,7 +320,7 @@ function StyleChoiceRow({ label, settingKey, value, onPreference, palette }) {
       {WIDGET_STYLES.map(style => (
         <Button
           title={STYLE_SHORT[style]}
-          buttonStyle={value === style ? "borderedProminent" : "bordered"}
+          buttonStyle={value === style ? "borderedProminent" : "bordered"} controlSize="small" buttonBorderShape={{roundedRectangleRadius:8}} tint={palette.accent}
           frame={{ maxWidth: "infinity" }}
           action={() => onPreference(settingKey, style)}
         />
@@ -329,7 +329,7 @@ function StyleChoiceRow({ label, settingKey, value, onPreference, palette }) {
   </VStack>;
 }
 
-function SettingsTab({ preferences, account, onPreference, onSaveAccount, accountDraft, setAccountDraft, palette, onPreview }) {
+function SettingsTab({ preferences, account, onPreference, onSaveAccount, accountDraft, setAccountDraft, palette, onPreview, reminderDraft, setReminderDraft }) {
   return <VStack spacing={10} alignment="leading">
     <Card palette={palette}>
       <SectionTitle title="主题配色" palette={palette} />
@@ -338,7 +338,7 @@ function SettingsTab({ preferences, account, onPreference, onSaveAccount, accoun
           <Button
             title={THEME_LABELS[theme]}
             buttonStyle={preferences.theme === theme ? "borderedProminent" : "bordered"}
-            frame={{ maxWidth: "infinity" }}
+            frame={{ maxWidth: "infinity" }} controlSize="small" buttonBorderShape={{roundedRectangleRadius:8}} tint={palette.accent}
             action={() => onPreference("theme", theme)}
           />
         ))}
@@ -353,9 +353,9 @@ function SettingsTab({ preferences, account, onPreference, onSaveAccount, accoun
       <Divider />
       <StyleChoiceRow label="大号" settingKey="widgetStyleLarge" value={preferences.widgetStyleLarge} onPreference={onPreference} palette={palette} />
       <HStack spacing={5}>
-        <Button title="预览小号" buttonStyle="bordered" action={() => onPreview("systemSmall")} />
-        <Button title="预览中号" buttonStyle="bordered" action={() => onPreview("systemMedium")} />
-        <Button title="预览大号" buttonStyle="bordered" action={() => onPreview("systemLarge")} />
+        <Button title="预览小号" buttonStyle="bordered" controlSize="small" buttonBorderShape={{roundedRectangleRadius:8}} tint={palette.accent} action={() => onPreview("systemSmall")} />
+        <Button title="预览中号" buttonStyle="bordered" controlSize="small" buttonBorderShape={{roundedRectangleRadius:8}} tint={palette.accent} action={() => onPreview("systemMedium")} />
+        <Button title="预览大号" buttonStyle="bordered" controlSize="small" buttonBorderShape={{roundedRectangleRadius:8}} tint={palette.accent} action={() => onPreview("systemLarge")} />
       </HStack>
     </Card>
 
@@ -368,15 +368,18 @@ function SettingsTab({ preferences, account, onPreference, onSaveAccount, accoun
         <Spacer />
         <Text font="caption" foregroundStyle={palette.accent}>{preferences.remindMinutes ? "提前 " + preferences.remindMinutes + " 分钟" : "关闭"}</Text>
       </HStack>
-      <HStack spacing={5}>
-        {[0, 5, 15, 30, 45, 60].map(minutes => (
-          <Button
-            title={minutes === 0 ? "关" : minutes + "分"}
-            buttonStyle={preferences.remindMinutes === minutes ? "borderedProminent" : "bordered"}
-            frame={{ maxWidth: "infinity" }}
-            action={() => onPreference("remindMinutes", minutes)}
-          />
-        ))}
+      {[ [0,5,10,15], [20,30,45,60] ].map(group => <HStack spacing={5}>
+        {group.map(minutes => <Button buttonStyle="plain" action={() => {setReminderDraft(String(minutes)); onPreference("remindMinutes", minutes);}}>
+          <Text font={13} lineLimit={1} foregroundStyle={preferences.remindMinutes === minutes ? palette.bg : palette.ink} frame={{maxWidth:"infinity",minHeight:32}} background={preferences.remindMinutes === minutes ? palette.accent : palette.surface} clipShape={{type:"rect",cornerRadius:8}}>{minutes === 0 ? "关闭" : minutes+" 分"}</Text>
+        </Button>)}
+      </HStack>)}
+      <HStack spacing={8}>
+        <TextField title="自定义 1–180 分钟" value={reminderDraft} onChanged={setReminderDraft} keyboardType="numberPad" foregroundStyle={palette.ink} padding={8} background={palette.surface} clipShape={{type:"rect",cornerRadius:8}} />
+        <Button title="保存" buttonStyle="bordered" controlSize="small" buttonBorderShape={{roundedRectangleRadius:8}} tint={palette.accent} disabled={!/^\d+$/.test(reminderDraft) || Number(reminderDraft)>180 || Number(reminderDraft)<1} action={() => onPreference("remindMinutes", Number(reminderDraft))} />
+      </HStack>
+      <HStack>
+        <Text font={14} foregroundStyle={palette.ink}>到点未打卡提醒</Text><Spacer />
+        <Button title={preferences.checkoutReminderEnabled ? "开启" : "关闭"} buttonStyle="bordered" controlSize="small" buttonBorderShape={{roundedRectangleRadius:8}} tint={palette.accent} action={() => onPreference("checkoutReminderEnabled", !preferences.checkoutReminderEnabled)} />
       </HStack>
       <Divider />
       <HStack>
@@ -385,16 +388,16 @@ function SettingsTab({ preferences, account, onPreference, onSaveAccount, accoun
           <Text font="caption" foregroundStyle={palette.muted}>锁屏持续显示可下班时间</Text>
         </VStack>
         <Spacer />
-        <Button title={preferences.liveActivityEnabled ? "已开启" : "已关闭"} buttonStyle={preferences.liveActivityEnabled ? "borderedProminent" : "bordered"} action={() => onPreference("liveActivityEnabled", !preferences.liveActivityEnabled)} />
+        <Button title={preferences.liveActivityEnabled ? "已开启" : "已关闭"} buttonStyle={preferences.liveActivityEnabled ? "borderedProminent" : "bordered"} controlSize="small" buttonBorderShape={{roundedRectangleRadius:8}} tint={palette.accent} action={() => onPreference("liveActivityEnabled", !preferences.liveActivityEnabled)} />
       </HStack>
     </Card>
 
     <Card palette={palette}>
       <SectionTitle title="企业账号" palette={palette} />
-      <TextField title="账号 / 手机号" value={accountDraft.username} onChanged={value => setAccountDraft({ ...accountDraft, username: value })} />
-      <SecureField title="密码" value={accountDraft.password} onChanged={value => setAccountDraft({ ...accountDraft, password: value })} />
-      <TextField title="设备 ID" value={accountDraft.deviceId} onChanged={value => setAccountDraft({ ...accountDraft, deviceId: value })} />
-      <Button title="安全保存" buttonStyle="borderedProminent" action={onSaveAccount} />
+      <TextField title="账号 / 手机号" foregroundStyle={palette.ink} padding={9} background={palette.surface} value={accountDraft.username} onChanged={value => setAccountDraft({ ...accountDraft, username: value })} />
+      <SecureField title="密码" foregroundStyle={palette.ink} padding={9} background={palette.surface} value={accountDraft.password} onChanged={value => setAccountDraft({ ...accountDraft, password: value })} />
+      <TextField title="设备 ID" foregroundStyle={palette.ink} padding={9} background={palette.surface} value={accountDraft.deviceId} onChanged={value => setAccountDraft({ ...accountDraft, deviceId: value })} />
+      <Button title="安全保存" buttonStyle="borderedProminent" controlSize="small" buttonBorderShape={{roundedRectangleRadius:8}} tint={palette.accent} action={onSaveAccount} />
       <Text font="caption2" foregroundStyle={palette.muted}>
         {account.configured ? "已配置 · 更换账号会清除旧 Token 和今日快照" : "首次使用请填写完整账号资料"}
       </Text>
@@ -407,20 +410,20 @@ function ToolsTab({ onRun, onDebug, onPreview, palette }) {
     <Card palette={palette}>
       <SectionTitle title="快捷操作" palette={palette} />
       <HStack spacing={6}>
-        <Button title="离开公司检查" buttonStyle="bordered" action={() => onRun("leave")} />
-        <Button title="安排提醒" buttonStyle="bordered" action={() => onRun("schedule9")} />
+        <Button title="离开公司检查" buttonStyle="bordered" controlSize="small" buttonBorderShape={{roundedRectangleRadius:8}} tint={palette.accent} action={() => onRun("leave")} />
+        <Button title="安排提醒" buttonStyle="bordered" controlSize="small" buttonBorderShape={{roundedRectangleRadius:8}} tint={palette.accent} action={() => onRun("schedule9")} />
       </HStack>
       <HStack spacing={6}>
-        <Button title="检查 9 小时" buttonStyle="bordered" action={() => onRun("near9")} />
-        <Button title="查看诊断" buttonStyle="bordered" action={onDebug} />
+        <Button title="检查 9 小时" buttonStyle="bordered" controlSize="small" buttonBorderShape={{roundedRectangleRadius:8}} tint={palette.accent} action={() => onRun("near9")} />
+        <Button title="查看诊断" buttonStyle="bordered" controlSize="small" buttonBorderShape={{roundedRectangleRadius:8}} tint={palette.accent} action={onDebug} />
       </HStack>
     </Card>
     <Card palette={palette}>
       <SectionTitle title="小组件预览" palette={palette} />
       <HStack spacing={6}>
-        <Button title="小号" buttonStyle="bordered" action={() => onPreview("systemSmall")} />
-        <Button title="中号" buttonStyle="bordered" action={() => onPreview("systemMedium")} />
-        <Button title="大号" buttonStyle="bordered" action={() => onPreview("systemLarge")} />
+        <Button title="小号" buttonStyle="bordered" controlSize="small" buttonBorderShape={{roundedRectangleRadius:8}} tint={palette.accent} action={() => onPreview("systemSmall")} />
+        <Button title="中号" buttonStyle="bordered" controlSize="small" buttonBorderShape={{roundedRectangleRadius:8}} tint={palette.accent} action={() => onPreview("systemMedium")} />
+        <Button title="大号" buttonStyle="bordered" controlSize="small" buttonBorderShape={{roundedRectangleRadius:8}} tint={palette.accent} action={() => onPreview("systemLarge")} />
       </HStack>
     </Card>
     <Card palette={palette}>
@@ -452,6 +455,7 @@ export function AppView({ initialTab = "today" }) {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [leaveHours, setLeaveHours] = useState("0");
+  const [reminderDraft, setReminderDraft] = useState(String(preferences.remindMinutes));
   const [debugText, setDebugText] = useState("");
 
   async function confirmMissed() {
@@ -475,15 +479,17 @@ export function AppView({ initialTab = "today" }) {
       const data = await getTodaySummary({ force: true });
       setToday(data);
       if (data.ok) {
-        const live = await syncAttendanceLiveActivity(data);
-        setMessage(live.message || "同步完成");
-        if (workday && data.hasClockIn) await handleScheduleNineHours();
+        let live;
+        try { live = await syncAttendanceLiveActivity(data); } catch (_) { live = {ok:false,message:"灵动岛暂不可用"}; }
+        let reminder;
+        try { reminder = await handleScheduleNineHours(data); } catch (_) { reminder = {ok:false,message:"提醒预约失败，请检查通知权限"}; }
+        setMessage([live?.message, reminder?.message].filter(Boolean).join(" · ") || "同步完成");
       } else {
         setMessage(data.error || "同步失败");
       }
       Widget.reloadAll();
     } catch (error) {
-      setMessage(String(error?.message || error));
+      setMessage("操作未完成，请重试或查看诊断");
     } finally {
       setLoading(false);
     }
@@ -512,9 +518,8 @@ export function AppView({ initialTab = "today" }) {
     const previous = preferences;
     const next = savePreferences({ ...preferences, [key]: value });
     setPreferences(next);
-    if (key === "remindMinutes" && next.remindMinutes !== previous.remindMinutes) {
+    if ((key === "remindMinutes" || key === "checkoutReminderEnabled") && next[key] !== previous[key]) {
       await cancelUpcomingReminder();
-      Storage.remove("attendance-helper-schedule9-" + formatDateKey(new Date()));
       const result = await handleScheduleNineHours();
       setMessage(result.message || result.error || "提醒配置已更新");
     }
@@ -607,8 +612,8 @@ export function AppView({ initialTab = "today" }) {
 
   const palette = PALETTES[preferences.theme] || PALETTES.navy;
 
-  return <NavigationStack>
-    <ScrollView navigationTitle="考勤助手" navigationBarTitleDisplayMode="inline">
+  return <NavigationStack preferredColorScheme="dark">
+    <ScrollView navigationTitle="考勤助手" navigationBarTitleDisplayMode="inline" background={palette.bg} frame={{maxWidth:"infinity",maxHeight:"infinity"}}>
       <VStack spacing={11} padding={13} alignment="leading" background={{
         gradient: [
           { color: palette.bg, location: 0 },
@@ -625,12 +630,9 @@ export function AppView({ initialTab = "today" }) {
             ["settings", "设置"],
             ["tools", "更多"]
           ].map(item => (
-            <Button
-              title={item[1]}
-              buttonStyle={tab === item[0] ? "borderedProminent" : "bordered"}
-              frame={{ maxWidth: "infinity" }}
-              action={() => setTab(item[0])}
-            />
+            <Button buttonStyle="plain" action={() => setTab(item[0])}>
+              <Text font={14} fontWeight="semibold" lineLimit={1} foregroundStyle={tab===item[0]?palette.bg:palette.muted} frame={{maxWidth:"infinity",minHeight:34}} background={tab===item[0]?palette.accent:"clear"} clipShape={{type:"rect",cornerRadius:8}}>{item[1]}</Text>
+            </Button>
           ))}
         </HStack>
 
@@ -663,8 +665,10 @@ export function AppView({ initialTab = "today" }) {
                   setAccountDraft={setAccountDraft}
                   palette={palette}
                   onPreview={preview}
+                  reminderDraft={reminderDraft}
+                  setReminderDraft={setReminderDraft}
                 />
-              : <VStack spacing={10}>
+              : <VStack spacing={10} alignment="leading" frame={{maxWidth:"infinity"}}>
                   <ToolsTab onRun={runTool} onDebug={showDebug} onPreview={preview} palette={palette} />
                   {debugText
                     ? <Card palette={palette}><SectionTitle title="诊断信息" palette={palette} /><Text font="caption" monospaced foregroundStyle={palette.muted}>{debugText}</Text></Card>
