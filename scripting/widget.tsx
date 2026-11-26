@@ -2,6 +2,7 @@ import {
   Button,
   Circle,
   ZStack,
+  DateLabel,
   TimerIntervalLabel,
   HStack,
   Image,
@@ -14,7 +15,7 @@ import {
 } from "scripting";
 import { CONFIG } from "./core/config";
 import { getTodaySummary, getAttendanceMonth, getRecentAttendanceDays, isChinaWorkday } from "./core/attendance";
-import { formatDateKey, formatShortDuration, formatTime, missingCheckout, checkoutWarningTitle } from "./core/rules";
+import { formatDateKey, formatShortDuration, formatTime, missingCheckout, checkoutWarningTitle, attendanceDisplayProgress } from "./core/rules";
 import { getPreferences } from "./core/store";
 import { RefreshAttendanceIntent } from "./app_intents";
 
@@ -71,19 +72,18 @@ function panelBackground(palette) {
   };
 }
 
-function progressOf(data) {
-  if (!data?.hasClockIn) return 0;
-  const elapsed = data.hasOutRecord
-    ? data.currentWorkMs
-    : Math.max(0, Date.now() - data.inTime.getTime());
-  return Math.max(0, Math.min(1, elapsed / (CONFIG.TARGET_HOURS * 3600000)));
+function WorkProgress({ progress, color, circular = false }) {
+  const style = circular ? "circular" : "linear";
+  return progress.timer
+    ? <ProgressView timerFrom={progress.start} timerTo={progress.target} countsDown={false} progressViewStyle={style} tint={color} />
+    : <ProgressView value={progress.ratio} total={1} progressViewStyle={style} tint={color} />;
 }
-
-function elapsedText(data) {
-  if (!data?.hasClockIn) return "--";
-  return formatShortDuration(data.hasOutRecord
-    ? data.currentWorkMs
-    : Math.max(0, Date.now() - data.inTime.getTime()));
+function WorkElapsed({ progress, data, color, size = 12, prefix = "" }) {
+  if (progress.running && progress.start !== null) return <HStack spacing={2}>
+    {prefix ? <Text font={size} foregroundStyle={color}>{prefix}</Text> : null}
+    <DateLabel date={new Date(progress.start)} style="timer" font={size} monospacedDigit lineLimit={1} minScaleFactor={0.65} foregroundStyle={color} />
+  </HStack>;
+  return <Text font={size} lineLimit={1} minScaleFactor={0.65} foregroundStyle={color}>{prefix}{data?.hasClockIn ? formatShortDuration(progress.elapsedMs) : "--"}</Text>;
 }
 
 function statusText(data) {
@@ -114,15 +114,13 @@ function MetricCell({ label, value, palette, highlight = false }) {
   </VStack>;
 }
 
-function Rings({ data, palette, size=45 }) {
-  const work = progressOf(data);
+function Rings({ data, progress, palette, size=45 }) {
   const punch = ((data?.hasClockIn ? 1 : 0) + (data?.hasOutRecord ? 1 : 0))/2;
+  const inner = size-21;
   return <ZStack frame={{width:size,height:size}}>
-    {[{n:size-5,p:work,c:palette.accent2},{n:size-17,p:punch,c:palette.accent}].map(r => <ZStack frame={{width:r.n,height:r.n}}>
-      <Circle stroke={{shapeStyle:palette.line,strokeStyle:{lineWidth:4}}} frame={{width:r.n,height:r.n}} />
-      {r.p>0 ? <Circle trim={{from:0,to:r.p}} stroke={{shapeStyle:r.c,strokeStyle:{lineWidth:4,lineCap:"round"}}} frame={{width:r.n,height:r.n}} /> : null}
-    </ZStack>)}
-    <Text font={9} fontWeight="semibold" foregroundStyle={palette.text}>{Math.round(work*100)}%</Text>
+    <WorkProgress progress={progress} circular color={missingCheckout(data)?palette.danger:palette.accent2} />
+    <Circle stroke={{shapeStyle:palette.line,strokeStyle:{lineWidth:3}}} frame={{width:inner,height:inner}} />
+    {punch>0 ? <Circle trim={{from:0,to:punch}} stroke={{shapeStyle:palette.accent,strokeStyle:{lineWidth:3,lineCap:"round"}}} frame={{width:inner,height:inner}} /> : null}
   </ZStack>;
 }
 
@@ -131,7 +129,7 @@ function TodayPanel({ data, palette, style, compact = false, small = false, show
   const outText = data?.hasOutRecord ? formatTime(data.latestOutTime) : "未打";
   const targetText = data?.targetTime ? formatTime(data.targetTime) : "--";
   const danger = missingCheckout(data) || (data?.hasOutRecord && !data.targetReached);
-  const progress = progressOf(data);
+  const progress = attendanceDisplayProgress(data);
   if (small) return <VStack spacing={4} alignment="leading" frame={{maxWidth:"infinity"}}>
     <HStack spacing={3}>
       <Text font={10} lineLimit={1} foregroundStyle={palette.muted}>今日考勤</Text><Spacer />
@@ -139,18 +137,18 @@ function TodayPanel({ data, palette, style, compact = false, small = false, show
     </HStack>
     <Spacer />
     {style==="fitness" && data?.hasClockIn ? <HStack spacing={5}>
-      <Rings data={data} palette={palette} size={38} />
+      <Rings data={data} progress={progress} palette={palette} size={38} />
       <VStack spacing={1} alignment="leading">
         <Text font={9} foregroundStyle={palette.muted}>距可下班</Text>
         <Countdown data={data} palette={palette} size={15} />
-        <Text font={9} lineLimit={1} foregroundStyle={palette.accent2}>{elapsedText(data)}</Text>
+        <WorkElapsed progress={progress} data={data} color={palette.accent2} size={9} />
       </VStack>
     </HStack> : <VStack spacing={1} alignment="leading">
       <Text font={9} foregroundStyle={palette.muted}>距可下班</Text>
       <Countdown data={data} palette={palette} size={23} />
-      <Text font={10} lineLimit={1} foregroundStyle={palette.muted}>累计 {elapsedText(data)}</Text>
+      <WorkElapsed progress={progress} data={data} color={palette.muted} size={10} prefix="累计" />
     </VStack>}
-    <ProgressView value={progress} tint={danger?palette.danger:palette.accent2} />
+    <WorkProgress progress={progress} color={danger?palette.danger:palette.accent2} />
     <Spacer />
     <HStack spacing={3}>
       <MetricCell label="上班" value={inText} palette={palette} />
@@ -164,10 +162,10 @@ function TodayPanel({ data, palette, style, compact = false, small = false, show
       {showRefresh ? <Button buttonStyle="plain" intent={RefreshAttendanceIntent(undefined)}><Image systemName="arrow.clockwise" font={11} foregroundStyle={palette.accent} /></Button> : null}
     </HStack>
     <HStack spacing={8}>
-      {style==="fitness" ? <Rings data={data} palette={palette} size={compact?38:48} /> : null}
+      {style==="fitness" ? <Rings data={data} progress={progress} palette={palette} size={compact?38:48} /> : null}
       <VStack spacing={1} alignment="leading">
         <Text font={9} foregroundStyle={palette.muted}>累计工时</Text>
-        <Text font={compact?18:22} fontWeight="semibold" lineLimit={1} minScaleFactor={0.7} foregroundStyle={palette.text}>{elapsedText(data)}</Text>
+        <WorkElapsed progress={progress} data={data} color={palette.text} size={compact?18:22} />
       </VStack>
       <Spacer />
       <VStack spacing={1} alignment="trailing">
@@ -175,7 +173,7 @@ function TodayPanel({ data, palette, style, compact = false, small = false, show
         <Countdown data={data} palette={palette} size={compact?18:22} />
       </VStack>
     </HStack>
-    {style!=="fitness" ? <ProgressView value={progress} tint={danger?palette.danger:palette.accent} /> : null}
+    <WorkProgress progress={progress} color={danger?palette.danger:palette.accent} />
     <HStack spacing={4}>
       <MetricCell label="上班" value={inText} palette={palette} />
       <MetricCell label="可下班" value={targetText} palette={palette} highlight />
