@@ -5,8 +5,8 @@
 
 // Explicit shared state for the widget renderer; declared before every helper that reads it.
 const WIDGET_RENDER_STATE = { transparent: false, at: null }
-const ATTENDANCE_VERSION = "10.9.3"
-const ATTENDANCE_BUILD = "transparent-calendar-fix-1"
+const ATTENDANCE_VERSION = "10.9.4"
+const ATTENDANCE_BUILD = "native-time-engine-1"
 
 /**
  * 考勤助手
@@ -2684,6 +2684,71 @@ function widgetElapsedText(data) {
     return formatShortDuration(getAttendanceProgress(data, widgetRenderTimestamp()).elapsedMs)
 }
 
+// Native WidgetDate timers keep moving while Scriptable is not running.
+// The midnight anchor is the device-local clock; a past clock-in date counts elapsed work time.
+function widgetStartOfDay(timestamp = widgetRenderTimestamp()) {
+    const start = new Date(timestamp)
+    start.setHours(0, 0, 0, 0)
+    return start
+}
+
+function addNativeTimer(parent, date, font, color) {
+    if (!date || typeof date.getTime !== "function" || !Number.isFinite(date.getTime())) {
+        const fallback = parent.addText("—")
+        fallback.font = font
+        fallback.textColor = widgetColor(color || "#FFFFFF")
+        fallback.lineLimit = 1
+        fallback.minimumScaleFactor = 0.55
+        return fallback
+    }
+    const timer = parent.addDate(date)
+    timer.applyTimerStyle()
+    timer.font = font
+    timer.textColor = widgetColor(color || "#FFFFFF")
+    timer.lineLimit = 1
+    timer.minimumScaleFactor = 0.55
+    return timer
+}
+
+function addNativeClock(parent, font, color) {
+    return addNativeTimer(parent, widgetStartOfDay(), font, color)
+}
+
+function addLiveElapsedTimer(parent, data, font, color) {
+    if (!data || !data.ok || !data.hasClockIn || !data.inTime) {
+        const fallback = parent.addText(data && data.ok ? "未打卡" : "需更新")
+        fallback.font = font
+        fallback.textColor = widgetColor(color || "#FFFFFF")
+        fallback.lineLimit = 1
+        fallback.minimumScaleFactor = 0.55
+        return fallback
+    }
+    if (data.hasOutRecord) {
+        const completed = parent.addText(widgetElapsedText(data))
+        completed.font = font
+        completed.textColor = widgetColor(color || "#FFFFFF")
+        completed.lineLimit = 1
+        completed.minimumScaleFactor = 0.55
+        return completed
+    }
+    return addNativeTimer(parent, data.inTime, font, color)
+}
+
+function addAttendanceElapsedLine(parent, data, labelText, fontSize, color) {
+    const row = parent.addStack()
+    row.layoutHorizontally()
+    row.centerAlignContent()
+    const label = row.addText(labelText)
+    label.font = Font.mediumSystemFont(fontSize)
+    label.textColor = widgetColor(color)
+    label.lineLimit = 1
+    label.minimumScaleFactor = 0.65
+    row.addSpacer(4)
+    const timer = addLiveElapsedTimer(row, data, Font.mediumSystemFont(fontSize), color)
+    timer.minimumScaleFactor = 0.5
+    return row
+}
+
 function missedCheckoutKey(day) { return "attendance-missed-checkout:" + CONFIG.USERNAME + ":" + day }
 function confirmedMissedCheckout(day = formatDateKey(now)) { return !!CONFIG.USERNAME && readKeychainValue(missedCheckoutKey(day)) === "1" }
 function checkoutWarningTitle(data) { return confirmedMissedCheckout() && missingCheckout(data) ? "已确认漏卡" : "未打下班卡" }
@@ -2713,10 +2778,14 @@ function addStyledHeader(widget, label, p) {
     const refresh = row.addStack()
     refresh.centerAlignContent()
     const interactive = supportsNativeWidgetAction(refresh)
-    const stamp = refresh.addText((interactive ? "↻ " : "") + formatTime(new Date(widgetRenderTimestamp())))
-    stamp.font = Font.mediumSystemFont(9)
-    stamp.textColor = widgetColor(interactive ? p.accent : p.muted)
-    stamp.lineLimit = 1
+    if (interactive) {
+        const icon = refresh.addText("↻")
+        icon.font = Font.mediumSystemFont(9)
+        icon.textColor = widgetColor(p.accent)
+        icon.lineLimit = 1
+        refresh.addSpacer(2)
+    }
+    addNativeClock(refresh, Font.mediumSystemFont(9), interactive ? p.accent : p.muted)
     if (interactive) refresh.setAction("刷新考勤", { id: "attendance-refresh" })
     else refresh.url = getWidgetUrl()
 }
@@ -2840,7 +2909,7 @@ function addFitnessRing(parent, data, size, workProgressOverride, punchProgressO
     image.centerAlignImage()
 }
 
-function addFitnessMetricLine(parent, labelText, valueText, width, color, fontSize = 9) {
+function addFitnessMetricLine(parent, labelText, valueText, width, color, fontSize = 9, elapsedData = null, suffix = "") {
     const p = widgetStylePalette("fitness")
     const row = parent.addStack()
     row.layoutHorizontally()
@@ -2856,11 +2925,22 @@ function addFitnessMetricLine(parent, labelText, valueText, width, color, fontSi
     label.textColor = widgetColor(p.muted)
     label.lineLimit = 1
     row.addSpacer()
-    const value = row.addText(valueText)
-    value.font = Font.mediumSystemFont(fontSize)
-    value.textColor = widgetColor(p.text)
-    value.lineLimit = 1
-    value.minimumScaleFactor = 0.55
+    if (elapsedData && elapsedData.hasClockIn) {
+        const value = addLiveElapsedTimer(row, elapsedData, Font.mediumSystemFont(fontSize), p.text)
+        value.minimumScaleFactor = 0.45
+        if (suffix) {
+            const tail = row.addText(suffix)
+            tail.font = Font.mediumSystemFont(fontSize)
+            tail.textColor = widgetColor(p.text)
+            tail.lineLimit = 1
+        }
+    } else {
+        const value = row.addText(valueText)
+        value.font = Font.mediumSystemFont(fontSize)
+        value.textColor = widgetColor(p.text)
+        value.lineLimit = 1
+        value.minimumScaleFactor = 0.55
+    }
 }
 
 function addFitnessProgressTrack(parent, width, progress, color, height = 4) {
@@ -3259,7 +3339,7 @@ function renderLargeTodayPanel(widget, data, width, p) {
     hero.setPadding(7, 8, 7, 8)
     hero.size = new Size(heroWidth, panelHeight)
 
-    const kicker = hero.addText(!data || !data.ok || !data.hasClockIn ? "今日状态" : data.hasOutRecord && !data.targetReached ? "工时还差" : "距离可下班")
+    const kicker = hero.addText(!data || !data.ok || !data.hasClockIn ? "今日状态" : data.hasOutRecord && !data.targetReached ? "工时还差" : "目标时间")
     kicker.font = Font.boldSystemFont(9)
     kicker.textColor = widgetColor(p.muted)
     kicker.lineLimit = 1
@@ -3279,19 +3359,26 @@ function renderLargeTodayPanel(widget, data, width, p) {
     countdown.lineLimit = 1
     countdown.minimumScaleFactor = 0.55
 
-    const caption = hero.addText(!data || !data.ok
+    const captionRow = hero.addStack()
+    captionRow.layoutHorizontally()
+    captionRow.centerAlignContent()
+    const caption = captionRow.addText(!data || !data.ok
         ? "请刷新考勤数据"
         : !data.hasClockIn
             ? "打卡后开始计时"
-            : data.hasOutRecord
-                ? (data.targetReached ? "今日工时已达标" : "工时尚未达标")
-                : data.targetReached
-                    ? (confirmedMissedCheckout() ? "已使用一次漏卡机会" : "请立即打下班卡！")
-                    : "目标工时 " + CONFIG.TARGET_HOURS + " 小时")
+            : missingCheckout(data)
+                ? "漏卡 · 已工作"
+                : data.hasOutRecord
+                    ? "实际工时"
+                    : "已工作")
     caption.font = Font.mediumSystemFont(8)
     caption.textColor = widgetColor(missingCheckout(data) ? "#EF4444" : p.muted)
     caption.lineLimit = 1
-    caption.minimumScaleFactor = 0.65
+    caption.minimumScaleFactor = 0.6
+    if (data && data.ok && data.hasClockIn) {
+        const elapsed = addLiveElapsedTimer(captionRow, data, Font.mediumSystemFont(8), missingCheckout(data) ? "#EF4444" : p.muted)
+        elapsed.minimumScaleFactor = 0.45
+    }
 
     hero.addSpacer(3)
     addStyledProgress(hero, data, Math.max(30, heroWidth - 16), p, 5)
@@ -3535,19 +3622,30 @@ function renderCyberWidget(widget, data, family, width, showToday = true) {
         return
     }
 
-    const headline = widget.addText(data.hasClockIn
-        ? (missingCheckout(data) ? checkoutWarningTitle(data) : data.targetReached ? "考勤正常" : formatRemainCompact(data.remainingMinutes))
-        : "未打卡")
-    headline.font = Font.boldSystemFont(small ? 24 : 31)
-    headline.textColor = widgetColor(missingCheckout(data) ? "#EF4444" : p.accent)
-    headline.lineLimit = 1
-    headline.minimumScaleFactor = 0.62
+    let headline
+    if (data.hasClockIn && showsLiveCountdown(data)) {
+        headline = addLiveCountdown(widget, data, Font.boldSystemFont(small ? 24 : 31), p.accent)
+    } else {
+        headline = widget.addText(data.hasClockIn
+            ? (missingCheckout(data) ? checkoutWarningTitle(data) : data.targetReached ? "考勤正常" : formatRemainCompact(data.remainingMinutes))
+            : "未打卡")
+        headline.font = Font.boldSystemFont(small ? 24 : 31)
+        headline.textColor = widgetColor(missingCheckout(data) ? "#EF4444" : p.accent)
+        headline.lineLimit = 1
+        headline.minimumScaleFactor = 0.62
+    }
 
-    const status = widget.addText(widgetStatusText(data))
-    status.font = Font.mediumSystemFont(9)
-    status.textColor = widgetColor(missingCheckout(data) ? "#EF4444" : p.muted)
-    status.lineLimit = 1
-    status.minimumScaleFactor = 0.65
+    if (data.hasClockIn) {
+        addAttendanceElapsedLine(widget, data,
+            missingCheckout(data) ? "漏卡 · 已工作" : data.hasOutRecord ? "实际工时" : "已工作",
+            9, missingCheckout(data) ? "#EF4444" : p.muted)
+    } else {
+        const status = widget.addText(widgetStatusText(data))
+        status.font = Font.mediumSystemFont(9)
+        status.textColor = widgetColor(p.muted)
+        status.lineLimit = 1
+        status.minimumScaleFactor = 0.65
+    }
 
     widget.addSpacer(large ? 7 : 6)
     addStyledProgress(widget, data, width, p, 4)
@@ -3601,7 +3699,7 @@ function renderCyberWidget(widget, data, family, width, showToday = true) {
             status.minimumScaleFactor = 0.65
         }
         info.addSpacer(2)
-        addFitnessMetricLine(info, "工时", widgetElapsedText(data) + "/" + CONFIG.TARGET_HOURS + "h", infoWidth, p.accent, 7)
+        addFitnessMetricLine(info, "工时", widgetElapsedText(data) + "/" + CONFIG.TARGET_HOURS + "h", infoWidth, p.accent, 7, data.hasClockIn ? data : null, " / " + CONFIG.TARGET_HOURS + "h")
         addFitnessProgressTrack(info, infoWidth, widgetWorkProgress(data), missingCheckout(data) ? "#EF4444" : p.accent, 3)
         addFitnessMetricLine(info, "打卡", ((data.hasClockIn ? 1 : 0) + (data.hasOutRecord ? 1 : 0)) + "/2 次", infoWidth, p.accent2, 7)
         addFitnessProgressTrack(info, infoWidth, fitnessPunchProgress(data), missingCheckout(data) ? "#EF4444" : p.accent2, 3)
@@ -3625,7 +3723,7 @@ function renderCyberWidget(widget, data, family, width, showToday = true) {
         }
 
         info.addSpacer(3)
-        addFitnessMetricLine(info, "工时", widgetElapsedText(data) + " / " + CONFIG.TARGET_HOURS + "h", infoWidth, p.accent, 9)
+        addFitnessMetricLine(info, "工时", widgetElapsedText(data) + " / " + CONFIG.TARGET_HOURS + "h", infoWidth, p.accent, 9, data.hasClockIn ? data : null, " / " + CONFIG.TARGET_HOURS + "h")
         addFitnessProgressTrack(info, infoWidth, widgetWorkProgress(data), missingCheckout(data) ? "#EF4444" : p.accent, 4)
         addFitnessMetricLine(info, "打卡", ((data.hasClockIn ? 1 : 0) + (data.hasOutRecord ? 1 : 0)) + " / 2 次", infoWidth, p.accent2, 9)
         addFitnessProgressTrack(info, infoWidth, fitnessPunchProgress(data), missingCheckout(data) ? "#EF4444" : p.accent2, 4)
@@ -3703,20 +3801,29 @@ function renderMinimalWidget(widget, data, family, width, showToday = true) {
     }
 
     widget.addSpacer(8)
-    const headline = widget.addText(data.hasClockIn
-        ? (missingCheckout(data) ? checkoutWarningTitle(data) : data.targetReached ? "考勤正常" : formatRemainCompact(data.remainingMinutes))
-        : "未打卡")
-    headline.font = Font.boldSystemFont(small ? 25 : 35)
-    headline.textColor = widgetColor(missingCheckout(data) ? "#EF4444" : p.text)
-    headline.lineLimit = 1
-    headline.minimumScaleFactor = 0.62
+    let headline
+    if (data.hasClockIn && showsLiveCountdown(data)) {
+        headline = addLiveCountdown(widget, data, Font.boldSystemFont(small ? 25 : 35), p.text)
+    } else {
+        headline = widget.addText(data.hasClockIn
+            ? (missingCheckout(data) ? checkoutWarningTitle(data) : data.targetReached ? "考勤正常" : formatRemainCompact(data.remainingMinutes))
+            : "未打卡")
+        headline.font = Font.boldSystemFont(small ? 25 : 35)
+        headline.textColor = widgetColor(missingCheckout(data) ? "#EF4444" : p.text)
+        headline.lineLimit = 1
+        headline.minimumScaleFactor = 0.62
+    }
 
-    const subtitle = widget.addText(data.hasClockIn
-        ? "距目标工时"
-        : getStatusMeta(data).subText)
-    subtitle.font = Font.systemFont(9)
-    subtitle.textColor = widgetColor(p.muted)
-    subtitle.lineLimit = 1
+    if (data.hasClockIn) {
+        addAttendanceElapsedLine(widget, data,
+            missingCheckout(data) ? "漏卡 · 已工作" : data.hasOutRecord ? "实际工时" : "已工作",
+            9, missingCheckout(data) ? "#EF4444" : p.muted)
+    } else {
+        const subtitle = widget.addText(getStatusMeta(data).subText)
+        subtitle.font = Font.systemFont(9)
+        subtitle.textColor = widgetColor(p.muted)
+        subtitle.lineLimit = 1
+    }
 
     if (small) {
         widget.addSpacer(5)
@@ -3829,18 +3936,28 @@ function renderHeatmapWidget(widget, data, family, width, showToday = true) {
         return
     }
 
-    const headline = widget.addText(data.hasClockIn
-        ? (missingCheckout(data) ? checkoutWarningTitle(data) : data.targetReached ? "考勤正常" : "还差 " + formatRemainText(data.remainingMinutes))
-        : "等待上班卡")
-    headline.font = Font.boldSystemFont(small ? 17 : 22)
-    headline.textColor = widgetColor(missingCheckout(data) ? "#EF4444" : p.text)
-    headline.lineLimit = 1
-    headline.minimumScaleFactor = 0.65
-    const sub = widget.addText("今日 " + widgetElapsedText(data) + "  ·  " + (data.hasClockIn ? formatTime(data.inTime) : "未打卡"))
-    sub.font = Font.systemFont(9)
-    sub.textColor = widgetColor(p.muted)
-    sub.lineLimit = 1
-    sub.minimumScaleFactor = 0.65
+    let headline
+    if (data.hasClockIn && showsLiveCountdown(data)) {
+        headline = addLiveCountdown(widget, data, Font.boldSystemFont(small ? 17 : 22), p.text)
+    } else {
+        headline = widget.addText(data.hasClockIn
+            ? (missingCheckout(data) ? checkoutWarningTitle(data) : data.targetReached ? "考勤正常" : "还差 " + formatRemainText(data.remainingMinutes))
+            : "等待上班卡")
+        headline.font = Font.boldSystemFont(small ? 17 : 22)
+        headline.textColor = widgetColor(missingCheckout(data) ? "#EF4444" : p.text)
+        headline.lineLimit = 1
+        headline.minimumScaleFactor = 0.65
+    }
+    if (data.hasClockIn) {
+        addAttendanceElapsedLine(widget, data,
+            missingCheckout(data) ? "漏卡 · 已工作" : data.hasOutRecord ? "实际工时" : "已工作",
+            9, missingCheckout(data) ? "#EF4444" : p.muted)
+    } else {
+        const sub = widget.addText("今日未打卡")
+        sub.font = Font.systemFont(9)
+        sub.textColor = widgetColor(p.muted)
+        sub.lineLimit = 1
+    }
     widget.addSpacer(8)
     renderRecentHeatmapRow(widget, data, width, p, small ? 30 : 48)
     if (!small) {
@@ -4058,15 +4175,37 @@ function renderAttendanceControls(widget, data, family, style, previewTransparen
     applyWidgetStyleBackground(widget, style, family, previewTransparent)
     const p = widgetStylePalette(style)
     widget.setPadding(10, 12, 10, 12)
-    const title = widget.addText("考勤控制")
+    const heading = widget.addStack()
+    heading.layoutHorizontally()
+    heading.centerAlignContent()
+    const title = heading.addText("考勤控制")
     title.font = Font.boldSystemFont(13)
     title.textColor = widgetColor(p.text)
+    heading.addSpacer()
+    addNativeClock(heading, Font.mediumSystemFont(9), p.muted)
     widget.addSpacer(5)
-    const status = widget.addText(widgetStatusText(data))
-    status.font = Font.boldSystemFont(12)
-    status.textColor = widgetColor(missingCheckout(data) ? "#EF4444" : p.text)
-    status.lineLimit = 1
-    status.minimumScaleFactor = 0.65
+    if (data && data.ok && data.hasClockIn && showsLiveCountdown(data)) {
+        const status = widget.addStack()
+        status.layoutHorizontally()
+        status.centerAlignContent()
+        const label = status.addText("距可下班")
+        label.font = Font.boldSystemFont(12)
+        label.textColor = widgetColor(p.muted)
+        status.addSpacer(5)
+        addLiveCountdown(status, data, Font.boldSystemFont(12), p.accent)
+    } else {
+        const status = widget.addText(widgetStatusText(data))
+        status.font = Font.boldSystemFont(12)
+        status.textColor = widgetColor(missingCheckout(data) ? "#EF4444" : p.text)
+        status.lineLimit = 1
+        status.minimumScaleFactor = 0.65
+    }
+    if (data && data.ok && data.hasClockIn) {
+        widget.addSpacer(3)
+        addAttendanceElapsedLine(widget, data,
+            missingCheckout(data) ? "漏卡 · 已工作" : data.hasOutRecord ? "实际工时" : "已工作",
+            9, missingCheckout(data) ? "#EF4444" : p.muted)
+    }
     widget.addSpacer()
     const prefs = readAttendancePreferences()
     const controls = widget.addStack()
@@ -4219,13 +4358,7 @@ function showsLiveCountdown(data) {
  * @date 2026/11/23 18:29
  */
 function addLiveCountdown(parent, data, font, color) {
-  const timer = parent.addDate(data.targetTime)
-  timer.applyTimerStyle()
-  timer.font = font
-  timer.textColor = widgetColor(color || "#FFFFFF")
-  timer.lineLimit = 1
-  timer.minimumScaleFactor = 0.65
-  return timer
+  return addNativeTimer(parent, data && data.targetTime, font, color || "#FFFFFF")
 }
 
 /**
@@ -4256,9 +4389,23 @@ function renderAccessoryRectangular(widget, data) {
   detail.minimumScaleFactor = 0.65
 
   if (data && data.ok) {
-    const updated = widget.addText("更新 " + getSnapshotUpdatedText(data))
-    updated.font = Font.systemFont(9)
-    updated.lineLimit = 1
+    const updated = widget.addStack()
+    updated.layoutHorizontally()
+    updated.centerAlignContent()
+    if (data.hasClockIn) {
+      const label = updated.addText(data.hasOutRecord ? "工时" : "已工作")
+      label.font = Font.systemFont(9)
+      label.textColor = widgetColor("#B8C6D8")
+      label.lineLimit = 1
+      updated.addSpacer(3)
+      const elapsed = addLiveElapsedTimer(updated, data, Font.systemFont(9), "#FFFFFF")
+      elapsed.minimumScaleFactor = 0.45
+      updated.addSpacer()
+    }
+    const stamp = updated.addText("更新 " + getSnapshotUpdatedText(data))
+    stamp.font = Font.systemFont(8)
+    stamp.textColor = widgetColor("#B8C6D8")
+    stamp.lineLimit = 1
   }
 }
 
@@ -4348,11 +4495,17 @@ async function renderSmallWidget(widget, data) {
 
   widget.addSpacer(4)
 
-  const sub = widget.addText(meta.subText)
-  sub.font = Font.systemFont(11)
-  sub.textColor = widgetColor("#D1D5DB")
-  sub.lineLimit = 1
-  sub.minimumScaleFactor = 0.65
+  if (data.hasClockIn) {
+    addAttendanceElapsedLine(widget, data,
+        missingCheckout(data) ? "漏卡 · 已工作" : data.hasOutRecord ? "实际工时" : "已工作",
+        10, missingCheckout(data) ? "#FCA5A5" : "#D1D5DB")
+  } else {
+    const sub = widget.addText(meta.subText)
+    sub.font = Font.systemFont(11)
+    sub.textColor = widgetColor("#D1D5DB")
+    sub.lineLimit = 1
+    sub.minimumScaleFactor = 0.65
+  }
 
     // 把剩余高度留给状态和打卡记录之间，避免底部堆积空白。
     widget.addSpacer()
@@ -4410,6 +4563,12 @@ async function renderMediumWidget(widget, data, contentWidth = mediumWidgetConte
         status.minimumScaleFactor = 0.7
     }
 
+    if (data.hasClockIn) {
+        addAttendanceElapsedLine(widget, data,
+            missingCheckout(data) ? "漏卡 · 已工作" : data.hasOutRecord ? "实际工时" : "已工作",
+            9, missingCheckout(data) ? "#FCA5A5" : "#B8C6D8")
+        widget.addSpacer(3)
+    }
     widget.addSpacer(5)
     addProgressBar(widget, data, contentWidth)
 
@@ -5906,10 +6065,7 @@ function addCompactHeader(widget, titleText, contentWidth) {
 
   row.addSpacer()
 
-  const time = row.addText(formatTime(now))
-  time.font = Font.systemFont(10)
-  time.textColor = new Color("#B2C0D0")
-  time.lineLimit = 1
+  addNativeClock(row, Font.systemFont(10), "#B2C0D0")
 }
 
 function renderErrorBlock(widget, data) {
@@ -6603,31 +6759,36 @@ function getWidgetUrl() {
 function getNextWidgetRefreshDate(data, refreshProgress = false) {
   const start = morningRefreshOn(now)
   const end = clockOn(now, CONFIG.MORNING_REFRESH_END)
+  // Native clock timers are anchored to local midnight, so request one daily
+  // snapshot refresh shortly after midnight to reset that anchor.
+  const midnightRefresh = new Date(now)
+  midnightRefresh.setHours(24, 0, 30, 0)
+  const beforeMidnight = date => new Date(Math.min(date.getTime(), midnightRefresh.getTime()))
 
-    // 带进度条的布局每 15 分钟请求刷新，最晚在目标时刻请求刷新；实际时间由 WidgetKit 决定。
-    if (showsLiveCountdown(data)) {
-        return refreshProgress
-            ? new Date(Math.min(data.targetTime.getTime(), Date.now() + 15 * 60000))
-            : data.targetTime
-    }
+  // Progress bars remain render-time snapshots; countdown and elapsed labels update natively.
+  if (showsLiveCountdown(data)) {
+    const next = refreshProgress
+      ? new Date(Math.min(data.targetTime.getTime(), Date.now() + 15 * 60000))
+      : data.targetTime
+    return beforeMidnight(next)
+  }
 
   if (missingCheckout(data)) {
-    const midnight = addDays(now, 1); midnight.setHours(0,0,0,0)
-    return new Date(Math.min(Date.now() + 10 * 60000, midnight.getTime()))
+    return beforeMidnight(new Date(Date.now() + 10 * 60000))
   }
   if (data && data.ok && data.hasClockIn) {
-    return morningRefreshOn(addDays(now, 1))
+    return beforeMidnight(morningRefreshOn(addDays(now, 1)))
   }
 
   if (now.getTime() < start.getTime()) {
-    return start
+    return beforeMidnight(start)
   }
 
   if (now.getTime() < end.getTime()) {
-    return new Date(Date.now() + CONFIG.MORNING_REFRESH_MINUTES * 60 * 1000)
+    return beforeMidnight(new Date(Date.now() + CONFIG.MORNING_REFRESH_MINUTES * 60 * 1000))
   }
 
-  return morningRefreshOn(addDays(now, 1))
+  return beforeMidnight(morningRefreshOn(addDays(now, 1)))
 }
 
 /**
