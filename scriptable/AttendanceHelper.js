@@ -5,8 +5,8 @@
 
 // Explicit shared state for the widget renderer; declared before every helper that reads it.
 const WIDGET_RENDER_STATE = { transparent: false, at: null }
-const ATTENDANCE_VERSION = "10.9.4"
-const ATTENDANCE_BUILD = "native-time-engine-1"
+const ATTENDANCE_VERSION = "10.10.0"
+const ATTENDANCE_BUILD = "rest-day-mode-1"
 
 /**
  * 考勤助手
@@ -218,9 +218,11 @@ if (config.runsInWidget) {
   // 锁屏或网络失败时改用今天的快照，倒计时仍按当前时刻重算。
     // 翻月只改变本地选月，优先用缓存立即重绘。
     const monthChanged = saveWidgetCalendarAction(args.widgetAction?.id)
-    let data = monthChanged ? loadCachedAttendanceSummary() : await getAttendanceSummary()
+    const widgetWorkday = await isChinaWorkday(now)
+    let data = !widgetWorkday ? { ok: true, isRestDay: true }
+        : monthChanged ? loadCachedAttendanceSummary() : await getAttendanceSummary()
     // A first-time calendar interaction may have no cache; recover via the normal fetch.
-    if (monthChanged && !data.ok) data = await getAttendanceSummary()
+    if (widgetWorkday && monthChanged && !data.ok) data = await getAttendanceSummary()
     // Only a fresh server response can schedule a new advance reminder.
     if (readWidgetLayout(args.widgetParameter) === "controls" &&
         ["small", "medium"].includes(config.widgetFamily) &&
@@ -234,7 +236,7 @@ if (config.runsInWidget) {
       data = cached
     }
   }
-  const widget = await createWidget(data)
+  const widget = await createWidget(data, undefined, undefined, undefined, widgetWorkday)
   Script.setWidget(widget)
   Script.complete()
 } else if (accountSaveError) {
@@ -598,9 +600,10 @@ async function presentMessage(title, message) {
  */
 async function runWidgetUpdate(options) {
   const presentPreview = !!(options && options.presentPreview)
-  const data = await getAttendanceSummary()
+  const workday = presentPreview ? await isChinaWorkday(now) : undefined
+  const data = workday === false ? { ok: true, isRestDay: true } : await getAttendanceSummary()
   if (!presentPreview && !config.runsInWidget) return data
-  const widget = await createWidget(data, options?.family, options?.style, options?.transparent)
+  const widget = await createWidget(data, options?.family, options?.style, options?.transparent, workday)
   if (config.runsInWidget) Script.setWidget(widget)
 
   if (presentPreview) {
@@ -2962,11 +2965,11 @@ function addFitnessProgressTrack(parent, width, progress, color, height = 4) {
 }
 
 
-function getWidgetMonthModel(data) {
+function getWidgetMonthModel(data, currentOnly = false) {
     const todayKey = formatDateKey(now)
     const current = attendanceMonth()
     const savedMonth = attendanceMonth(readKeychainValue("attendance-widget-month:" + CONFIG.USERNAME))
-    const month = savedMonth > current ? current : savedMonth
+    const month = currentOnly || savedMonth > current ? current : savedMonth
     const year = month.getFullYear()
     const monthKey = formatDateKey(month).slice(0, 7)
     const holidays = { [year]: readAttendanceRecord("attendance-history-calendar-" + year)?.holidays }
@@ -4087,7 +4090,171 @@ async function renderStyledWidget(widget, data, family, style, width, layout, ca
  * @author Kai
  * @date 2026/11/25 13:00
  */
-async function createWidget(data, previewFamily, previewStyle, previewTransparent) {
+
+/** Rest-day layout uses local history, never a fabricated today's clock-in. */
+function restWidgetDateLabel(date) {
+    return (date.getMonth() + 1) + "/" + date.getDate() + " 周" + "日一二三四五六"[date.getDay()]
+}
+
+function restWidgetGreeting(date, holidays) {
+    const kind = historyDayKind(date, holidays)
+    const daily = readAttendanceRecord("china-workday-" + formatDateKey(date))
+    if (daily?.type === 2 || kind.kind === "holiday") return "假日愉快"
+    return date.getDay() === 6 ? "周末愉快" : date.getDay() === 0 ? "享受周末" : "今日休息"
+}
+
+function restWidgetNextWorkday(date, holidays) {
+    let estimated = false
+    for (let offset = 1; offset <= 21; offset++) {
+        const candidate = addDays(date, offset)
+        const key = formatDateKey(candidate)
+        const daily = readAttendanceRecord("china-workday-" + key)
+        const year = holidays[candidate.getFullYear()]
+        const freshDaily = daily && typeof daily.isWorkday === "boolean" &&
+            Date.now() - daily.savedAt < CONFIG.HOLIDAY_CACHE_HOURS * 3600000
+        if (!freshDaily && !year) estimated = true
+        const workday = freshDaily ? daily.isWorkday : historyDayKind(candidate, holidays).workday
+        if (workday) return { date: candidate, estimated }
+    }
+    return { date: null, estimated: true }
+}
+
+function restWidgetRefreshDate(date, next) {
+    const tomorrow = addDays(date, 1)
+    // Refresh the greeting on each rest day, even during long holidays.
+    if (!next?.date || formatDateKey(next.date) === formatDateKey(tomorrow)) return morningRefreshOn(tomorrow)
+    tomorrow.setHours(0, 0, 30, 0)
+    return tomorrow
+}
+
+function restWidgetText(parent, value, size, color, bold = false) {
+    const t = parent.addText(String(value))
+    t.font = bold ? Font.boldSystemFont(size) : Font.mediumSystemFont(size)
+    t.textColor = widgetColor(color)
+    t.lineLimit = 1
+    t.minimumScaleFactor = 0.65
+    return t
+}
+
+function restWidgetSummary(days) {
+    const workdays = days.filter(day => day.workday)
+    const normal = workdays.filter(day => day.state === "normal" && !isWidgetReviewedAbnormal(day)).length
+    const recorded = workdays.filter(day => day.state !== "neutral").length
+    const settled = workdays.filter(day => Number.isFinite(day.workedMs))
+    return { total: workdays.length, normal, recorded,
+        warnings: workdays.filter(isWidgetPendingWarning).length,
+        abnormal: workdays.filter(isWidgetReviewedAbnormal).length,
+        average: settled.length ? formatShortDuration(settled.reduce((sum, day) => sum + day.workedMs, 0) / settled.length) : "—" }
+}
+
+function addRestWidgetNext(parent, next, p, size = 10) {
+    const prefix = next.estimated ? "预计下个工作日" : "下个工作日"
+    restWidgetText(parent, prefix + " · " + (next.date ? restWidgetDateLabel(next.date) : "待确认"), size, p.muted)
+}
+
+function renderRestDayWidget(widget, data, family, style, width, layout, greeting, next) {
+    const p = widgetStylePalette(style)
+    const large = family === "large" || family === "extraLarge"
+    const small = family === "small"
+    const recent = restWidgetSummary(getRecentWidgetDays(data, 7))
+    // Small/medium summaries always use the current period, independent of a large widget's selected month.
+    const month = small ? restWidgetSummary(getWidgetMonthModel(data, true).days) : null
+    const header = widget.addStack()
+    header.layoutHorizontally()
+    header.centerAlignContent()
+    restWidgetText(header, greeting, small ? 11 : 14, p.accent, true)
+    header.addSpacer()
+    restWidgetText(header, restWidgetDateLabel(now), 9, p.muted)
+    widget.addSpacer(small ? 4 : 5)
+
+    if (large) {
+        const intro = widget.addStack()
+        intro.layoutHorizontally()
+        intro.centerAlignContent()
+        restWidgetText(intro, "享受属于自己的时间", 14, p.text, true)
+        intro.addSpacer()
+        addRestWidgetNext(intro, next, p, 9)
+        widget.addSpacer(5)
+        widget.addSpacer(null)
+        if (layout === "stats") {
+            renderStyledStatsWidget(widget, data, family, style, width, false)
+        } else if (style === "cyber") {
+            renderCyberLargeWidget(widget, data, width, p, false)
+        } else if (style === "fitness") {
+            renderFitnessLargeWidget(widget, data, width, p, false)
+        } else if (style === "minimal") {
+            renderMinimalLargeWidget(widget, data, width, p, false)
+        } else {
+            // Keep full-month navigation and leave room for the holiday header.
+            renderWidgetMonthCalendar(widget, data, width, "heatmap", {
+                height: Math.round((width >= 320 ? 204 : 170) * largeWidgetScale()),
+                fontSize: 9, gap: 3, stretchRows: true
+            })
+        }
+        return
+    }
+
+    if (small) {
+        widget.addSpacer(null)
+        if (style === "fitness") {
+            const row = widget.addStack()
+            row.layoutHorizontally()
+            row.centerAlignContent()
+            const ringSize = Math.min(58, Math.floor(width * 0.46))
+            addFitnessRing(row, data, ringSize,
+                month.total ? month.normal / month.total : 0,
+                month.total ? month.recorded / month.total : 0)
+            row.addSpacer(5)
+            const detail = row.addStack()
+            detail.layoutVertically()
+            restWidgetText(detail, month.total ? Math.round(month.normal / month.total * 100) + "%" : "—", 19, p.text, true)
+            restWidgetText(detail, "本月达标", 9, p.muted)
+            restWidgetText(detail, month.normal + "/" + month.total + " 天", 9, p.accent)
+        } else if (style === "heatmap") {
+            restWidgetText(widget, "近7天 · " + recent.normal + "天达标", 12, p.text, true)
+            widget.addSpacer(4)
+            renderRecentHeatmapRow(widget, data, width, p, 29)
+        } else {
+            restWidgetText(widget, "休息日", 23, p.text, true)
+            restWidgetText(widget, "今天不必赶时间", 10, p.muted)
+            widget.addSpacer(3)
+            restWidgetText(widget, style === "minimal" ? "本月平均 " + month.average : "本月达标 " + month.normal + "/" + month.total + " 天", 10, p.accent, true)
+        }
+        widget.addSpacer(null)
+        addRestWidgetNext(widget, next, p, 9)
+        return
+    }
+
+    const summary = widget.addStack()
+    summary.layoutHorizontally()
+    summary.centerAlignContent()
+    if (style === "fitness") {
+        addFitnessRing(summary, data, 45, recent.total ? recent.normal / recent.total : 0,
+            recent.total ? recent.recorded / recent.total : 0)
+        summary.addSpacer(7)
+    }
+    const left = summary.addStack()
+    left.layoutVertically()
+    restWidgetText(left, "近7天平均工时", 9, p.muted)
+    restWidgetText(left, recent.average, 20, p.text, true)
+    summary.addSpacer()
+    const right = summary.addStack()
+    right.layoutVertically()
+    restWidgetText(right, "工作日达标", 9, p.muted)
+    restWidgetText(right, recent.normal + " / " + recent.total + " 天", 17, p.accent, true)
+    widget.addSpacer(5)
+    renderRecentHeatmapRow(widget, data, width, p, 31)
+    widget.addSpacer(null)
+    const footer = widget.addStack()
+    footer.layoutHorizontally()
+    footer.centerAlignContent()
+    const pending = recent.warnings + recent.abnormal
+    restWidgetText(footer, pending ? "待核查 " + recent.warnings + " · 异常 " + recent.abnormal : "今天不必赶时间", 9, p.muted)
+    footer.addSpacer()
+    addRestWidgetNext(footer, next, p, 9)
+}
+
+async function createWidget(data, previewFamily, previewStyle, previewTransparent, workdayOverride) {
   WIDGET_RENDER_STATE.transparent = false
   WIDGET_RENDER_STATE.at = Date.now()
   // 管理页预览时，显式选择的尺寸优先；真正由桌面运行时则使用 config.widgetFamily。
@@ -4101,19 +4268,44 @@ async function createWidget(data, previewFamily, previewStyle, previewTransparen
   const statsOnly = layout === "stats" && family === "medium"
   const style = widgetStyleForFamily(family, previewStyle)
   const widget = new ListWidget()
+  const workday = typeof workdayOverride === "boolean" ? workdayOverride : await isChinaWorkday(now)
+  WIDGET_RENDER_STATE.at = Date.now()
+  const calendarOnly = statsOnly
+  if (!workday) {
+    const restData = { ok: true, isRestDay: true }
+    if (isAccessory) {
+      // Lock-screen complications intentionally remain empty on rest days.
+      widget.refreshAfterDate = morningRefreshOn(addDays(now, 1))
+    } else {
+      // Use annual/daily holiday caches; without coverage, label the next workday as estimated.
+      const years = new Set([now.getFullYear(), addDays(now, 21).getFullYear()])
+      const holidays = {}
+      for (const year of years) {
+        const cached = readAttendanceRecord("attendance-history-calendar-" + year)
+        if (cached?.holidays) holidays[year] = cached.holidays
+      }
+      const next = restWidgetNextWorkday(now, holidays)
+      widget.refreshAfterDate = restWidgetRefreshDate(now, next)
+      widget.url = getWeeklyAttendanceUrl()
+      if (layout === "controls" && ["small", "medium"].includes(family)) {
+        renderAttendanceControls(widget, restData, family, style, isPreview ? previewTransparent : undefined)
+      } else {
+        applyWidgetStyleBackground(widget, style, family, isPreview ? previewTransparent : undefined)
+        if (family === "small") widget.setPadding(7, 10, 7, 10)
+        else if (hasCalendar) widget.setPadding(5, 16, 5, 16)
+        else widget.setPadding(10, 12, 10, 12)
+        const width = family === "small" ? Math.floor(homeScreenWidgetWidth("medium") / 2 - 20)
+          : hasCalendar ? Math.max(250, homeScreenWidgetWidth("large") - 32) : mediumWidgetContentWidth(12)
+        renderRestDayWidget(widget, restData, family, style, width, layout, restWidgetGreeting(now, holidays), next)
+      }
+    }
+    recordWidgetDiagnostic(widget,restData,family,style,layout)
+    return widget
+  }
   if (layout === "controls" && ["small", "medium"].includes(family)) {
     renderAttendanceControls(widget, data, family, style, isPreview ? previewTransparent : undefined)
     widget.url = getWeeklyAttendanceUrl()
     widget.refreshAfterDate = getNextWidgetRefreshDate(data, true)
-    recordWidgetDiagnostic(widget,data,family,style,layout)
-    return widget
-  }
-  const workday = isPreview || statsOnly || await isChinaWorkday(now)
-  WIDGET_RENDER_STATE.at = Date.now()
-  const calendarOnly = statsOnly || (!workday && hasCalendar)
-
-  if (!workday && !calendarOnly) {
-    widget.refreshAfterDate = morningRefreshOn(addDays(now, 1))
     recordWidgetDiagnostic(widget,data,family,style,layout)
     return widget
   }
@@ -4716,7 +4908,10 @@ async function loadHistoryHolidays(year, cached) {
 function buildAttendanceHistoryDay(date, holidays, checked) {
     const key = formatDateKey(date)
     const today = key === formatDateKey(now)
-    const { kind, label, workday } = historyDayKind(date, holidays)
+    const dayKind = historyDayKind(date, holidays)
+    // A confirmed current rest-day render must not turn a missing daily card into an anomaly.
+    const { kind, label, workday } = today && checked.get(key)?.isRestDay && dayKind.workday
+        ? { kind: "weekend", label: "休息日", workday: false } : dayKind
     const record = checked.get(key) || readHistorySnapshot(date)
     const clockIn = record && record.inTime ? new Date(record.inTime) : null
     // 今日历史卡也会读到旧快照，应用与小组件相同的离场判断。
@@ -6275,7 +6470,7 @@ function recordWidgetDiagnostic(widget, data, family, style, layout) {
   writeMaintenanceRecord("widget-"+family,{at:new Date().toISOString(),
     next:widget.refreshAfterDate instanceof Date ? widget.refreshAfterDate.toISOString() : null,
     style,layout:layout||"default",transparent:WIDGET_RENDER_STATE.transparent,
-    data:data?.ok?(data.isCached?"缓存":"实时查询"):"不可用"})
+    data:data?.isRestDay?"休息日 · 本地历史":data?.ok?(data.isCached?"缓存":"实时查询"):"不可用"})
 }
 function diagnosticTime(value) {
   const d=value ? new Date(value) : null
